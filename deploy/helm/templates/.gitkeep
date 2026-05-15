@@ -1,0 +1,6 @@
+# Helm templates land here in Etapa 6:
+# - deployment.yaml         (the ktm-agent workload)
+# - serviceaccount.yaml     (RBAC-minimal SA)
+# - role.yaml + rolebinding.yaml
+# - pvc.yaml                (local snapshot storage)
+# - networkpolicy.yaml      (deny-by-default egress)

@@ -1,0 +1,33 @@
+# Default values for kube-time-machine.
+# Etapa 1 placeholder — real values land alongside the templates in Etapa 6.
+
+image:
+  repository: ghcr.io/franklin-osede/ktm-agent
+  tag: ""        # falls back to .Chart.AppVersion when empty
+  pullPolicy: IfNotPresent
+
+# Snapshot cadence and retention.
+snapshot:
+  intervalSeconds: 300        # how often the agent flushes a delta
+  fullEvery: 12               # take a full reference snapshot every N deltas
+
+# Local PVC storage. Cloud drivers are Phase 2 (see roadmap).
+storage:
+  size: 10Gi
+  storageClassName: ""        # empty = use the cluster default
+
+# Resources the agent watches. MVP supports Deployments and ConfigMaps only.
+resources:
+  watch:
+    - deployments
+    - configmaps
+
+# Pod resource requests/limits. Conservative defaults.
+agent:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

@@ -1,0 +1,22 @@
+# Binaries built locally
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Go build/test cache artifacts that escape the cache
+coverage.txt
+coverage.html
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local kubeconfigs and secrets accidentally dropped here
+kubeconfig
+*.kubeconfig
+.env
+.env.*

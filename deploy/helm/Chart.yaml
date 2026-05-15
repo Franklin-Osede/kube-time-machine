@@ -1,0 +1,20 @@
+apiVersion: v2
+name: kube-time-machine
+description: Git blame and time-travel for Kubernetes clusters.
+type: application
+# version  = chart version (bump on chart changes)
+# appVersion = application version (bump on agent image changes)
+version: 0.0.1
+appVersion: "0.0.1"
+home: https://github.com/Franklin-Osede/kube-time-machine
+sources:
+  - https://github.com/Franklin-Osede/kube-time-machine
+maintainers:
+  - name: Franklin Osede
+    url: https://github.com/Franklin-Osede
+keywords:
+  - kubernetes
+  - forensics
+  - audit
+  - rollback
+  - sre
