@@ -1,0 +1,300 @@
+package storage
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"sync"
+	"time"
+
+	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
+	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
+)
+
+// Local persists snapshots to a directory on the local filesystem.
+//
+// On-disk layout:
+//
+//	<root>/
+//	  index.json
+//	  snapshots/
+//	    <id>/
+//	      meta.json
+//	      full.json    -- iff meta.kind == "full"
+//	      delta.json   -- iff meta.kind == "delta"
+//
+// index.json is a *cache* of the per-snapshot meta.json files. If the
+// index goes missing, the store remains semantically intact — every
+// snapshot is fully self-describing inside its own directory. A future
+// rebuild routine can walk snapshots/ and regenerate the index without
+// touching payloads. (The rebuild itself is not implemented yet; the
+// format is designed to support it.)
+type Local struct {
+	root string
+
+	mu    sync.Mutex
+	index []types.SnapshotMeta // sorted by Timestamp ascending
+}
+
+const (
+	indexFileName    = "index.json"
+	snapshotsDirName = "snapshots"
+	metaFileName     = "meta.json"
+	fullFileName     = "full.json"
+	deltaFileName    = "delta.json"
+)
+
+// NewLocal opens (or initializes) a Local store rooted at the given path.
+// The root and its snapshots/ subdirectory are created if missing. If
+// index.json exists it is loaded; otherwise the in-memory index starts
+// empty (and will be written on the next successful Put).
+func NewLocal(root string) (*Local, error) {
+	if err := os.MkdirAll(filepath.Join(root, snapshotsDirName), 0o755); err != nil {
+		return nil, fmt.Errorf("storage: create root: %w", err)
+	}
+	l := &Local{root: root}
+	if err := l.loadIndex(); err != nil {
+		return nil, fmt.Errorf("storage: load index: %w", err)
+	}
+	return l, nil
+}
+
+func (l *Local) loadIndex() error {
+	b, err := os.ReadFile(filepath.Join(l.root, indexFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		l.index = nil
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, &l.index)
+}
+
+func (l *Local) writeIndexLocked() error {
+	return atomicWriteJSON(filepath.Join(l.root, indexFileName), l.index)
+}
+
+// PutFull persists a full reference snapshot.
+func (l *Local) PutFull(_ context.Context, ts time.Time, snap delta.Snapshot) (types.SnapshotMeta, error) {
+	meta := types.SnapshotMeta{
+		ID:        idFromTime(ts),
+		Kind:      types.KindFull,
+		Timestamp: ts.UTC(),
+	}
+	if err := l.writeSnapshot(meta, fullFileName, snapshotToWire(snap)); err != nil {
+		return types.SnapshotMeta{}, err
+	}
+	return l.appendIndex(meta)
+}
+
+// PutDelta persists an incremental delta from prevID.
+func (l *Local) PutDelta(_ context.Context, ts time.Time, prevID types.SnapshotID, d delta.Delta) (types.SnapshotMeta, error) {
+	meta := types.SnapshotMeta{
+		ID:        idFromTime(ts),
+		Kind:      types.KindDelta,
+		Timestamp: ts.UTC(),
+		PrevID:    prevID,
+	}
+	if err := l.writeSnapshot(meta, deltaFileName, deltaToWire(d)); err != nil {
+		return types.SnapshotMeta{}, err
+	}
+	return l.appendIndex(meta)
+}
+
+// Get loads the payload at id from disk. The index is not consulted —
+// per-snapshot meta.json is the source of truth.
+func (l *Local) Get(_ context.Context, id types.SnapshotID) (Loaded, error) {
+	dir := filepath.Join(l.root, snapshotsDirName, string(id))
+
+	var meta types.SnapshotMeta
+	if err := readJSON(filepath.Join(dir, metaFileName), &meta); err != nil {
+		return Loaded{}, fmt.Errorf("storage: read meta %s: %w", id, err)
+	}
+
+	out := Loaded{Meta: meta}
+	switch meta.Kind {
+	case types.KindFull:
+		var w wireSnapshot
+		if err := readJSON(filepath.Join(dir, fullFileName), &w); err != nil {
+			return Loaded{}, fmt.Errorf("storage: read full payload %s: %w", id, err)
+		}
+		out.Full = wireToSnapshot(w)
+	case types.KindDelta:
+		var w wireDelta
+		if err := readJSON(filepath.Join(dir, deltaFileName), &w); err != nil {
+			return Loaded{}, fmt.Errorf("storage: read delta payload %s: %w", id, err)
+		}
+		out.Delta = wireToDelta(w)
+	default:
+		return Loaded{}, fmt.Errorf("storage: unknown snapshot kind %q for %s", meta.Kind, id)
+	}
+	return out, nil
+}
+
+// List returns a copy of the in-memory index, sorted by Timestamp.
+func (l *Local) List(_ context.Context) ([]types.SnapshotMeta, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := make([]types.SnapshotMeta, len(l.index))
+	copy(out, l.index)
+	return out, nil
+}
+
+// writeSnapshot creates the per-snapshot directory and writes meta.json
+// and the payload file atomically (rename-based, per file).
+func (l *Local) writeSnapshot(meta types.SnapshotMeta, payloadName string, payload any) error {
+	dir := filepath.Join(l.root, snapshotsDirName, string(meta.ID))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("storage: mkdir %s: %w", meta.ID, err)
+	}
+	if err := atomicWriteJSON(filepath.Join(dir, metaFileName), meta); err != nil {
+		return fmt.Errorf("storage: write meta %s: %w", meta.ID, err)
+	}
+	if err := atomicWriteJSON(filepath.Join(dir, payloadName), payload); err != nil {
+		return fmt.Errorf("storage: write payload %s: %w", meta.ID, err)
+	}
+	return nil
+}
+
+func (l *Local) appendIndex(meta types.SnapshotMeta) (types.SnapshotMeta, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.index = append(l.index, meta)
+	sort.SliceStable(l.index, func(i, j int) bool {
+		return l.index[i].Timestamp.Before(l.index[j].Timestamp)
+	})
+	if err := l.writeIndexLocked(); err != nil {
+		return types.SnapshotMeta{}, fmt.Errorf("storage: write index: %w", err)
+	}
+	return meta, nil
+}
+
+// idFromTime renders a UTC timestamp at millisecond precision into a
+// sortable, filesystem-safe ID like "20260518T140530123Z".
+func idFromTime(t time.Time) types.SnapshotID {
+	t = t.UTC()
+	ms := t.Nanosecond() / int(time.Millisecond)
+	return types.SnapshotID(fmt.Sprintf("%s%03dZ", t.Format("20060102T150405"), ms))
+}
+
+// atomicWriteJSON marshals v as JSON and writes it to path via a
+// tempfile-then-rename, so concurrent readers never see a partial file.
+//
+// Note: we do not fsync. The rename gives us crash-consistency at the
+// page-cache level (readers see old or new, never partial). Full
+// durability across kernel crashes would require fsync on both the
+// tempfile and the parent directory, which is acceptable to defer for
+// MVP given the agent re-snapshots on restart.
+func atomicWriteJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func readJSON(path string, v any) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
+}
+
+// -- wire format --------------------------------------------------------
+//
+// JSON requires string map keys, but delta.Key is a struct. We serialize
+// Snapshots and Deltas as ordered lists of entries instead. Sorting on
+// write makes the on-disk bytes deterministic: two semantically equal
+// snapshots produce byte-identical files, which keeps test fixtures
+// stable and leaves the door open for content hashing / dedup later.
+
+type wireEntry struct {
+	Key   delta.Key   `json:"key"`
+	State delta.State `json:"state"` // []byte → base64 string in JSON
+}
+
+type wireSnapshot struct {
+	Entries []wireEntry `json:"entries"`
+}
+
+type wireDelta struct {
+	Added    []wireEntry `json:"added,omitempty"`
+	Modified []wireEntry `json:"modified,omitempty"`
+	Removed  []delta.Key `json:"removed,omitempty"`
+}
+
+func snapshotToWire(s delta.Snapshot) wireSnapshot {
+	out := wireSnapshot{Entries: make([]wireEntry, 0, len(s))}
+	for k, v := range s {
+		out.Entries = append(out.Entries, wireEntry{Key: k, State: v})
+	}
+	sortEntries(out.Entries)
+	return out
+}
+
+func wireToSnapshot(w wireSnapshot) delta.Snapshot {
+	out := make(delta.Snapshot, len(w.Entries))
+	for _, e := range w.Entries {
+		out[e.Key] = e.State
+	}
+	return out
+}
+
+func deltaToWire(d delta.Delta) wireDelta {
+	out := wireDelta{}
+	for k, v := range d.Added {
+		out.Added = append(out.Added, wireEntry{Key: k, State: v})
+	}
+	for k, v := range d.Modified {
+		out.Modified = append(out.Modified, wireEntry{Key: k, State: v})
+	}
+	for k := range d.Removed {
+		out.Removed = append(out.Removed, k)
+	}
+	sortEntries(out.Added)
+	sortEntries(out.Modified)
+	sort.SliceStable(out.Removed, func(i, j int) bool { return keyLess(out.Removed[i], out.Removed[j]) })
+	return out
+}
+
+func wireToDelta(w wireDelta) delta.Delta {
+	d := delta.Delta{
+		Added:    make(map[delta.Key]delta.State, len(w.Added)),
+		Modified: make(map[delta.Key]delta.State, len(w.Modified)),
+		Removed:  make(map[delta.Key]struct{}, len(w.Removed)),
+	}
+	for _, e := range w.Added {
+		d.Added[e.Key] = e.State
+	}
+	for _, e := range w.Modified {
+		d.Modified[e.Key] = e.State
+	}
+	for _, k := range w.Removed {
+		d.Removed[k] = struct{}{}
+	}
+	return d
+}
+
+func sortEntries(es []wireEntry) {
+	sort.SliceStable(es, func(i, j int) bool { return keyLess(es[i].Key, es[j].Key) })
+}
+
+func keyLess(a, b delta.Key) bool {
+	if a.Kind != b.Kind {
+		return a.Kind < b.Kind
+	}
+	if a.Namespace != b.Namespace {
+		return a.Namespace < b.Namespace
+	}
+	return a.Name < b.Name
+}

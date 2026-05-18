@@ -1,0 +1,263 @@
+package storage_test
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
+	"github.com/Franklin-Osede/kube-time-machine/internal/storage"
+	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
+)
+
+// newStore opens a Local store in a fresh t.TempDir(). The directory is
+// cleaned up automatically by the testing framework.
+func newStore(t *testing.T) *storage.Local {
+	t.Helper()
+	s, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	return s
+}
+
+func key(kind, ns, name string) delta.Key {
+	return delta.Key{Kind: kind, Namespace: ns, Name: name}
+}
+
+// at returns a deterministic UTC timestamp so test IDs are predictable.
+func at(year, month, day, hour, minute, second, millis int) time.Time {
+	return time.Date(year, time.Month(month), day, hour, minute, second,
+		millis*int(time.Millisecond), time.UTC)
+}
+
+func TestEmptyStore_ListIsEmpty(t *testing.T) {
+	s := newStore(t)
+	got, err := s.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty list, got %v", got)
+	}
+}
+
+func TestPutFull_RoundTrip(t *testing.T) {
+	s := newStore(t)
+	snap := delta.Snapshot{
+		key("Deployment", "default", "api"): delta.State("payload-api-v1"),
+		key("ConfigMap", "default", "cfg"):  delta.State("payload-cfg-v1"),
+	}
+
+	meta, err := s.PutFull(context.Background(), at(2026, 5, 18, 14, 5, 30, 123), snap)
+	if err != nil {
+		t.Fatalf("PutFull: %v", err)
+	}
+	if meta.Kind != types.KindFull {
+		t.Errorf("kind: want full, got %q", meta.Kind)
+	}
+	if meta.PrevID != "" {
+		t.Errorf("PrevID should be empty for full snapshots, got %q", meta.PrevID)
+	}
+
+	loaded, err := s.Get(context.Background(), meta.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Full, snap) {
+		t.Errorf("full payload mismatch:\nwant %v\ngot  %v", snap, loaded.Full)
+	}
+}
+
+func TestPutDelta_RoundTrip(t *testing.T) {
+	s := newStore(t)
+
+	full, err := s.PutFull(context.Background(), at(2026, 5, 18, 14, 0, 0, 0), delta.Snapshot{
+		key("Deployment", "default", "api"): delta.State("v1"),
+	})
+	if err != nil {
+		t.Fatalf("seed PutFull: %v", err)
+	}
+
+	d := delta.Delta{
+		Added: map[delta.Key]delta.State{
+			key("Service", "default", "svc"): delta.State("s1"),
+		},
+		Modified: map[delta.Key]delta.State{
+			key("Deployment", "default", "api"): delta.State("v2"),
+		},
+		Removed: map[delta.Key]struct{}{
+			key("ConfigMap", "default", "cfg"): {},
+		},
+	}
+
+	meta, err := s.PutDelta(context.Background(), at(2026, 5, 18, 14, 5, 0, 0), full.ID, d)
+	if err != nil {
+		t.Fatalf("PutDelta: %v", err)
+	}
+	if meta.Kind != types.KindDelta {
+		t.Errorf("kind: want delta, got %q", meta.Kind)
+	}
+	if meta.PrevID != full.ID {
+		t.Errorf("PrevID: want %q, got %q", full.ID, meta.PrevID)
+	}
+
+	loaded, err := s.Get(context.Background(), meta.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Delta, d) {
+		t.Errorf("delta payload mismatch:\nwant %+v\ngot  %+v", d, loaded.Delta)
+	}
+}
+
+func TestList_OrdersByTimestampAscending(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Put out of order; List should return ascending.
+	mB, _ := s.PutFull(ctx, at(2026, 5, 18, 14, 5, 0, 0), delta.Snapshot{})
+	mA, _ := s.PutFull(ctx, at(2026, 5, 18, 14, 0, 0, 0), delta.Snapshot{})
+	mC, _ := s.PutFull(ctx, at(2026, 5, 18, 14, 10, 0, 0), delta.Snapshot{})
+
+	got, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+
+	want := []types.SnapshotID{mA.ID, mB.ID, mC.ID}
+	if len(got) != len(want) {
+		t.Fatalf("len: want %d, got %d (%v)", len(want), len(got), got)
+	}
+	for i, m := range got {
+		if m.ID != want[i] {
+			t.Errorf("position %d: want %q, got %q", i, want[i], m.ID)
+		}
+	}
+}
+
+func TestList_ReturnsCopy(t *testing.T) {
+	s := newStore(t)
+	_, _ = s.PutFull(context.Background(), at(2026, 5, 18, 14, 0, 0, 0), delta.Snapshot{})
+
+	first, _ := s.List(context.Background())
+	first[0].ID = "MUTATED"
+
+	second, _ := s.List(context.Background())
+	if second[0].ID == "MUTATED" {
+		t.Errorf("List returned the internal slice; mutations leaked back")
+	}
+}
+
+func TestPersistsAcrossReopen(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+
+	s1, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal #1: %v", err)
+	}
+	snap := delta.Snapshot{key("Deployment", "default", "api"): delta.State("v1")}
+	meta, err := s1.PutFull(ctx, at(2026, 5, 18, 14, 0, 0, 0), snap)
+	if err != nil {
+		t.Fatalf("PutFull: %v", err)
+	}
+
+	s2, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal #2: %v", err)
+	}
+
+	list, err := s2.List(ctx)
+	if err != nil {
+		t.Fatalf("List on reopened store: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != meta.ID {
+		t.Errorf("reopened List: want [%s], got %v", meta.ID, list)
+	}
+
+	loaded, err := s2.Get(ctx, meta.ID)
+	if err != nil {
+		t.Fatalf("Get on reopened store: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Full, snap) {
+		t.Errorf("payload mismatch after reopen:\nwant %v\ngot  %v", snap, loaded.Full)
+	}
+}
+
+// TestSurvivesMissingIndex documents the "reconstructible index"
+// property: with index.json deleted, Get(id) on any existing snapshot
+// still works because each snapshot's own meta.json is self-describing.
+// List will be empty until a (not yet implemented) rebuild routine
+// repopulates the index from disk.
+func TestSurvivesMissingIndex(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+
+	s1, _ := storage.NewLocal(root)
+	snap := delta.Snapshot{key("Deployment", "default", "api"): delta.State("v1")}
+	meta, _ := s1.PutFull(ctx, at(2026, 5, 18, 14, 0, 0, 0), snap)
+
+	if err := os.Remove(filepath.Join(root, "index.json")); err != nil {
+		t.Fatalf("remove index: %v", err)
+	}
+
+	s2, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal after index removal: %v", err)
+	}
+	loaded, err := s2.Get(ctx, meta.ID)
+	if err != nil {
+		t.Fatalf("Get after index removal: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Full, snap) {
+		t.Errorf("payload mismatch after index removal:\nwant %v\ngot  %v", snap, loaded.Full)
+	}
+	// List is intentionally empty here — the index isn't rebuilt
+	// automatically yet. This test exists to document that behaviour
+	// so the rebuild can be added later without surprise.
+	if got, _ := s2.List(ctx); len(got) != 0 {
+		t.Errorf("expected empty List after index removal (no auto-rebuild yet), got %v", got)
+	}
+}
+
+func TestGet_UnknownIDReturnsError(t *testing.T) {
+	s := newStore(t)
+	_, err := s.Get(context.Background(), types.SnapshotID("does-not-exist"))
+	if err == nil {
+		t.Fatal("expected error for unknown ID, got nil")
+	}
+}
+
+// TestSerializationIsDeterministic locks down the byte-level determinism
+// of the on-disk format: two semantically equal snapshots written at the
+// same timestamp must produce byte-identical payload files. This matters
+// for stable test fixtures and for any future content-hash-based dedup.
+func TestSerializationIsDeterministic(t *testing.T) {
+	ts := at(2026, 5, 18, 14, 0, 0, 0)
+	snap := delta.Snapshot{
+		key("ConfigMap", "default", "cfg"):  delta.State("c1"),
+		key("Deployment", "default", "api"): delta.State("v1"),
+		key("Service", "default", "svc"):    delta.State("s1"),
+	}
+
+	rootA := t.TempDir()
+	sA, _ := storage.NewLocal(rootA)
+	metaA, _ := sA.PutFull(context.Background(), ts, snap)
+
+	rootB := t.TempDir()
+	sB, _ := storage.NewLocal(rootB)
+	metaB, _ := sB.PutFull(context.Background(), ts, snap)
+
+	if metaA.ID != metaB.ID {
+		t.Fatalf("same timestamp should yield same ID: %q vs %q", metaA.ID, metaB.ID)
+	}
+	bytesA, _ := os.ReadFile(filepath.Join(rootA, "snapshots", string(metaA.ID), "full.json"))
+	bytesB, _ := os.ReadFile(filepath.Join(rootB, "snapshots", string(metaB.ID), "full.json"))
+	if string(bytesA) != string(bytesB) {
+		t.Errorf("payload bytes differ for equal snapshots:\nA:\n%s\nB:\n%s", bytesA, bytesB)
+	}
+}
