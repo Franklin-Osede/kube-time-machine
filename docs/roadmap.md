@@ -8,9 +8,9 @@ The MVP is done when the 5-minute demo (install → break a deployment → diff 
 
 | Etapa | Outcome | Status |
 |------:|---------|--------|
-| 1 | Repo scaffolded, `client-go` learning sandbox, project layout in place | 🚧 in progress |
-| 2 | Agent captures full snapshots to disk (no deltas yet) — end-to-end I/O loop validated | ⏳ |
-| 3 | `internal/delta` package: compute, apply, chain reconstruction, ≥40% test coverage | ⏳ |
+| 1 | Repo scaffolded, project layout in place, both binaries compile | ✅ done |
+| 2 | `pkg/types` + `internal/storage` (local FS) + `internal/agent` (informers, buffer, snapshot policy) | 🚧 in progress |
+| 3 | `internal/delta` package: compute, apply, round-trip invariant, fuzz test, 100% coverage | ✅ done |
 | 4 | CLI scaffolding (cobra) with `snapshot list`, `snapshot show`, `diff` | ⏳ |
 | 5 | `blame` and `rollback` (single resource, optimistic-locking) | ⏳ |
 | 6 | RBAC + ServiceAccount + NetworkPolicy + Helm chart + Dockerfile + minimal CI | ⏳ |
