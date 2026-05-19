@@ -1,19 +1,19 @@
 # Estado del proyecto — kube-time-machine
 
 > **Living document.** Snapshot del estado del repo entre sesiones. Se actualiza al cerrar cada sesión.
-> **Última actualización:** 2026-05-19
+> **Última actualización:** 2026-05-19 (sesión 2)
 
 ---
 
 ## TL;DR
 
-`kube-time-machine` es "git blame para clusters de Kubernetes". Hoy tenemos construida **la mitad del MVP**:
+`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapa 2 cerrada**: el agente está completo y end-to-end funcional.
 
-- ✅ El motor de deltas (100% cobertura + fuzz test)
-- ✅ El storage local en filesystem (con index reconstruible)
-- ✅ Las tres piezas Go-puras del agente: Buffer, Snapshotter, marshal
+- ✅ Motor de deltas (100% cobertura + fuzz test)
+- ✅ Storage local en filesystem (con index reconstruible)
+- ✅ Agente entero: Buffer + Snapshotter + marshal + Informers + `cmd/agent/main.go` con flags, errgroup y SIGTERM-handling
 
-Lo que falta para terminar el agente son **los informers de client-go** y el **wiring final** en `cmd/agent/main.go`. Después: CLI, blame, rollback, Helm, lanzamiento.
+Lo siguiente es **Etapa 4: la CLI con `cobra`** (`ktm snapshot list/show`, `ktm diff`). Luego blame + rollback (Etapa 5), Helm + Docker + CI (Etapa 6), polish (7), lanzamiento (8).
 
 ---
 
@@ -25,8 +25,8 @@ Lo que falta para terminar el agente son **los informers de client-go** y el **w
 | 3 | Motor de deltas | ✅ Done (fuzz + 100%) |
 | 2.1 | `pkg/types` + `internal/storage` (FS) | ✅ Done |
 | 2.2 | `internal/agent`: Buffer + Snapshotter + marshal | ✅ Done |
-| **2.3** | **`internal/agent/informers.go` + `cmd/agent/main.go`** | 🚧 **Próximo** |
-| 4 | CLI cobra (snapshot list/show, diff) | ⏳ |
+| 2.3 | `internal/agent/informers.go` + `cmd/agent/main.go` | ✅ Done |
+| **4** | **CLI cobra (snapshot list/show, diff)** | 🚧 **Próximo** |
 | 5 | blame + rollback | ⏳ |
 | 6 | RBAC + Helm + Dockerfile + CI | ⏳ |
 | 7 | Polish: Mermaid, ADRs, demo, post draft | ⏳ |
@@ -38,26 +38,38 @@ Etapa 3 fue antes que Etapa 2 deliberadamente — ver [ADR-0002](adr/0002-increm
 
 ## Lo que funciona end-to-end hoy
 
-Pipeline Go-puro, sin K8s ni red, testable con `t.TempDir()`:
+Pipeline completo, ejecutable contra cualquier cluster (kind, minikube, prod):
 
 ```
-[*appsv1.Deployment] ─marshal─► [delta.State] ─Upsert─► [Buffer]
-                                                            │
-                                                            ▼ Snapshot()
-                                                       [delta.Snapshot]
-                                                            │
-                                                            ▼ Compute(prev, curr)
-                                                       [delta.Delta]
-                                                            │
-                                                            ▼ PutFull / PutDelta
-                                                       [filesystem]
+[Kubernetes API] ─watch─► [SharedInformerFactory]
+                                  │
+                                  ▼ OnAdd/Update/Delete
+                          [marshal.go]
+                                  │
+                                  ▼ Upsert / Delete
+                              [Buffer]
+                                  │
+                                  ▼ Snapshot() (cada N intervalos)
+                          [delta.Snapshot]
+                                  │
+                                  ▼ Compute(prev, curr)
+                            [delta.Delta]
+                                  │
+                                  ▼ PutFull / PutDelta
+                        [/var/lib/ktm (PVC)]
 ```
 
-**Falta para que esto se mueva solo:**
-1. Un informer que reciba eventos del API server y llame a `marshal` + `buffer.Upsert`/`Delete`.
-2. Un `main.go` que construya todas las piezas y arranque el `Snapshotter.Run` en una goroutine.
+`cmd/agent/main.go` wirea todo: resuelve kubeconfig en orden kubectl-style (flag → in-cluster → `$KUBECONFIG` → `~/.kube/config`), arranca `Informers.Start` y `Snapshotter.Run` bajo `errgroup.WithContext`, atiende SIGINT/SIGTERM, y hace un flush final con 5s de budget antes de salir.
 
-Sin esos dos, las piezas existen pero nadie las activa contra un cluster real.
+**Probarlo localmente:**
+
+```bash
+make build
+./bin/ktm-agent --kubeconfig ~/.kube/config --storage-dir /tmp/ktm --interval 30s --full-every 4
+# en otra terminal: kubectl edit deployment ... y ver aparecer ficheros en /tmp/ktm
+```
+
+**Falta para el MVP completo:** CLI (Etapa 4), blame + rollback (Etapa 5), empaquetado Helm/Docker (Etapa 6), polish y lanzamiento (7-8).
 
 ---
 
@@ -65,6 +77,9 @@ Sin esos dos, las piezas existen pero nadie las activa contra un cluster real.
 
 | SHA | Mensaje | Etapa |
 |---|---|---|
+| `a33d3ea` | `feat(agent): wire main.go — the agent is no longer a stub` | 2.3 |
+| `a649b7d` | `feat(agent): typed informers wired to the Buffer` | 2.3 |
+| `cb931a9` | `docs(progress): add PROGRESS.md as living status document` | meta |
 | `6f6baff` | `feat(agent): Kubernetes object → delta.State boundary` | 2.2 |
 | `015c8b1` | `feat(agent): periodic Snapshotter with full + delta cadence` | 2.2 |
 | `1183b6c` | `feat(agent): thread-safe Buffer for in-memory cluster state` | 2.2 |
@@ -84,10 +99,10 @@ Sin esos dos, las piezas existen pero nadie las activa contra un cluster real.
 |---|---|---|
 | `internal/delta` | **100%** | + fuzz test (verificado: 1.6M execs/10s sin counterexamples) |
 | `internal/storage` | 83.5% | Ramas no cubiertas = errores I/O |
-| `internal/agent` | 94.2% | Sin cubrir = el `slog.Error` en `Run` (no hay forma limpia de testearlo sin capturar stderr) |
+| `internal/agent` | 80.2% | Sin cubrir = ramas de type-assertion imposibles desde un informer tipado real + `slog.Error` en `Run` |
 | `pkg/types` | — | Sin tests propios; ejercido vía storage |
 
-**Race detector (`go test -race ./...`)**: limpio en toda la suite.
+**Race detector (`go test -race -count=3 ./...`)**: limpio. Descubrió y motivó un fix real en `Informers.Start` (distinguir context-cancel de sync-failure).
 
 ---
 
@@ -112,71 +127,44 @@ Sin esos dos, las piezas existen pero nadie las activa contra un cluster real.
 
 ---
 
-## Próxima sesión: cerrar Bloque B (Etapa 2.3)
+## Próxima sesión: Etapa 4 — CLI con cobra
 
-**Dos ficheros, ambos introducen client-go.** Es la pieza con más curva de aprendizaje del proyecto.
+El agente ya escribe historia al disco. La CLI es lo que la hace navegable.
 
-### `internal/agent/informers.go`
+**Ficheros a crear:**
 
-Lo que vivirá ahí:
-- `SharedInformerFactory` tipados para Deployments y ConfigMaps
-- Handlers `OnAdd` / `OnUpdate` / `OnDelete` que llaman a `marshal.go` y luego a `buffer.Upsert` / `buffer.Delete`
-- `WaitForCacheSync` para esperar al estado inicial antes de empezar a hacer snapshots
-- Encapsulado en una struct `Informers` con métodos `Start(ctx)` y `WaitForSync(ctx)`
+| Fichero | Responsabilidad |
+|---|---|
+| `cmd/ktm/main.go` | Wiring de cobra (reemplazar el stub) |
+| `internal/cli/root.go` | Comando raíz, flags globales (`--storage-dir`) |
+| `internal/cli/snapshot.go` | `ktm snapshot list` y `ktm snapshot show <id>` |
+| `internal/cli/diff.go` | `ktm diff --from <id> --to <id> [--namespace foo]` con colores |
 
-Vocabulario K8s nuevo: `clientcmd`, `kubernetes.Clientset`, `informers.SharedInformerFactory`, `cache.ResourceEventHandlerFuncs`, `WaitForCacheSync`, `ResourceVersion`.
+**Decisiones de diseño para esta etapa:**
 
-### `cmd/agent/main.go`
+1. **Librería de colores.** `github.com/fatih/color` es el estándar de facto. Soporta detección de TTY y respeta `NO_COLOR`.
+2. **Formato del diff.** Algo tipo `git diff` con prefijos `+` (verde), `-` (rojo), espacios en común. Por recurso, mostrar Kind/Namespace/Name como cabecera.
+3. **`--namespace foo` como filtro de diff.** Carga ambos snapshots completos, reconstruye via chain de deltas, filtra por namespace, calcula diff de strings JSON línea-a-línea.
+4. **Path del storage por defecto.** Para uso local: `~/.ktm/data` o `$XDG_DATA_HOME/ktm`. Distinto del agente (`/var/lib/ktm`) porque la CLI normalmente corre fuera del cluster — necesita rsync/mount/escaneo de PVCs para leer datos producidos in-cluster. (Para MVP basta con que apunte a un dir local; integración cross-cluster es Phase 2.)
 
-Lo que vivirá ahí:
-- Parseo de flags: `--kubeconfig`, `--storage-dir`, `--interval`, `--full-every`
-- Detección automática in-cluster vs out-of-cluster
-- Crear `*storage.Local`, `*agent.Buffer`, `*agent.Snapshotter`, `*agent.Informers`
-- Lanzar `Snapshotter.Run` y `Informers.Start` en goroutines con `golang.org/x/sync/errgroup`
-- Manejar SIGTERM con `signal.Notify` para shutdown limpio (flush final + cancel context)
+**Vocabulario nuevo:** `cobra.Command`, `cobra.AddCommand`, `pflag`, `cmd.Execute`, `RunE`, `PreRunE`.
 
-Vocabulario nuevo: `rest.InClusterConfig`, `clientcmd.BuildConfigFromFlags`, `signal.Notify`, `errgroup.WithContext`.
-
----
-
-## Decisiones pendientes (planificar antes de tirar código)
-
-Antes de empezar la próxima sesión, decidir:
-
-### 1. In-cluster vs out-of-cluster config
-
-- **Opción A — Auto-detección.** Probar `rest.InClusterConfig()`; si falla, caer a `clientcmd.BuildConfigFromFlags("", *kubeconfigFlag)`. Más cómodo para desarrollo.
-- **Opción B — Flag explícito.** Una opción `--mode=in-cluster|out-of-cluster`. Menos magia, errores más explícitos.
-- **Recomendación inicial**: A. Es lo que hace `kubectl` y `kubelet`. La auto-detección K8s-style es esperada.
-
-### 2. Resync period del informer
-
-- **Opción A — `0`** (solo eventos en vivo, sin resync). Más simple, suficiente para MVP.
-- **Opción B — `30min`/`1h`** ("asegúrate que estamos al día" periódicamente). Más resiliente a bugs hipotéticos del cache.
-- **Recomendación inicial**: A. K8s garantiza que el informer cache se mantiene coherente; el resync periódico solo aporta paranoia. Si en producción aparece drift, lo activamos.
-
-### 3. Estrategia de errores en handlers
-
-- **Opción A — Log + skip.** Si `marshal` falla en un evento, loguear y continuar. El siguiente evento del mismo recurso lo arreglará.
-- **Opción B — Work queue con retry.** Patrón canónico de operators. Más código.
-- **Recomendación inicial**: A. Work queue es overkill para forensics — no necesitamos garantías de reconciliación, solo "el cluster cambió, regístralo".
-
-### 4. Flush final al recibir SIGTERM
-
-- **Opción A — Hacer un `Flush` antes de salir.** Captura el último estado antes de morir. ~50 líneas más en `main.go`.
-- **Opción B — Salir sin más.** El próximo arranque toma un snapshot fresco. Más simple pero pierdes la ventana de cambios entre el último flush y el SIGTERM.
-- **Recomendación inicial**: A. Es una pieza barata y mejora la calidad del histórico.
+**Dependencias a añadir:**
+- `github.com/spf13/cobra`
+- `github.com/fatih/color`
 
 ---
 
 ## Cómo correr lo que hay hoy
 
 ```bash
-make build                                                            # compila bin/ktm-agent y bin/ktm (stubs aún)
+make build                                                            # compila bin/ktm-agent (real) y bin/ktm (stub aún)
 make test                                                             # toda la suite
-go test -race ./...                                                   # race detector
+go test -race -count=3 ./...                                          # race detector con repetición
 go test -fuzz=FuzzRoundTrip -fuzztime=30s ./internal/delta/           # fuzz manual del invariante
 go test -cover ./...                                                  # cobertura
+./bin/ktm-agent --kubeconfig ~/.kube/config --storage-dir /tmp/ktm \
+    --interval 30s --full-every 4                                     # arrancar contra cluster local
 ```
 
 ---
@@ -186,10 +174,10 @@ go test -cover ./...                                                  # cobertur
 ```
 kube-time-machine/
 ├── cmd/
-│   ├── agent/main.go          ← stub "not implemented"
-│   └── ktm/main.go            ← stub "not implemented"
+│   ├── agent/main.go          ← ✅ wiring real (flags, errgroup, SIGTERM, flush final)
+│   └── ktm/main.go            ← stub "not implemented" (Etapa 4)
 ├── internal/
-│   ├── delta/                 ← ✅ motor de diffs (100%)
+│   ├── delta/                 ← ✅ motor de diffs (100% + fuzz)
 │   │   ├── delta.go
 │   │   ├── delta_test.go
 │   │   └── fuzz_test.go
@@ -197,9 +185,11 @@ kube-time-machine/
 │   │   ├── interface.go
 │   │   ├── local.go
 │   │   └── local_test.go
-│   └── agent/                 ← ✅ piezas Go-puras (94.2%) | 🚧 falta informers + wiring
+│   └── agent/                 ← ✅ completo (80.2%)
 │       ├── buffer.go
 │       ├── buffer_test.go
+│       ├── informers.go
+│       ├── informers_test.go
 │       ├── marshal.go
 │       ├── marshal_test.go
 │       ├── snapshot.go
@@ -230,6 +220,7 @@ kube-time-machine/
 | Rollback puede romper clusters | Pendiente (Etapa 5) | Probar primero en kind/minikube, nunca cluster real hasta pulir |
 | Storage local se llena sin retención automática | Pendiente (Phase 2 P7) | Warning logs cuando >80% — todavía no implementado |
 | Sanitización demasiado agresiva (Status incluido podría meter ruido) | **Activo** | Si la demo muestra muchos deltas espurios de status changes, ADR-future para stripear `.status` también |
+| Smoke test real contra un cluster (no probado todavía) | **Activo** | Antes de empezar Etapa 4: levantar kind, ejecutar agente, modificar un Deployment, verificar que aparecen ficheros en el storage |
 
 ---
 
