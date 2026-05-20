@@ -34,6 +34,7 @@ func NewRootCmd() *cobra.Command {
 	cmd.AddCommand(newSnapshotCmd(opts))
 	cmd.AddCommand(newDiffCmd(opts))
 	cmd.AddCommand(newBlameCmd(opts))
+	cmd.AddCommand(newRollbackCmd(opts))
 
 	return cmd
 }
