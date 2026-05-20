@@ -271,7 +271,7 @@ kube-time-machine/
 | Curva de aprendizaje de client-go | **Activo** | Planificar 3 decisiones de diseño antes de tirar código en próxima sesión |
 | Rollback puede romper clusters | Pendiente (Etapa 5) | Probar primero en kind/minikube, nunca cluster real hasta pulir |
 | Storage local se llena sin retención automática | Pendiente (Phase 2 P7) | Warning logs cuando >80% — todavía no implementado |
-| Sanitización demasiado agresiva (Status incluido podría meter ruido) | **Resuelto en práctica** | Smoke test 2026-05-20: cluster en steady state genera deltas vacíos. Status no produce ruido perceptible. Si en un cluster con churn alto sí aparece, retomar. |
+| Status noise en diff durante rollouts | **Activo** | Smoke test CLI 2026-05-20: el diff de un `kubectl set image` muestra 4 hunks: 1 meaningful (el image change) y 3 derivados del rollout (`observedGeneration`, `lastUpdateTime`, ReplicaSet hash). En cluster quieto siguen siendo deltas vacíos, así que el riesgo solo se materializa post-cambio. Soluciones candidatas: (a) flag `--no-status` en `ktm diff`, (b) stripear `.status` en `marshal.go` (decisión global, ADR-future). Vivible para MVP, revisar antes de Etapa 7 con datos de demo. |
 | Smoke test real contra un cluster | ✅ **Hecho 2026-05-20** | Add/Update (Deployment image + ConfigMap patch) y Delete (en delta y en full) validados end-to-end contra OrbStack K8s 1.33 |
 
 ---
