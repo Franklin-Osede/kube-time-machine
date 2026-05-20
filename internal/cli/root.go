@@ -33,6 +33,7 @@ func NewRootCmd() *cobra.Command {
 
 	cmd.AddCommand(newSnapshotCmd(opts))
 	cmd.AddCommand(newDiffCmd(opts))
+	cmd.AddCommand(newBlameCmd(opts))
 
 	return cmd
 }
