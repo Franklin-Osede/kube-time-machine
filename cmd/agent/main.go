@@ -18,18 +18,15 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"syscall"
 	"time"
 
 	"golang.org/x/sync/errgroup"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"os/signal"
 
 	"github.com/Franklin-Osede/kube-time-machine/internal/agent"
+	"github.com/Franklin-Osede/kube-time-machine/internal/kubeclient"
 	"github.com/Franklin-Osede/kube-time-machine/internal/storage"
 )
 
@@ -49,12 +46,7 @@ func run() error {
 	)
 	flag.Parse()
 
-	config, err := buildKubeConfig(*kubeconfig)
-	if err != nil {
-		return fmt.Errorf("build kube config: %w", err)
-	}
-
-	client, err := kubernetes.NewForConfig(config)
+	client, err := kubeclient.NewClient(*kubeconfig)
 	if err != nil {
 		return fmt.Errorf("build kube client: %w", err)
 	}
@@ -101,30 +93,3 @@ func run() error {
 	return nil
 }
 
-// buildKubeConfig resolves the Kubernetes client configuration in the
-// standard kubectl/kubelet order:
-//
-//  1. The explicit --kubeconfig flag, if non-empty.
-//  2. In-cluster configuration (only succeeds when running as a pod).
-//  3. $KUBECONFIG environment variable.
-//  4. $HOME/.kube/config.
-//
-// The first one to succeed wins.
-func buildKubeConfig(explicit string) (*rest.Config, error) {
-	if explicit != "" {
-		return clientcmd.BuildConfigFromFlags("", explicit)
-	}
-	if cfg, err := rest.InClusterConfig(); err == nil {
-		return cfg, nil
-	}
-	if env := os.Getenv("KUBECONFIG"); env != "" {
-		return clientcmd.BuildConfigFromFlags("", env)
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		path := filepath.Join(home, ".kube", "config")
-		if _, statErr := os.Stat(path); statErr == nil {
-			return clientcmd.BuildConfigFromFlags("", path)
-		}
-	}
-	return nil, fmt.Errorf("no Kubernetes config found (tried --kubeconfig, in-cluster, $KUBECONFIG, $HOME/.kube/config)")
-}
