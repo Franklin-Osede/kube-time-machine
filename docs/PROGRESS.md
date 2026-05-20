@@ -1,20 +1,21 @@
 # Estado del proyecto — kube-time-machine
 
 > **Living document.** Snapshot del estado del repo entre sesiones. Se actualiza al cerrar cada sesión.
-> **Última actualización:** 2026-05-20 (Etapa 4 cerrada)
+> **Última actualización:** 2026-05-20 (Etapa 5 cerrada — MVP funcional)
 
 ---
 
 ## TL;DR
 
-`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–4 cerradas**: agente y CLI completos y funcionales end-to-end.
+`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–5 cerradas — MVP funcional end-to-end.**
 
 - ✅ Motor de deltas (100% cobertura + fuzz test)
 - ✅ Storage local en filesystem (con index reconstruible)
-- ✅ Agente entero: Buffer + Snapshotter + marshal + Informers + `cmd/agent/main.go` con flags, errgroup y SIGTERM-handling
-- ✅ CLI `ktm`: `snapshot list`, `snapshot show [--key K/N/N]`, `diff --from --to [--namespace]` con diff unificado en color
+- ✅ Agente: Buffer + Snapshotter + marshal + Informers + `cmd/agent/main.go` con flags, errgroup y SIGTERM-handling
+- ✅ CLI `ktm`: `snapshot list/show`, `diff` con colored unified diff, `blame` con timeline correcta (incluye deletes en FULL ticks), `rollback` con optimistic locking nativo de K8s
+- ✅ `internal/kubeclient` compartido entre agente y CLI
 
-Lo siguiente es **Etapa 5: `blame` + `rollback`** con optimistic locking. Luego Helm + Docker + CI (Etapa 6), polish (7), lanzamiento (8).
+Lo siguiente es **Etapa 6: empaquetado** (RBAC + Helm templates reales + Dockerfile + CI). Luego polish (7) y lanzamiento (8).
 
 ---
 
@@ -28,8 +29,8 @@ Lo siguiente es **Etapa 5: `blame` + `rollback`** con optimistic locking. Luego 
 | 2.2 | `internal/agent`: Buffer + Snapshotter + marshal | ✅ Done |
 | 2.3 | `internal/agent/informers.go` + `cmd/agent/main.go` | ✅ Done |
 | 4 | CLI cobra (snapshot list/show, diff) | ✅ Done |
-| **5** | **blame + rollback con optimistic locking** | 🚧 **Próximo** |
-| 6 | RBAC + Helm + Dockerfile + CI | ⏳ |
+| 5 | blame + rollback con optimistic locking | ✅ Done |
+| **6** | **RBAC + Helm + Dockerfile + CI** | 🚧 **Próximo** |
 | 7 | Polish: Mermaid, ADRs, demo, post draft | ⏳ |
 | 8 | Lanzamiento público | ⏳ |
 
