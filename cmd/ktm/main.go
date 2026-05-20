@@ -1,11 +1,22 @@
-// Command ktm is the local CLI used by engineers to inspect cluster history,
-// diff snapshots, blame resources, and roll back individual changes.
+// Command ktm is the local CLI for kube-time-machine. It reads snapshots
+// produced by the ktm-agent and supports listing them, showing the
+// reconstructed state at any point, and diffing between two points.
 //
-// Etapa 1: placeholder so the project compiles. Cobra wiring lands in Etapa 4.
+// All command logic lives in internal/cli; this file only handles the
+// process boundary (exit codes).
 package main
 
-import "fmt"
+import (
+	"os"
+
+	"github.com/Franklin-Osede/kube-time-machine/internal/cli"
+)
 
 func main() {
-	fmt.Println("ktm: not implemented yet")
+	if err := cli.NewRootCmd().Execute(); err != nil {
+		// Cobra has already printed the error message to stderr; we
+		// just need a non-zero exit code so shells and CI report the
+		// failure properly.
+		os.Exit(1)
+	}
 }
