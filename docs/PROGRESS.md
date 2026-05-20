@@ -1,7 +1,7 @@
 # Estado del proyecto — kube-time-machine
 
 > **Living document.** Snapshot del estado del repo entre sesiones. Se actualiza al cerrar cada sesión.
-> **Última actualización:** 2026-05-19 (sesión 2)
+> **Última actualización:** 2026-05-20 (post smoke-test)
 
 ---
 
@@ -73,6 +73,31 @@ make build
 
 ---
 
+## Smoke test contra K8s real (2026-05-20)
+
+Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --full-every 3`.
+
+| Operación | Resultado | Snapshot evidencia |
+|---|---|---|
+| `kubectl set image deployment/api nginx=nginx:1.27` | `modified` con `image: nginx:1.27` | `20260519T185936775Z` (4s después del cambio) |
+| `kubectl patch configmap app-config --type merge -p '{"data":{"env":"staging"}}'` | `modified` con `data: {'env': 'staging', 'region': 'eu'}` (merge correcto) | `20260519T192036772Z` (1s después) |
+| `kubectl delete configmap app-config` (cae en tick FULL) | Ausencia del recurso en el FULL — sin `removed` explícito | `20260519T193456776Z` (FULL post-delete) |
+| `kubectl delete configmap app-config` (cae en tick delta) | `removed` con `ConfigMap/ktm-demo/app-config` | `20260520T054806674Z` |
+| `Ctrl-C` al agente | `final flush succeeded` + `stopped cleanly` en stderr | logs del agente |
+| Cluster en steady state | Deltas vacíos (`{}`) | Cualquier delta entre cambios |
+
+### Hallazgos relevantes
+
+1. **Asimetría delete-en-FULL vs delete-en-delta.** El cadence policy (`full snapshot cada N`) hace que cuando un delete coincide con un tick FULL, la representación es por **ausencia en el siguiente FULL**, no por una entry `removed`. La información NO se pierde — pero implica que el futuro `ktm blame <kind>/<name>` (Etapa 5) no puede leer solo `removed`; tiene que **comparar el conjunto de keys entre snapshots consecutivos** para detectar deleciones implícitas en transiciones que pasan por un FULL. ⚠️ **Hay que tenerlo presente al implementar blame.**
+
+2. **Sanitización valida en vivo.** Aunque incluimos `.status` y `resourceVersion` muta constantemente en el cluster, un cluster quieto produce deltas estrictamente vacíos (`{}`). Los riesgos teóricos sobre status-noise no se materializaron en el test. Mantenemos la decisión actual.
+
+3. **Detección de zombies via ID milliseconds.** Durante el debug encontramos un agente zombie (PID de otra sesión) porque los IDs nuevos tenían milisegundos `.212` mientras los del agente esperado eran `.524`. **Cada start_time produce IDs con un offset de milisegundos único** — útil como huella forense del proceso que escribió cada snapshot.
+
+4. **PascalCase en JSON keys.** El struct `delta.Key` no tenía JSON tags, así que las claves on-disk salían como `"Kind"`, `"Namespace"`, `"Name"`. Inconvenient para `jq` y consumidores externos. **Arreglado en el mismo día**: ahora son lowercase. Snapshots anteriores quedan ilegibles, pero como no hay usuarios todavía es buen momento.
+
+---
+
 ## Historia de commits
 
 | SHA | Mensaje | Etapa |
@@ -130,6 +155,8 @@ make build
 ## Próxima sesión: Etapa 4 — CLI con cobra
 
 El agente ya escribe historia al disco. La CLI es lo que la hace navegable.
+
+> **Nota crítica para Etapa 5 (blame + rollback):** la implementación del `ktm blame <kind>/<name>` no puede limitarse a leer las entries `removed` de los deltas. Por la asimetría descubierta en el smoke test, las deleciones que coinciden con un tick FULL solo se representan como **ausencia en el siguiente FULL**, no como entry explícita. El algoritmo correcto de blame es: reconstruir el snapshot completo en cada punto del histórico y comparar el conjunto de keys con el anterior. Esto cuesta más CPU pero garantiza no perder eventos.
 
 **Ficheros a crear:**
 
@@ -219,8 +246,8 @@ kube-time-machine/
 | Curva de aprendizaje de client-go | **Activo** | Planificar 3 decisiones de diseño antes de tirar código en próxima sesión |
 | Rollback puede romper clusters | Pendiente (Etapa 5) | Probar primero en kind/minikube, nunca cluster real hasta pulir |
 | Storage local se llena sin retención automática | Pendiente (Phase 2 P7) | Warning logs cuando >80% — todavía no implementado |
-| Sanitización demasiado agresiva (Status incluido podría meter ruido) | **Activo** | Si la demo muestra muchos deltas espurios de status changes, ADR-future para stripear `.status` también |
-| Smoke test real contra un cluster (no probado todavía) | **Activo** | Antes de empezar Etapa 4: levantar kind, ejecutar agente, modificar un Deployment, verificar que aparecen ficheros en el storage |
+| Sanitización demasiado agresiva (Status incluido podría meter ruido) | **Resuelto en práctica** | Smoke test 2026-05-20: cluster en steady state genera deltas vacíos. Status no produce ruido perceptible. Si en un cluster con churn alto sí aparece, retomar. |
+| Smoke test real contra un cluster | ✅ **Hecho 2026-05-20** | Add/Update (Deployment image + ConfigMap patch) y Delete (en delta y en full) validados end-to-end contra OrbStack K8s 1.33 |
 
 ---
 
