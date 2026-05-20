@@ -1,19 +1,20 @@
 # Estado del proyecto — kube-time-machine
 
 > **Living document.** Snapshot del estado del repo entre sesiones. Se actualiza al cerrar cada sesión.
-> **Última actualización:** 2026-05-20 (post smoke-test)
+> **Última actualización:** 2026-05-20 (Etapa 4 cerrada)
 
 ---
 
 ## TL;DR
 
-`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapa 2 cerrada**: el agente está completo y end-to-end funcional.
+`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–4 cerradas**: agente y CLI completos y funcionales end-to-end.
 
 - ✅ Motor de deltas (100% cobertura + fuzz test)
 - ✅ Storage local en filesystem (con index reconstruible)
 - ✅ Agente entero: Buffer + Snapshotter + marshal + Informers + `cmd/agent/main.go` con flags, errgroup y SIGTERM-handling
+- ✅ CLI `ktm`: `snapshot list`, `snapshot show [--key K/N/N]`, `diff --from --to [--namespace]` con diff unificado en color
 
-Lo siguiente es **Etapa 4: la CLI con `cobra`** (`ktm snapshot list/show`, `ktm diff`). Luego blame + rollback (Etapa 5), Helm + Docker + CI (Etapa 6), polish (7), lanzamiento (8).
+Lo siguiente es **Etapa 5: `blame` + `rollback`** con optimistic locking. Luego Helm + Docker + CI (Etapa 6), polish (7), lanzamiento (8).
 
 ---
 
@@ -26,8 +27,8 @@ Lo siguiente es **Etapa 4: la CLI con `cobra`** (`ktm snapshot list/show`, `ktm 
 | 2.1 | `pkg/types` + `internal/storage` (FS) | ✅ Done |
 | 2.2 | `internal/agent`: Buffer + Snapshotter + marshal | ✅ Done |
 | 2.3 | `internal/agent/informers.go` + `cmd/agent/main.go` | ✅ Done |
-| **4** | **CLI cobra (snapshot list/show, diff)** | 🚧 **Próximo** |
-| 5 | blame + rollback | ⏳ |
+| 4 | CLI cobra (snapshot list/show, diff) | ✅ Done |
+| **5** | **blame + rollback con optimistic locking** | 🚧 **Próximo** |
 | 6 | RBAC + Helm + Dockerfile + CI | ⏳ |
 | 7 | Polish: Mermaid, ADRs, demo, post draft | ⏳ |
 | 8 | Lanzamiento público | ⏳ |
@@ -125,6 +126,7 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 | `internal/delta` | **100%** | + fuzz test (verificado: 1.6M execs/10s sin counterexamples) |
 | `internal/storage` | 83.5% | Ramas no cubiertas = errores I/O |
 | `internal/agent` | 80.2% | Sin cubrir = ramas de type-assertion imposibles desde un informer tipado real + `slog.Error` en `Run` |
+| `internal/cli` | 71.1% | Sin cubrir = wiring de cobra + algunos error paths de I/O |
 | `pkg/types` | — | Sin tests propios; ejercido vía storage |
 
 **Race detector (`go test -race -count=3 ./...`)**: limpio. Descubrió y motivó un fix real en `Informers.Start` (distinguir context-cancel de sync-failure).
@@ -152,11 +154,26 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 
 ---
 
-## Próxima sesión: Etapa 4 — CLI con cobra
+## Próxima sesión: Etapa 5 — blame + rollback
 
-El agente ya escribe historia al disco. La CLI es lo que la hace navegable.
+El agente captura, la CLI navega. Falta el remate del MVP: explicar la historia de un recurso concreto y revertirlo a un punto del pasado.
 
-> **Nota crítica para Etapa 5 (blame + rollback):** la implementación del `ktm blame <kind>/<name>` no puede limitarse a leer las entries `removed` de los deltas. Por la asimetría descubierta en el smoke test, las deleciones que coinciden con un tick FULL solo se representan como **ausencia en el siguiente FULL**, no como entry explícita. El algoritmo correcto de blame es: reconstruir el snapshot completo en cada punto del histórico y comparar el conjunto de keys con el anterior. Esto cuesta más CPU pero garantiza no perder eventos.
+**Ficheros a crear:**
+
+| Fichero | Responsabilidad |
+|---|---|
+| `internal/cli/blame.go` | `ktm blame <kind>/<namespace>/<name>` — timeline de cambios de un recurso |
+| `internal/cli/rollback.go` | `ktm rollback <kind>/<namespace>/<name> --to <id>` con confirmación y optimistic locking |
+
+> **Nota crítica heredada del smoke test:** `ktm blame` NO puede limitarse a leer entries `removed` de los deltas. Por la asimetría descubierta en 2026-05-20, las deleciones que coinciden con un tick FULL solo se representan como **ausencia en el siguiente FULL**, no como entry explícita. El algoritmo correcto: reconstruir el snapshot completo en cada punto del histórico y comparar el conjunto de keys con el anterior. Más CPU, pero no se pierden eventos.
+
+**Decisiones de diseño pendientes para Etapa 5:**
+
+1. **Rollback necesita un cliente K8s.** Hasta ahora la CLI solo lee filesystem. Para rollback, necesita escribir al cluster vía client-go. La detección in-cluster vs out-of-cluster es la misma que el agente — extraer `buildKubeConfig` a una pieza compartida (¿`internal/kubeclient/`?).
+2. **Optimistic locking via ResourceVersion.** Antes de hacer `Update`, leemos el recurso actual del cluster, comparamos su ResourceVersion con el que tenemos guardado del último snapshot, y solo aplicamos si coinciden. Si no, abortamos con mensaje claro pidiéndole al usuario que reintente.
+3. **Pero `ResourceVersion` lo stripeamos en marshal.** Hay que reintroducirlo: o (a) no stripear ResourceVersion del payload guardado (lo retomamos solo para rollback) o (b) guardar la ResourceVersion en metadata aparte. Opción (b) es más limpia — el snapshot sigue siendo determinista y la ResourceVersion vive en un campo separado del JSON.
+4. **Confirmación interactiva obligatoria.** Mostrar un preview tipo `ktm diff` entre el estado actual y el target, y pedir `[y/N]` antes de aplicar. Flag `--yes` para CI scripts.
+5. **`ktm blame` output**: ¿table simple `TS / OP / DELTA-SUMMARY`, o algo más rico estilo `git log -p`? Empezar con table para MVP, formato `-p` puede venir luego.
 
 **Ficheros a crear:**
 
@@ -202,7 +219,7 @@ go test -cover ./...                                                  # cobertur
 kube-time-machine/
 ├── cmd/
 │   ├── agent/main.go          ← ✅ wiring real (flags, errgroup, SIGTERM, flush final)
-│   └── ktm/main.go            ← stub "not implemented" (Etapa 4)
+│   └── ktm/main.go            ← ✅ wiring cobra
 ├── internal/
 │   ├── delta/                 ← ✅ motor de diffs (100% + fuzz)
 │   │   ├── delta.go
@@ -212,6 +229,14 @@ kube-time-machine/
 │   │   ├── interface.go
 │   │   ├── local.go
 │   │   └── local_test.go
+│   ├── cli/                   ← ✅ CLI (71.1%)
+│   │   ├── diff.go
+│   │   ├── diff_test.go
+│   │   ├── reconstruct.go
+│   │   ├── reconstruct_test.go
+│   │   ├── root.go
+│   │   ├── snapshot.go
+│   │   └── snapshot_test.go
 │   └── agent/                 ← ✅ completo (80.2%)
 │       ├── buffer.go
 │       ├── buffer_test.go
