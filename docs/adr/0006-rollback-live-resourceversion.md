@@ -26,7 +26,7 @@ The CLI fetches the live `ResourceVersion` from the cluster at rollback time and
 
 Step 5 deliberately reuses the `ResourceVersion` from step 2 rather than re-fetching after the prompt. If we re-fetched, we would silently absorb any change that happened between the preview and the apply, undermining the user's informed consent. The whole point of optimistic locking here is that the user approves a specific transition between two known states; if that transition can no longer happen unchanged, the apply must fail and the user must re-evaluate.
 
-If step 2 returns `404 Not Found`, the resource no longer exists. The rollback falls back to `Create`. Before calling `Create` we strip server-owned fields the snapshot may still carry indirectly (none today, given sanitisation, but defensively: `ResourceVersion`, `UID`, `CreationTimestamp`, `Generation`, `ManagedFields`).
+If step 2 returns `404 Not Found`, the resource no longer exists. The rollback falls back to `Create`. Before calling `Create` we strip server-owned fields the snapshot may still carry indirectly (none today, given sanitisation, but defensively: `ResourceVersion`, `UID`, `CreationTimestamp`, `Generation`, `ManagedFields`). Note: with [ADR-0005](0005-declarative-state-recorder.md), `.status` is also stripped upstream in `internal/agent/marshal.go`, so the create path no longer has to deal with it.
 
 ## Alternatives considered
 
@@ -52,3 +52,4 @@ If step 2 returns `404 Not Found`, the resource no longer exists. The rollback f
 
 - [ADR-0001](0001-record-architecture-decisions.md) — established ADR practice.
 - [ADR-0002](0002-incremental-deltas-with-reference-snapshots.md) — the sanitisation that makes step 2 (live `ResourceVersion`) necessary.
+- [ADR-0005](0005-declarative-state-recorder.md) — strips `.status` upstream in `marshal.go`, so the rollback apply path doesn't need to filter it.
