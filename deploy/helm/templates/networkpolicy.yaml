@@ -1,0 +1,43 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Ingress: deny-all. The agent exposes no ports — nobody should be
+# talking to it.
+#
+# Egress: DNS plus allow-all to the rest of the cluster + internet.
+# A stricter "only kube-apiserver" rule is brittle across providers
+# (apiserver endpoint moves between ClusterIP and external LB), so the
+# MVP keeps egress wide and treats this NetworkPolicy as a clear
+# ingress shield + an intent marker on egress. Tightening egress is
+# a Phase 2 follow-up. See ADR-0007 for the trade-off.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ktm.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ktm.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ktm.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    # DNS — kube-dns / CoreDNS in kube-system.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Everything else (kube-apiserver, any other endpoint). Explicit
+    # so that adding policyTypes: [Egress] above doesn't silently cut
+    # the agent off from the API server.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+{{- end }}

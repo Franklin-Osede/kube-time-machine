@@ -1,0 +1,21 @@
+{{- if .Values.rbac.create -}}
+# Cluster-scoped, read-only. See ADR-0007: the agent never writes to the
+# cluster — rollback is performed by the CLI under the user's own
+# kubeconfig (ADR-0006). Adding write verbs here would be dead permission.
+#
+# Name is suffixed with the release namespace so two installs in different
+# namespaces don't collide on this cluster-scoped object.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ktm.fullname" . }}-{{ .Release.Namespace }}
+  labels:
+    {{- include "ktm.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+{{- end }}

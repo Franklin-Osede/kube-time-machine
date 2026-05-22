@@ -1,0 +1,58 @@
+# Recreate strategy + replicas: 1 is load-bearing. The agent writes to a
+# ReadWriteOnce PVC; a rolling update would briefly run two pods racing
+# for the same volume and corrupt the storage. See ADR-0007.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ktm.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ktm.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "ktm.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ktm.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ktm.serviceAccountName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # fsGroup makes the mounted PVC writable by the nonroot user. The
+        # distroless `nonroot` user is UID 65532 — keep these aligned.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: {{ include "ktm.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --storage-dir=/var/lib/ktm
+            - --interval={{ .Values.snapshot.intervalSeconds }}s
+            - --full-every={{ .Values.snapshot.fullEvery }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/ktm
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "ktm.fullname" . }}-data
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

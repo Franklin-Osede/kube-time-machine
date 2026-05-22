@@ -1,0 +1,15 @@
+# Exclude everything that doesn't affect the build context.
+.git/
+.github/
+bin/
+deploy/
+docs/
+examples/
+.gitignore
+.dockerignore
+Dockerfile
+Makefile
+README.md
+LICENSE
+**/*.md
+**/*_test.go

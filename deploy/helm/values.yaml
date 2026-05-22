@@ -1,28 +1,41 @@
 # Default values for kube-time-machine.
-# Etapa 1 placeholder — real values land alongside the templates in Etapa 6.
+# Every default is the one we'd ship in production for a small cluster.
+# Where a value is load-bearing for correctness (not just preference),
+# the comment says so explicitly.
+
+# nameOverride shortens the chart name in resource names.
+# fullnameOverride bypasses the "<release>-<name>" pattern entirely.
+nameOverride: ""
+fullnameOverride: ""
 
 image:
   repository: ghcr.io/franklin-osede/ktm-agent
-  tag: ""        # falls back to .Chart.AppVersion when empty
+  tag: ""                # falls back to .Chart.AppVersion when empty
   pullPolicy: IfNotPresent
+  pullSecrets: []        # list of {name: <secret>} when pulling from a private registry
 
-# Snapshot cadence and retention.
+# Snapshot cadence. The agent flushes a delta every `intervalSeconds`,
+# and turns every `fullEvery`-th flush into a full reference snapshot
+# (see ADR-0002).
 snapshot:
-  intervalSeconds: 300        # how often the agent flushes a delta
-  fullEvery: 12               # take a full reference snapshot every N deltas
+  intervalSeconds: 300
+  fullEvery: 12
 
 # Local PVC storage. Cloud drivers are Phase 2 (see roadmap).
 storage:
+  create: true                 # set false to bring your own PVC and bind it via fullnameOverride
   size: 10Gi
-  storageClassName: ""        # empty = use the cluster default
+  storageClassName: ""         # empty = use the cluster default
 
-# Resources the agent watches. MVP supports Deployments and ConfigMaps only.
+# Resources the agent watches. MVP supports Deployments and ConfigMaps
+# only; extending this list is Phase 2 P0 work and also needs the
+# ClusterRole rules to be widened.
 resources:
   watch:
     - deployments
     - configmaps
 
-# Pod resource requests/limits. Conservative defaults.
+# Pod resource requests/limits. Conservative defaults for a small cluster.
 agent:
   resources:
     requests:
@@ -31,3 +44,24 @@ agent:
     limits:
       cpu: 500m
       memory: 256Mi
+
+# IMPORTANT: replicaCount is not exposed. The agent writes to a
+# ReadWriteOnce PVC; two concurrent writers would corrupt the storage.
+# Scaling out is a Phase 2 concern (requires a storage backend that
+# supports concurrent writers — see roadmap P1).
+
+serviceAccount:
+  create: true
+  name: ""                     # if empty, defaults to the fullname
+  annotations: {}              # e.g. IAM role annotations for IRSA on EKS
+
+# Cluster-scoped read-only RBAC. See ADR-0007.
+rbac:
+  create: true
+
+# NetworkPolicy: ingress deny-all, egress allows DNS + everything else
+# (a stricter "only kube-apiserver" rule is brittle across cluster
+# providers — see ADR-0007). Disable on clusters whose CNI does not
+# enforce NetworkPolicy (vanilla kindnet, flannel without the addon).
+networkPolicy:
+  enabled: true

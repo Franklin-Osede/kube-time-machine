@@ -1,21 +1,24 @@
 # Estado del proyecto — kube-time-machine
 
 > **Living document.** Snapshot del estado del repo entre sesiones. Se actualiza al cerrar cada sesión.
-> **Última actualización:** 2026-05-20 (Etapa 5 cerrada — MVP funcional)
+> **Última actualización:** 2026-05-20 (Etapa 6 cerrada — chart instalable end-to-end)
 
 ---
 
 ## TL;DR
 
-`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–5 cerradas — MVP funcional end-to-end.**
+`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–6 cerradas — empaquetado completo, instalable con `helm install`.**
 
 - ✅ Motor de deltas (100% cobertura + fuzz test)
 - ✅ Storage local en filesystem (con index reconstruible)
 - ✅ Agente: Buffer + Snapshotter + marshal + Informers + `cmd/agent/main.go` con flags, errgroup y SIGTERM-handling
 - ✅ CLI `ktm`: `snapshot list/show`, `diff` con colored unified diff, `blame` con timeline correcta (incluye deletes en FULL ticks), `rollback` con optimistic locking nativo de K8s
 - ✅ `internal/kubeclient` compartido entre agente y CLI
+- ✅ Chart Helm con 6 templates (SA, ClusterRole+Binding read-only, PVC, Deployment, NetworkPolicy) + `_helpers.tpl`
+- ✅ Dockerfile multi-stage → distroless static nonroot, 41 MB total
+- ✅ CI GitHub Actions: fmt + vet + test + race + build + helm lint/template
 
-Lo siguiente es **Etapa 6: empaquetado** (RBAC + Helm templates reales + Dockerfile + CI). Luego polish (7) y lanzamiento (8).
+Lo siguiente es **Etapa 7: polish** (Mermaid, ADRs 0003-0005 pendientes, demo recording, release.yml para publicar imagen, post draft).
 
 ---
 
@@ -30,8 +33,8 @@ Lo siguiente es **Etapa 6: empaquetado** (RBAC + Helm templates reales + Dockerf
 | 2.3 | `internal/agent/informers.go` + `cmd/agent/main.go` | ✅ Done |
 | 4 | CLI cobra (snapshot list/show, diff) | ✅ Done |
 | 5 | blame + rollback con optimistic locking | ✅ Done |
-| **6** | **RBAC + Helm + Dockerfile + CI** | 🚧 **Próximo** |
-| 7 | Polish: Mermaid, ADRs, demo, post draft | ⏳ |
+| 6 | RBAC + Helm + Dockerfile + CI | ✅ Done (smoke test contra OrbStack) |
+| **7** | **Polish: Mermaid, ADRs 0003-0005, demo, release.yml, post draft** | 🚧 **Próximo** |
 | 8 | Lanzamiento público | ⏳ |
 
 Etapa 3 fue antes que Etapa 2 deliberadamente — ver [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md).
@@ -74,6 +77,26 @@ make build
 **Falta para el MVP completo:** CLI (Etapa 4), blame + rollback (Etapa 5), empaquetado Helm/Docker (Etapa 6), polish y lanzamiento (7-8).
 
 ---
+
+## Smoke test del chart (Etapa 6, 2026-05-20)
+
+Validado contra **OrbStack K8s 1.33** con `helm install ktm deploy/helm -n ktm-test --set image.repository=ktm-agent --set image.tag=dev --set image.pullPolicy=Never --set snapshot.intervalSeconds=10 --set snapshot.fullEvery=3`.
+
+| Comprobación | Resultado |
+|---|---|
+| `helm lint deploy/helm` | 0 errores (un INFO sobre icon, ignorado) |
+| Pod arranca | `Running`, UID 65532, `readOnlyRootFilesystem: true` |
+| PVC bound | `local-path` StorageClass, 1Gi |
+| ClusterRole + ClusterRoleBinding aplicados | Nombre sufijado con namespace, sin colisión |
+| NetworkPolicy aplicada | `ingress: []` + egress DNS + egress wide |
+| Informers se sincronizan | `agent: informer caches synced` en logs |
+| Snapshots persisten | Directorios `20260520THHMMSSmmmZ` cada 10s con cadencia FULL/delta/delta correcta |
+| Permisos: nonroot escribe al PVC | OK gracias a `fsGroup: 65532` |
+| `helm uninstall` no deja basura cluster-scoped | ClusterRole + ClusterRoleBinding desaparecen también |
+
+### Hallazgo relevante
+
+**Inspección del PVC con distroless es no-trivial.** El contenedor no tiene shell ni `ls`, así que `kubectl exec` está fuera. Para validar contenido del PVC en CI o debug se necesita `kubectl debug --target=agent` con una imagen busybox y mirar `/proc/1/root/var/lib/ktm/`. Es feature, no bug, pero conviene documentarlo en el README de operación cuando se escriba.
 
 ## Smoke test contra K8s real (2026-05-20)
 
@@ -138,6 +161,7 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 
 | # | Decisión | Donde vive |
 |---|---|---|
+| 0 | Packaging defaults: distroless, ClusterRole read-only, NP deny-ingress, Deployment+Recreate, solo `ci.yml` en Etapa 6 | [ADR-0007](adr/0007-packaging-defaults.md) |
 | 1 | Deltas incrementales + reference snapshots cada N | [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md) |
 | 2 | Storage = directorio por snapshot + `index.json` reconstruible | Código en [internal/storage/local.go](../internal/storage/local.go) + memoria del proyecto |
 | 3 | Informers tipados (no dynamic) | Decidido conjuntamente; ADR pendiente |
@@ -155,48 +179,29 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 
 ---
 
-## Próxima sesión: Etapa 5 — blame + rollback
+## Próxima sesión: Etapa 7 — polish
 
-El agente captura, la CLI navega. Falta el remate del MVP: explicar la historia de un recurso concreto y revertirlo a un punto del pasado.
+El MVP es funcional e instalable. Etapa 7 prepara la doc y los artefactos para el lanzamiento público.
 
-**Ficheros a crear:**
+**Trabajo a hacer:**
 
-| Fichero | Responsabilidad |
+| Item | Razón |
 |---|---|
-| `internal/cli/blame.go` | `ktm blame <kind>/<namespace>/<name>` — timeline de cambios de un recurso |
-| `internal/cli/rollback.go` | `ktm rollback <kind>/<namespace>/<name> --to <id>` con confirmación y optimistic locking |
+| Mermaid diagram en `docs/architecture.md` | El bloque ASCII actual es ilegible en GitHub; un Mermaid renderiza nativo |
+| ADR-0003 (informers tipados vs dynamic) | Pendiente desde Etapa 2 — la decisión está tomada en código, falta documentarla |
+| ADR-0004 (índice reconstruible) | Pendiente desde Etapa 2.1 |
+| ADR-0005 (sanitización de campos K8s) | Pendiente — alimenta a ADR-0006 |
+| `.github/workflows/release.yml` | On tag `v*`: build multi-arch + push a ghcr.io + adjuntar binarios al release. Aplazado de Etapa 6 |
+| `docs/install.md` corto | Instrucciones de `helm install` con todos los flags relevantes, mención al gap de Recreate, troubleshooting de `kubectl debug` con distroless |
+| Grabación del demo (5 min) | Install → break a deployment → diff → rollback → app recovers |
+| Draft del launch post | Borrador en `docs/launch.md` (no commitear final hasta lanzamiento) |
 
-> **Nota crítica heredada del smoke test:** `ktm blame` NO puede limitarse a leer entries `removed` de los deltas. Por la asimetría descubierta en 2026-05-20, las deleciones que coinciden con un tick FULL solo se representan como **ausencia en el siguiente FULL**, no como entry explícita. El algoritmo correcto: reconstruir el snapshot completo en cada punto del histórico y comparar el conjunto de keys con el anterior. Más CPU, pero no se pierden eventos.
+**Decisiones abiertas para esta etapa:**
 
-**Decisiones de diseño pendientes para Etapa 5:**
-
-1. **Rollback necesita un cliente K8s.** Hasta ahora la CLI solo lee filesystem. Para rollback, necesita escribir al cluster vía client-go. La detección in-cluster vs out-of-cluster es la misma que el agente — extraer `buildKubeConfig` a una pieza compartida (¿`internal/kubeclient/`?).
-2. **Optimistic locking via ResourceVersion.** Antes de hacer `Update`, leemos el recurso actual del cluster, comparamos su ResourceVersion con el que tenemos guardado del último snapshot, y solo aplicamos si coinciden. Si no, abortamos con mensaje claro pidiéndole al usuario que reintente.
-3. **Pero `ResourceVersion` lo stripeamos en marshal.** Hay que reintroducirlo: o (a) no stripear ResourceVersion del payload guardado (lo retomamos solo para rollback) o (b) guardar la ResourceVersion en metadata aparte. Opción (b) es más limpia — el snapshot sigue siendo determinista y la ResourceVersion vive en un campo separado del JSON.
-4. **Confirmación interactiva obligatoria.** Mostrar un preview tipo `ktm diff` entre el estado actual y el target, y pedir `[y/N]` antes de aplicar. Flag `--yes` para CI scripts.
-5. **`ktm blame` output**: ¿table simple `TS / OP / DELTA-SUMMARY`, o algo más rico estilo `git log -p`? Empezar con table para MVP, formato `-p` puede venir luego.
-
-**Ficheros a crear:**
-
-| Fichero | Responsabilidad |
-|---|---|
-| `cmd/ktm/main.go` | Wiring de cobra (reemplazar el stub) |
-| `internal/cli/root.go` | Comando raíz, flags globales (`--storage-dir`) |
-| `internal/cli/snapshot.go` | `ktm snapshot list` y `ktm snapshot show <id>` |
-| `internal/cli/diff.go` | `ktm diff --from <id> --to <id> [--namespace foo]` con colores |
-
-**Decisiones de diseño para esta etapa:**
-
-1. **Librería de colores.** `github.com/fatih/color` es el estándar de facto. Soporta detección de TTY y respeta `NO_COLOR`.
-2. **Formato del diff.** Algo tipo `git diff` con prefijos `+` (verde), `-` (rojo), espacios en común. Por recurso, mostrar Kind/Namespace/Name como cabecera.
-3. **`--namespace foo` como filtro de diff.** Carga ambos snapshots completos, reconstruye via chain de deltas, filtra por namespace, calcula diff de strings JSON línea-a-línea.
-4. **Path del storage por defecto.** Para uso local: `~/.ktm/data` o `$XDG_DATA_HOME/ktm`. Distinto del agente (`/var/lib/ktm`) porque la CLI normalmente corre fuera del cluster — necesita rsync/mount/escaneo de PVCs para leer datos producidos in-cluster. (Para MVP basta con que apunte a un dir local; integración cross-cluster es Phase 2.)
-
-**Vocabulario nuevo:** `cobra.Command`, `cobra.AddCommand`, `pflag`, `cmd.Execute`, `RunE`, `PreRunE`.
-
-**Dependencias a añadir:**
-- `github.com/spf13/cobra`
-- `github.com/fatih/color`
+1. **Multi-arch en `release.yml`.** ¿`amd64` solo o también `arm64`? Apple Silicon es mainstream, vale la pena pagar el tiempo de build. Recomendación: `linux/amd64,linux/arm64` con `docker buildx`.
+2. **Tag scheme.** `v0.1.0` para el primer release público. Helm chart `version` va parejo. Pendiente: ¿separar Chart version y App version desde ya, o moverlas juntas hasta v1.0?
+3. **GHCR vs Docker Hub.** GHCR es la respuesta por defecto (anclado al repo, sin rate limits, autenticación GitHub-native). Docker Hub requeriría secrets aparte.
+4. **Riesgo abierto del NP de status-noise.** Antes del lanzamiento conviene decidir si añadir `--no-status` a `ktm diff` o stripear `.status` en `marshal.go`. Ver tabla de riesgos abajo.
 
 ---
 
@@ -249,13 +254,26 @@ kube-time-machine/
 │       └── snapshot_test.go
 ├── pkg/
 │   └── types/snapshot.go      ← ✅ tipos públicos
-├── deploy/helm/               ← shell (templates llegan en Etapa 6)
+├── deploy/helm/               ← ✅ chart completo
+│   ├── Chart.yaml
+│   ├── values.yaml
+│   └── templates/
+│       ├── _helpers.tpl
+│       ├── deployment.yaml    ← Recreate, replicas:1, distroless nonroot
+│       ├── networkpolicy.yaml ← deny-ingress, allow DNS + wide egress
+│       ├── pvc.yaml
+│       ├── role.yaml          ← ClusterRole read-only
+│       ├── rolebinding.yaml
+│       └── serviceaccount.yaml
 ├── docs/
-│   ├── adr/                   ← ADR-0001, ADR-0002 (más en Etapa 7)
+│   ├── adr/                   ← ADR-0001, 0002, 0006, 0007 (0003-0005 pendientes en Etapa 7)
 │   ├── architecture.md
 │   ├── comparison.md
 │   ├── roadmap.md
 │   └── PROGRESS.md            ← este fichero
+├── .github/workflows/ci.yml   ← ✅ fmt + vet + test + race + build + helm lint/template
+├── Dockerfile                 ← ✅ multi-stage → distroless static nonroot (41 MB)
+├── .dockerignore
 ├── Makefile
 ├── README.md
 ├── LICENSE
@@ -274,6 +292,7 @@ kube-time-machine/
 | Storage local se llena sin retención automática | Pendiente (Phase 2 P7) | Warning logs cuando >80% — todavía no implementado |
 | Status noise en diff durante rollouts | **Activo** | Smoke test CLI 2026-05-20: el diff de un `kubectl set image` muestra 4 hunks: 1 meaningful (el image change) y 3 derivados del rollout (`observedGeneration`, `lastUpdateTime`, ReplicaSet hash). En cluster quieto siguen siendo deltas vacíos, así que el riesgo solo se materializa post-cambio. Soluciones candidatas: (a) flag `--no-status` en `ktm diff`, (b) stripear `.status` en `marshal.go` (decisión global, ADR-future). Vivible para MVP, revisar antes de Etapa 7 con datos de demo. |
 | Smoke test real contra un cluster | ✅ **Hecho 2026-05-20** | Add/Update (Deployment image + ConfigMap patch) y Delete (en delta y en full) validados end-to-end contra OrbStack K8s 1.33 |
+| Smoke test del chart Helm | ✅ **Hecho 2026-05-20 (Etapa 6)** | Install/uninstall completo en OrbStack K8s 1.33: pod nonroot, RBAC cluster-scoped, PVC, NetworkPolicy, snapshots persisten al PVC con cadencia esperada |
 
 ---
 
