@@ -164,6 +164,62 @@ func TestMarshalDoesNotMutateInput(t *testing.T) {
 	}
 }
 
+// TestMarshalDeployment_StripsTopLevelStatusKey is the visible side of the
+// ADR-0005 contract: a Deployment with a populated .status must produce
+// State bytes that do NOT contain a top-level "status" key. This is the
+// "what a reader sees" guarantee.
+func TestMarshalDeployment_StripsTopLevelStatusKey(t *testing.T) {
+	d := newDeployment("nginx:1.0")
+	d.Status = appsv1.DeploymentStatus{
+		ObservedGeneration: 42,
+		Replicas:           3,
+		ReadyReplicas:      3,
+		UpdatedReplicas:    3,
+		AvailableReplicas:  3,
+	}
+
+	_, state, err := agent.MarshalDeployment(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var asMap map[string]json.RawMessage
+	if err := json.Unmarshal(state, &asMap); err != nil {
+		t.Fatalf("state is not a valid JSON object: %v\npayload: %s", err, state)
+	}
+	if _, present := asMap["status"]; present {
+		t.Errorf("top-level 'status' key not stripped from output:\n%s", state)
+	}
+}
+
+// TestMarshalDeployment_StatusOnlyDifferenceProducesIdenticalBytes is the
+// motivating side of the ADR-0005 contract: two Deployments that differ
+// only in their .status block must produce identical State bytes, so
+// status churn never reaches the delta engine. This is the "why the
+// change exists" guarantee.
+func TestMarshalDeployment_StatusOnlyDifferenceProducesIdenticalBytes(t *testing.T) {
+	d1 := newDeployment("nginx:1.0")
+	d1.Status = appsv1.DeploymentStatus{
+		ObservedGeneration: 1,
+		Replicas:           1,
+	}
+	d2 := newDeployment("nginx:1.0")
+	d2.Status = appsv1.DeploymentStatus{
+		ObservedGeneration: 9999,
+		Replicas:           42,
+		Conditions: []appsv1.DeploymentCondition{
+			{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+			{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse},
+		},
+	}
+
+	_, s1, _ := agent.MarshalDeployment(d1)
+	_, s2, _ := agent.MarshalDeployment(d2)
+	if string(s1) != string(s2) {
+		t.Errorf("status differences leaked into state:\ns1: %s\ns2: %s", s1, s2)
+	}
+}
+
 // TestMarshalDeployment_IsValidJSON sanity-checks that the bytes round-trip
 // through encoding/json without errors — important because anything
 // downstream may want to decode the State (e.g. ktm diff for a human-

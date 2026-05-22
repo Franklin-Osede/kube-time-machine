@@ -53,6 +53,10 @@ func MarshalDeployment(d *appsv1.Deployment) (delta.Key, delta.State, error) {
 	if err != nil {
 		return delta.Key{}, nil, fmt.Errorf("agent: marshal Deployment %s/%s: %w", d.Namespace, d.Name, err)
 	}
+	payload, err = stripStatus(payload)
+	if err != nil {
+		return delta.Key{}, nil, fmt.Errorf("agent: strip status from Deployment %s/%s: %w", d.Namespace, d.Name, err)
+	}
 	return KeyForDeployment(d), delta.State(payload), nil
 }
 
@@ -69,6 +73,13 @@ func MarshalConfigMap(cm *corev1.ConfigMap) (delta.Key, delta.State, error) {
 	if err != nil {
 		return delta.Key{}, nil, fmt.Errorf("agent: marshal ConfigMap %s/%s: %w", cm.Namespace, cm.Name, err)
 	}
+	// ConfigMaps have no .status, so stripStatus is a no-op here; we
+	// still route through it for contract symmetry and to keep the
+	// post-marshal key order consistent across kinds.
+	payload, err = stripStatus(payload)
+	if err != nil {
+		return delta.Key{}, nil, fmt.Errorf("agent: strip status from ConfigMap %s/%s: %w", cm.Namespace, cm.Name, err)
+	}
 	return KeyForConfigMap(cm), delta.State(payload), nil
 }
 
@@ -81,13 +92,31 @@ func MarshalConfigMap(cm *corev1.ConfigMap) (delta.Key, delta.State, error) {
 //   - Generation increments on every spec change — but the spec change
 //     itself is the signal, so the generation field is redundant noise.
 //
-// We deliberately keep CreationTimestamp, UID, Labels, Annotations, and
-// (for now) the full .status block. Annotations can carry operationally
-// meaningful changes (e.g. last-applied-configuration). Status is kept
-// pending real-world feedback; if it proves too noisy we can revisit
-// with a dedicated ADR and field-level diff in Phase 2.
+// CreationTimestamp, UID, Labels and Annotations are kept: annotations
+// in particular can carry operationally meaningful declarative state
+// (e.g. last-applied-configuration). The full .status block is removed
+// downstream by stripStatus — see ADR-0005.
 func sanitiseMeta(m *metav1.ObjectMeta) {
 	m.ResourceVersion = ""
 	m.ManagedFields = nil
 	m.Generation = 0
+}
+
+// stripStatus removes the top-level "status" key from the JSON encoding
+// of any Kubernetes object. See ADR-0005: KTM records the declarative
+// surface of supported resources; controller-owned status is not part
+// of the recorded contract.
+//
+// Implemented via map round-trip because Go's encoding/json `omitempty`
+// tag does not apply to non-pointer struct values: setting Status to
+// its zero value would still serialise as `"status":{}`. Re-marshalling
+// from a map sorts keys alphabetically (a documented guarantee of
+// encoding/json), so the output is deterministic for a given input.
+func stripStatus(payload []byte) ([]byte, error) {
+	var asMap map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &asMap); err != nil {
+		return nil, err
+	}
+	delete(asMap, "status")
+	return json.Marshal(asMap)
 }
