@@ -31,9 +31,11 @@ And if someone *did* `kubectl edit deployment` directly, that change is **invisi
 
 ## What it does
 
-- **Captures** a delta-compressed timeline of cluster state via `client-go` informers, with no external dependencies.
+KTM records the declarative state that lived in your Kubernetes API server over time. It captures changes to Deployment `spec` and ConfigMap `data`/`metadata`, whether they came from GitOps, `kubectl`, or an operator. It lets you diff, blame, and roll back that state. It does **not** capture rollout health, Pod runtime state, or controller-owned `.status` — observability tooling (Prometheus, kube-state-metrics) covers that.
+
+- **Captures** the declarative surface of Deployments and ConfigMaps via `client-go` informers, with no external dependencies. Delta-compressed; periodic reference snapshots cap reconstruction cost.
 - **Diffs** any two points in time — by namespace, by resource, or across the whole cluster.
-- **Rolls back** a single resource to any prior state, with optimistic-concurrency safety.
+- **Rolls back** a single resource to any prior state, with native optimistic-concurrency safety (live `ResourceVersion`).
 
 ## Quick start
 
