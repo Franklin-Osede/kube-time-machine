@@ -1,13 +1,13 @@
 # Estado del proyecto — kube-time-machine
 
 > **Living document.** Snapshot del estado del repo entre sesiones. Se actualiza al cerrar cada sesión.
-> **Última actualización:** 2026-05-20 (Etapa 6 cerrada — chart instalable end-to-end)
+> **Última actualización:** 2026-05-23 (Etapa 7 cerrada — doc honesty + release pipeline + declarative-state framing)
 
 ---
 
 ## TL;DR
 
-`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–6 cerradas — empaquetado completo, instalable con `helm install`.**
+`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–7 cerradas — listo para lanzar (Etapa 8).**
 
 - ✅ Motor de deltas (100% cobertura + fuzz test)
 - ✅ Storage local en filesystem (con index reconstruible)
@@ -17,8 +17,12 @@
 - ✅ Chart Helm con 6 templates (SA, ClusterRole+Binding read-only, PVC, Deployment, NetworkPolicy) + `_helpers.tpl`
 - ✅ Dockerfile multi-stage → distroless static nonroot, 41 MB total
 - ✅ CI GitHub Actions: fmt + vet + test + race + build + helm lint/template
+- ✅ Declarative-state recorder: `.status` stripped en marshal.go (ADR-0005) — KTM ya no compite con Velero/observabilidad
+- ✅ Doc completa: architecture.md con Mermaid, comparison.md vs Velero/ArgoCD-Flux/events/observabilidad, install.md operacional
+- ✅ ADRs 0003 (typed informers), 0004 (rebuildable index), 0005 (declarative-state), 0007 (packaging) documentados
+- ✅ release.yml: multi-arch (amd64+arm64) image + chart OCI + CLI binaries en GHCR on tag `v*`
 
-Lo siguiente es **Etapa 7: polish** (Mermaid, ADRs 0003-0005 pendientes, demo recording, release.yml para publicar imagen, post draft).
+Lo siguiente es **Etapa 8: lanzamiento público** — repo público + demo recording + launch post.
 
 ---
 
@@ -34,8 +38,8 @@ Lo siguiente es **Etapa 7: polish** (Mermaid, ADRs 0003-0005 pendientes, demo re
 | 4 | CLI cobra (snapshot list/show, diff) | ✅ Done |
 | 5 | blame + rollback con optimistic locking | ✅ Done |
 | 6 | RBAC + Helm + Dockerfile + CI | ✅ Done (smoke test contra OrbStack) |
-| **7** | **Polish: Mermaid, ADRs 0003-0005, demo, release.yml, post draft** | 🚧 **Próximo** |
-| 8 | Lanzamiento público | ⏳ |
+| 7 | Polish: Mermaid, ADRs 0003-0005, declarative-state framing, release.yml | ✅ Done |
+| **8** | **Lanzamiento público — repo público + demo + post** | 🚧 **Próximo** |
 
 Etapa 3 fue antes que Etapa 2 deliberadamente — ver [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md).
 
@@ -74,7 +78,7 @@ make build
 # en otra terminal: kubectl edit deployment ... y ver aparecer ficheros en /tmp/ktm
 ```
 
-**Falta para el MVP completo:** CLI (Etapa 4), blame + rollback (Etapa 5), empaquetado Helm/Docker (Etapa 6), polish y lanzamiento (7-8).
+**Falta para el MVP completo:** lanzamiento público (Etapa 8) — repo público, demo grabado, post publicado.
 
 ---
 
@@ -149,7 +153,7 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 |---|---|---|
 | `internal/delta` | **100%** | + fuzz test (verificado: 1.6M execs/10s sin counterexamples) |
 | `internal/storage` | 83.5% | Ramas no cubiertas = errores I/O |
-| `internal/agent` | 80.2% | Sin cubrir = ramas de type-assertion imposibles desde un informer tipado real + `slog.Error` en `Run` |
+| `internal/agent` | 79.5% | Sin cubrir = ramas de type-assertion imposibles desde un informer tipado real + `slog.Error` en `Run` + rama defensiva de error de `stripStatus` (entrada inválida; `json.Marshal` no produce JSON corrupto en uso normal) |
 | `internal/cli` | 71.1% | Sin cubrir = wiring de cobra + algunos error paths de I/O |
 | `pkg/types` | — | Sin tests propios; ejercido vía storage |
 
@@ -163,45 +167,35 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 |---|---|---|
 | 0 | Packaging defaults: distroless, ClusterRole read-only, NP deny-ingress, Deployment+Recreate, solo `ci.yml` en Etapa 6 | [ADR-0007](adr/0007-packaging-defaults.md) |
 | 1 | Deltas incrementales + reference snapshots cada N | [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md) |
-| 2 | Storage = directorio por snapshot + `index.json` reconstruible | Código en [internal/storage/local.go](../internal/storage/local.go) + memoria del proyecto |
-| 3 | Informers tipados (no dynamic) | Decidido conjuntamente; ADR pendiente |
+| 2 | Storage = directorio por snapshot + `index.json` cache reconstruible | [ADR-0004](adr/0004-rebuildable-index.md) |
+| 3 | Informers tipados (no dynamic) | [ADR-0003](adr/0003-typed-informers.md) |
 | 4 | Buffer con `sync.RWMutex` encapsulado, `Snapshot()` devuelve copia del map | Código en [internal/agent/buffer.go](../internal/agent/buffer.go) |
-| 5 | Sanitización en marshal: stripear `ResourceVersion`, `ManagedFields`, `Generation` | Código en [internal/agent/marshal.go](../internal/agent/marshal.go) |
+| 5 | KTM records declarative state, not observed state: stripear `ResourceVersion`, `ManagedFields`, `Generation`, `.status` | [ADR-0005](adr/0005-declarative-state-recorder.md) |
 | 6 | Format on-disk: JSON con `MarshalIndent`, entries ordenadas (determinismo) | Código en [internal/storage/local.go](../internal/storage/local.go) |
 | 7 | Atomicidad: tempfile + `os.Rename`, sin `fsync` (defendido en comentario) | Idem |
-
-**Pendientes de formalizar en ADRs:**
-- ADR-0003: informers tipados vs dynamic
-- ADR-0004: índice reconstruible
-- ADR-0005: sanitización de campos K8s
-
-(Se pueden escribir en Etapa 7 — Polish — como parte del trabajo de pulir la doc antes del lanzamiento.)
+| 8 | Rollback usa live ResourceVersion del API server al apply time, no la del snapshot | [ADR-0006](adr/0006-rollback-live-resourceversion.md) |
 
 ---
 
-## Próxima sesión: Etapa 7 — polish
+## Próxima sesión: Etapa 8 — lanzamiento público
 
-El MVP es funcional e instalable. Etapa 7 prepara la doc y los artefactos para el lanzamiento público.
+El código está. La doc está. El release pipeline está. Etapa 8 es la mecánica del lanzamiento.
 
 **Trabajo a hacer:**
 
 | Item | Razón |
 |---|---|
-| Mermaid diagram en `docs/architecture.md` | El bloque ASCII actual es ilegible en GitHub; un Mermaid renderiza nativo |
-| ADR-0003 (informers tipados vs dynamic) | Pendiente desde Etapa 2 — la decisión está tomada en código, falta documentarla |
-| ADR-0004 (índice reconstruible) | Pendiente desde Etapa 2.1 |
-| ADR-0005 (sanitización de campos K8s) | Pendiente — alimenta a ADR-0006 |
-| `.github/workflows/release.yml` | On tag `v*`: build multi-arch + push a ghcr.io + adjuntar binarios al release. Aplazado de Etapa 6 |
-| `docs/install.md` corto | Instrucciones de `helm install` con todos los flags relevantes, mención al gap de Recreate, troubleshooting de `kubectl debug` con distroless |
-| Grabación del demo (5 min) | Install → break a deployment → diff → rollback → app recovers |
-| Draft del launch post | Borrador en `docs/launch.md` (no commitear final hasta lanzamiento) |
+| Hacer el repo público | Hoy está privado en `github.com/Franklin-Osede/kube-time-machine` |
+| Push del primer tag `v0.1.0` | Dispara `release.yml`: empuja imagen multi-arch a GHCR, sube binarios CLI, pushea chart OCI. Verificar que el workflow corre limpio en el primer intento. |
+| Grabación del demo (5 min) | Install → modificar un Deployment → `ktm diff` → `ktm blame` → `ktm rollback` → app recovers |
+| Launch post draft | Borrador en `docs/launch.md` (no commitear final hasta tener el demo). Hooks: el problema de las 3 AM + framing declarative-state recorder + comparación con Velero/ArgoCD/observabilidad. |
+| Habilitar GitHub Discussions | Canal de feedback antes que Issues — la barra de entrada para "tengo una idea vaga" es más baja. |
 
 **Decisiones abiertas para esta etapa:**
 
-1. **Multi-arch en `release.yml`.** ¿`amd64` solo o también `arm64`? Apple Silicon es mainstream, vale la pena pagar el tiempo de build. Recomendación: `linux/amd64,linux/arm64` con `docker buildx`.
-2. **Tag scheme.** `v0.1.0` para el primer release público. Helm chart `version` va parejo. Pendiente: ¿separar Chart version y App version desde ya, o moverlas juntas hasta v1.0?
-3. **GHCR vs Docker Hub.** GHCR es la respuesta por defecto (anclado al repo, sin rate limits, autenticación GitHub-native). Docker Hub requeriría secrets aparte.
-4. **Riesgo abierto del NP de status-noise.** Antes del lanzamiento conviene decidir si añadir `--no-status` a `ktm diff` o stripear `.status` en `marshal.go`. Ver tabla de riesgos abajo.
+1. **Versión inicial.** `v0.1.0` es lo natural. Chart version + appVersion están acoplados (ADR-0007); ambos se pinean al tag desde `release.yml`. Confirmar que el primer push de tag no rompe nada — particularmente, que GHCR acepta el push de OCI chart sin permisos extra más allá de `packages: write`.
+2. **Plataformas del launch post.** LinkedIn (audiencia de Platform Engineering), HackerNews "Show HN" (técnica), Reddit r/kubernetes (técnica). Priorizar el orden — un post fallido en HN quema el carril.
+3. **Phase 2 gate.** PROGRESS.md y roadmap mencionan el gate (50+ stars / 500+ likes / feature requests reales). Ya está documentado — no hace falta tocarlo hasta tener señal real.
 
 ---
 
@@ -243,7 +237,7 @@ kube-time-machine/
 │   │   ├── root.go
 │   │   ├── snapshot.go
 │   │   └── snapshot_test.go
-│   └── agent/                 ← ✅ completo (80.2%)
+│   └── agent/                 ← ✅ completo (79.5%)
 │       ├── buffer.go
 │       ├── buffer_test.go
 │       ├── informers.go
@@ -266,12 +260,15 @@ kube-time-machine/
 │       ├── rolebinding.yaml
 │       └── serviceaccount.yaml
 ├── docs/
-│   ├── adr/                   ← ADR-0001, 0002, 0006, 0007 (0003-0005 pendientes en Etapa 7)
-│   ├── architecture.md
-│   ├── comparison.md
+│   ├── adr/                   ← ADR-0001 a 0007 (0003 typed-informers, 0004 rebuildable-index, 0005 declarative-state, 0006 rollback-rv, 0007 packaging)
+│   ├── architecture.md        ← ✅ Mermaid + pipeline + on-disk layout + cross-refs
+│   ├── comparison.md          ← ✅ vs Velero/ArgoCD-Flux/events/observabilidad
+│   ├── install.md             ← ✅ helm install + distroless debug + Recreate gap
 │   ├── roadmap.md
 │   └── PROGRESS.md            ← este fichero
-├── .github/workflows/ci.yml   ← ✅ fmt + vet + test + race + build + helm lint/template
+├── .github/workflows/
+│   ├── ci.yml                 ← ✅ fmt + vet + test + race + build + helm lint/template
+│   └── release.yml            ← ✅ on tag v*: multi-arch image + chart OCI + CLI binaries
 ├── Dockerfile                 ← ✅ multi-stage → distroless static nonroot (41 MB)
 ├── .dockerignore
 ├── Makefile
@@ -290,7 +287,7 @@ kube-time-machine/
 | Curva de aprendizaje de client-go | **Activo** | Planificar 3 decisiones de diseño antes de tirar código en próxima sesión |
 | Rollback puede romper clusters | Pendiente (Etapa 5) | Probar primero en kind/minikube, nunca cluster real hasta pulir |
 | Storage local se llena sin retención automática | Pendiente (Phase 2 P7) | Warning logs cuando >80% — todavía no implementado |
-| Status noise en diff durante rollouts | **Activo** | Smoke test CLI 2026-05-20: el diff de un `kubectl set image` muestra 4 hunks: 1 meaningful (el image change) y 3 derivados del rollout (`observedGeneration`, `lastUpdateTime`, ReplicaSet hash). En cluster quieto siguen siendo deltas vacíos, así que el riesgo solo se materializa post-cambio. Soluciones candidatas: (a) flag `--no-status` en `ktm diff`, (b) stripear `.status` en `marshal.go` (decisión global, ADR-future). Vivible para MVP, revisar antes de Etapa 7 con datos de demo. |
+| Status noise en diff durante rollouts | ✅ **Resuelto (Etapa 7, 2026-05-23)** | Cerrado vía decisión de producto: KTM es declarative-state recorder, `.status` se stripea en `marshal.go` (ADR-0005). El diff post-`kubectl set image` ahora muestra solo el hunk relevante (image change), sin ruido derivado de `observedGeneration`/`lastUpdateTime`/ReplicaSet hash. |
 | Smoke test real contra un cluster | ✅ **Hecho 2026-05-20** | Add/Update (Deployment image + ConfigMap patch) y Delete (en delta y en full) validados end-to-end contra OrbStack K8s 1.33 |
 | Smoke test del chart Helm | ✅ **Hecho 2026-05-20 (Etapa 6)** | Install/uninstall completo en OrbStack K8s 1.33: pod nonroot, RBAC cluster-scoped, PVC, NetworkPolicy, snapshots persisten al PVC con cadencia esperada |
 

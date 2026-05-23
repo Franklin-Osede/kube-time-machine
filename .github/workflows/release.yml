@@ -1,0 +1,158 @@
+# Release workflow.
+# Triggered when a tag matching v* is pushed. Produces three artefacts,
+# all under the same version derived from the tag:
+#
+#   1. Multi-arch ktm-agent image (linux/amd64 + linux/arm64) pushed to
+#      GHCR. Multi-arch is on by default because ARM nodes (Apple Silicon,
+#      Graviton, Ampere) are routine in 2026; see ADR-0007.
+#   2. ktm CLI binaries for linux/macOS/Windows × amd64/arm64, attached
+#      as assets to the GitHub Release.
+#   3. Helm chart pushed to GHCR as an OCI artefact, with chart.version
+#      and app.version pinned to the tag (kept coupled pre-v1.0; see
+#      ADR-0007).
+#
+# GHCR-only — Docker Hub mirror is deliberately out of scope for the MVP
+# (extra secret, extra surface; can be added in a follow-up).
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # to create the GitHub release and upload assets
+  packages: write   # to push to GHCR
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/ktm-agent
+
+jobs:
+  image:
+    name: Agent image (multi-arch → GHCR)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive version from tag
+        id: meta
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (linux/amd64 + linux/arm64)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+  cli:
+    name: CLI binaries (5 platforms)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: darwin,  goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: Derive version from tag
+        id: meta
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build ktm
+        run: |
+          ext=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
+          mkdir -p dist
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+            go build -trimpath -ldflags="-s -w -X main.version=${{ steps.meta.outputs.version }}" \
+            -o "dist/ktm-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" ./cmd/ktm
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ktm-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+
+  chart:
+    name: Helm chart (OCI → GHCR)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Log in to GHCR (helm)
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Derive version from tag
+        id: meta
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Package chart (chart version + appVersion pinned to tag)
+        run: |
+          helm package deploy/helm \
+            --version "${{ steps.meta.outputs.version }}" \
+            --app-version "${{ steps.meta.outputs.version }}"
+
+      - name: Push chart
+        run: |
+          helm push "kube-time-machine-${{ steps.meta.outputs.version }}.tgz" \
+            "oci://ghcr.io/${{ github.repository_owner }}/charts"
+
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [image, cli, chart]
+    steps:
+      - name: Download all CLI artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artefacts
+
+      - name: Flatten artefacts into a single dir
+        run: |
+          mkdir -p release
+          find artefacts -type f -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create release with binaries attached
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
