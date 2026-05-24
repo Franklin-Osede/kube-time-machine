@@ -154,7 +154,7 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 | `internal/delta` | **100%** | + fuzz test (verificado: 1.6M execs/10s sin counterexamples) |
 | `internal/storage` | 83.5% | Ramas no cubiertas = errores I/O |
 | `internal/agent` | 79.5% | Sin cubrir = ramas de type-assertion imposibles desde un informer tipado real + `slog.Error` en `Run` + rama defensiva de error de `stripStatus` (entrada inválida; `json.Marshal` no produce JSON corrupto en uso normal) |
-| `internal/cli` | 71.1% | Sin cubrir = wiring de cobra + algunos error paths de I/O |
+| `internal/cli` | 64.5% | Caída desde 71.1% al añadir `blame` + `rollback` en Etapa 5 (tests felices presentes, faltan algunos unhappy paths — el conflict 409 de Update se cubre en Etapa 7) |
 | `pkg/types` | — | Sin tests propios; ejercido vía storage |
 
 **Race detector (`go test -race -count=3 ./...`)**: limpio. Descubrió y motivó un fix real en `Informers.Start` (distinguir context-cancel de sync-failure).

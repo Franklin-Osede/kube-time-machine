@@ -5,7 +5,7 @@
 
 [![Status](https://img.shields.io/badge/status-pre--MVP-orange.svg)](#roadmap)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.25-00ADD8.svg)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8.svg)](https://go.dev/)
 
 > **Heads-up.** This repository is in active early development. The MVP is not yet shippable — see [Roadmap](#roadmap) for what works today.
 
@@ -52,7 +52,7 @@ ktm rollback deployment/api
 
 ## Architecture
 
-> Diagram coming with the MVP — see [docs/architecture.md](docs/architecture.md).
+See [docs/architecture.md](docs/architecture.md) for the full pipeline diagram, on-disk layout, and ADR cross-references.
 
 Three components:
 
