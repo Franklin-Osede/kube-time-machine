@@ -1,0 +1,12 @@
+# Optional secondary breakage that targets a ConfigMap instead of a
+# Deployment. Useful for demoing `ktm blame configmap/...` and rolling
+# back a non-workload resource.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ktm-demo
+data:
+  env: oops
+  log_level: debug
+  region: eu-west-1

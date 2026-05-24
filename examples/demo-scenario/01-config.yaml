@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ktm-demo
+data:
+  env: prod
+  log_level: info
+  region: eu-west-1
