@@ -16,14 +16,18 @@ type Options struct {
 }
 
 // NewRootCmd builds the top-level cobra command. It does not call
-// cmd.Execute — that's the caller's job in cmd/ktm/main.go.
-func NewRootCmd() *cobra.Command {
+// cmd.Execute — that's the caller's job in cmd/ktm/main.go. The version
+// string is plumbed in from cmd/ktm/main.go so the linker-stamped value
+// (-X main.version=...) reaches cobra's built-in Version field, which
+// powers `ktm --version` and `ktm version`.
+func NewRootCmd(version string) *cobra.Command {
 	opts := &Options{}
 
 	cmd := &cobra.Command{
 		Use:           "ktm",
 		Short:         "Git blame & time-travel for your Kubernetes cluster",
 		Long:          "ktm inspects the snapshot history produced by the ktm-agent: list snapshots, show their contents, and diff between any two points in time.",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
