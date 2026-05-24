@@ -5,6 +5,9 @@ GO         ?= go
 BIN_DIR    := bin
 AGENT_BIN  := $(BIN_DIR)/ktm-agent
 CLI_BIN    := $(BIN_DIR)/ktm
+# -trimpath keeps local usernames/paths out of binaries and improves reproducibility.
+# -s -w strips symbol/debug tables for smaller binaries; panic traces still include functions and lines.
+GO_BUILD   := $(GO) build -trimpath -ldflags="-s -w"
 
 .PHONY: help build agent cli test fmt vet tidy clean
 
@@ -21,10 +24,10 @@ help:
 build: agent cli
 
 agent:
-	$(GO) build -o $(AGENT_BIN) ./cmd/agent
+	$(GO_BUILD) -o $(AGENT_BIN) ./cmd/agent
 
 cli:
-	$(GO) build -o $(CLI_BIN) ./cmd/ktm
+	$(GO_BUILD) -o $(CLI_BIN) ./cmd/ktm
 
 test:
 	$(GO) test ./...
