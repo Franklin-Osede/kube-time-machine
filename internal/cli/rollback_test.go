@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 // makeDeployment is a small helper used by rollback tests to build a
@@ -111,6 +116,59 @@ func TestRollbackDeployment_AbortedAtPrompt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "rollback aborted") {
 		t.Errorf("expected 'rollback aborted', got:\n%s", out.String())
+	}
+}
+
+// TestRollbackDeployment_ConflictReturnsActionableError covers the
+// unhappy path that the entire ADR-0006 design exists to enforce: if the
+// resource has moved in the cluster between preview and apply, the
+// Update must be rejected and the user must be told to re-run, NOT
+// silently retried (a retry would absorb changes the user never saw).
+func TestRollbackDeployment_ConflictReturnsActionableError(t *testing.T) {
+	live := makeDeployment("api", "nginx:1.27", "100")
+	client := fake.NewSimpleClientset(live)
+
+	// Force the fake API server to return 409 Conflict on Update — the
+	// exact failure mode the production K8s API returns when the
+	// resourceVersion on the wire is stale.
+	client.PrependReactor("update", "deployments", func(_ ktesting.Action) (bool, runtime.Object, error) {
+		gvr := schema.GroupResource{Group: "apps", Resource: "deployments"}
+		return true, nil, apierrors.NewConflict(gvr, "api",
+			fmt.Errorf("the object has been modified; please apply your changes to the latest version"))
+	})
+
+	payload := deploymentSnapshotPayload(t, "api", "nginx:1.25")
+
+	var out bytes.Buffer
+	err := rollbackDeployment(
+		context.Background(), &out, strings.NewReader("y\n"),
+		client, key("Deployment", "default", "api"), payload, false,
+	)
+	if err == nil {
+		t.Fatal("expected an error on 409 Conflict, got nil")
+	}
+
+	// The error message must (a) flag this as a rollback rejection, (b)
+	// explain why, and (c) tell the user what to do next. These three
+	// pieces are what makes the unhappy path actionable instead of
+	// confusing.
+	msg := err.Error()
+	for _, want := range []string{
+		"rollback rejected",
+		"changed in the cluster",
+		"Re-run `ktm rollback`",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("conflict error missing %q; full message: %s", want, msg)
+		}
+	}
+
+	// The cluster must still hold the original image — a failed Update
+	// must not partially apply.
+	got, _ := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
+	if got.Spec.Template.Spec.Containers[0].Image != "nginx:1.27" {
+		t.Errorf("cluster image after rejected rollback: want nginx:1.27, got %q",
+			got.Spec.Template.Spec.Containers[0].Image)
 	}
 }
 
