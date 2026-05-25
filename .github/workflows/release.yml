@@ -26,7 +26,6 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/ktm-agent
 
 jobs:
   image:
@@ -49,9 +48,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive version from tag
+      # OCI repository names MUST be lowercase (distribution spec). The
+      # GitHub-supplied ${{ github.repository_owner }} preserves case, so
+      # we lowercase it here before composing any GHCR reference.
+      - name: Derive version and lowercase owner
         id: meta
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          {
+            echo "version=${GITHUB_REF#refs/tags/v}"
+            echo "owner=${OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push (linux/amd64 + linux/arm64)
         uses: docker/build-push-action@v5
@@ -60,8 +68,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/ktm-agent:${{ steps.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/ktm-agent:latest
 
   cli:
     name: CLI binaries (5 platforms)
@@ -120,9 +128,17 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Derive version from tag
+      # Lowercase the owner for the same OCI-spec reason as in the image
+      # job — GHCR rejects mixed-case references.
+      - name: Derive version and lowercase owner
         id: meta
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          {
+            echo "version=${GITHUB_REF#refs/tags/v}"
+            echo "owner=${OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Package chart (chart version + appVersion pinned to tag)
         run: |
@@ -133,7 +149,7 @@ jobs:
       - name: Push chart
         run: |
           helm push "kube-time-machine-${{ steps.meta.outputs.version }}.tgz" \
-            "oci://ghcr.io/${{ github.repository_owner }}/charts"
+            "oci://ghcr.io/${{ steps.meta.outputs.owner }}/charts"
 
   release:
     name: GitHub Release
