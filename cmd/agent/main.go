@@ -92,4 +92,3 @@ func run() error {
 	slog.Info("ktm-agent: stopped cleanly")
 	return nil
 }
-

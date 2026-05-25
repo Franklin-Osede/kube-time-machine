@@ -112,11 +112,11 @@ func TestParseKeyFilter(t *testing.T) {
 		wantOK bool
 	}{
 		{"Deployment/default/api", true},
-		{"ConfigMap//cfg", true},     // empty namespace is allowed
+		{"ConfigMap//cfg", true},      // empty namespace is allowed
 		{"Deployment/default", false}, // missing name
 		{"only-one-part", false},
 		{"", false},
-		{"/default/api", false}, // empty kind
+		{"/default/api", false},        // empty kind
 		{"Deployment/default/", false}, // empty name
 	}
 	for _, tc := range cases {

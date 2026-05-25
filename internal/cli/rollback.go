@@ -302,4 +302,3 @@ func stripServerOwned(m *metav1.ObjectMeta) {
 	m.ManagedFields = nil
 	m.SelfLink = ""
 }
-
