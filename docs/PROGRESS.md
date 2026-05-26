@@ -154,7 +154,8 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 | `internal/delta` | **100%** | + fuzz test (verificado: 1.6M execs/10s sin counterexamples) |
 | `internal/storage` | 83.5% | Ramas no cubiertas = errores I/O |
 | `internal/agent` | 79.5% | Sin cubrir = ramas de type-assertion imposibles desde un informer tipado real + `slog.Error` en `Run` + rama defensiva de error de `stripStatus` (entrada inválida; `json.Marshal` no produce JSON corrupto en uso normal) |
-| `internal/cli` | 64.5% | Caída desde 71.1% al añadir `blame` + `rollback` en Etapa 5 (tests felices presentes, faltan algunos unhappy paths — el conflict 409 de Update se cubre en Etapa 7) |
+| `internal/cli` | 65.1% | Sube desde 64.5% al añadir el test del conflict 409 de Update en Etapa 7 (ADR-0006 unhappy path) |
+| `internal/kubeclient` | 55.6% | Tabla de precedencia (explicit > $KUBECONFIG > $HOME/.kube/config + error). Ramas no cubiertas: `rest.InClusterConfig()` (requiere Pod real) y el constructor del Clientset (boundary code sin lógica de business) |
 | `pkg/types` | — | Sin tests propios; ejercido vía storage |
 
 **Race detector (`go test -race -count=3 ./...`)**: limpio. Descubrió y motivó un fix real en `Informers.Start` (distinguir context-cancel de sync-failure).
