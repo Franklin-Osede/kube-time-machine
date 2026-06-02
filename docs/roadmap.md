@@ -4,18 +4,20 @@ Two phases. Phase 2 is gated on real-world traction — see the gate at the bott
 
 ## Phase 1 — MVP
 
-The MVP is done when the 5-minute demo (install → break a deployment → diff → rollback → app recovers) works end-to-end.
+Closed. v0.1.0 was a silent pre-launch with two confirmed bugs (case-sensitive Kind matching in the CLI, server-owned metadata leaking onto the rollback Update path); both are fixed and v0.1.1 is the first release used by the launch demo and post.
 
 | Etapa | Outcome | Status |
 |------:|---------|--------|
 | 1 | Repo scaffolded, project layout in place, both binaries compile | ✅ done |
-| 2 | `pkg/types` + `internal/storage` (local FS) + `internal/agent` (informers, buffer, snapshot policy) | 🚧 in progress |
+| 2 | `pkg/types` + `internal/storage` (local FS) + `internal/agent` (informers, buffer, snapshot policy) | ✅ done |
 | 3 | `internal/delta` package: compute, apply, round-trip invariant, fuzz test, 100% coverage | ✅ done |
-| 4 | CLI scaffolding (cobra) with `snapshot list`, `snapshot show`, `diff` | ⏳ |
-| 5 | `blame` and `rollback` (single resource, optimistic-locking) | ⏳ |
-| 6 | RBAC + ServiceAccount + NetworkPolicy + Helm chart + Dockerfile + minimal CI | ⏳ |
-| 7 | README polish, Mermaid diagram, ADRs, demo recording, launch post draft | ⏳ |
-| 8 | Public launch (repo public, video published, post live) | ⏳ |
+| 4 | CLI scaffolding (cobra) with `snapshot list`, `snapshot show`, `diff` | ✅ done |
+| 5 | `blame` and `rollback` (single resource, optimistic-locking) | ✅ done |
+| 6 | RBAC + ServiceAccount + NetworkPolicy + Helm chart + Dockerfile + minimal CI | ✅ done |
+| 7 | README polish, Mermaid diagram, ADRs, demo recording, launch post draft | ✅ done |
+| 8 | Public launch (repo public, image + chart + binaries published, video, post live) | 🚧 in progress |
+
+`docs/PROGRESS.md` is the source of truth for per-stage state and carries the running history.
 
 **Strict scope-lock:** Deployments and ConfigMaps only. Local PVC storage only. No web UI. No metrics. No multi-cluster. Anything else goes into [TODO.md](../TODO.md) (created when needed) and is reconsidered post-launch.
 
@@ -44,3 +46,4 @@ When the gate opens, work proceeds feature-by-feature, each shipped in its own r
 | 6 | Cascading rollback with dependency analysis | Detect Deployment ↔ ConfigMap dependencies, suggest rollback set, mandatory dry-run |
 | 7 | Automatic retention | Configurable policy (daily/weekly/monthly), delta compaction |
 | 8 | Admission-controller integration | Block non-GitOps changes, label manual edits |
+| 9 | `ktm proxy` subcommand | CLI talks to the in-cluster agent via the API server so Mode B no longer requires extracting the PVC to query history |
