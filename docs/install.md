@@ -1,22 +1,54 @@
 # Install
 
-This page covers installing the KTM agent (the in-cluster component) via the bundled Helm chart, and operating the resulting pod. The CLI (`ktm`) is a local binary that does not require installation in the cluster — see [README.md](../README.md) for how to build it.
+KTM has two operating modes. Both share the same agent and CLI binaries and the same on-disk snapshot format — they differ in **where the storage lives**.
+
+- **Mode A — local-first.** Run `ktm-agent` on your laptop against a kubeconfig, then query the same `--storage-dir` with `ktm`. Recommended for v0.1.0 and for incident-response workflows.
+- **Mode B — continuous in-cluster recording.** Install the Helm chart so the agent runs as a Pod and writes to a PersistentVolume. To query that history with `ktm`, you currently have to extract the PVC contents to your laptop (recipe below) and point the CLI at the local copy.
 
 ## Prerequisites
 
 - A Kubernetes cluster (≥ 1.27 tested; OrbStack K8s 1.33 is the development target).
 - `kubectl` configured against the target cluster.
-- `helm` v3.x.
-- An image of `ktm-agent` reachable from the cluster. For local development build it with `docker build -t ktm-agent:dev .` from the repo root; for a real install pull from a registry such as GHCR (publication via `release.yml` is Etapa-7 work and not landed yet).
+- For Mode B: `helm` v3.x.
+- The CLI binary (`ktm`) and the agent binary (`ktm-agent`). Either:
+  - Download the v0.1.0 binaries for your platform from the [Releases page](https://github.com/Franklin-Osede/kube-time-machine/releases), or
+  - Build from source with `make build` from the repo root.
 
-## Default install
+## Mode A — local-first agent
+
+The agent runs as a regular process; `--kubeconfig` selects the cluster.
 
 ```bash
-kubectl create namespace ktm-system
-helm install ktm deploy/helm \
-  --namespace ktm-system \
-  --set image.repository=ghcr.io/franklin-osede/ktm-agent \
-  --set image.tag=0.0.1
+# In one terminal — agent records continuously.
+./bin/ktm-agent \
+  --kubeconfig ~/.kube/config \
+  --storage-dir /tmp/ktm \
+  --interval 10s \
+  --full-every 3
+```
+
+`--interval 10s` and `--full-every 3` are demo-friendly defaults; for longer sessions the production defaults are `5m` and `12`. See [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md) for the cadence trade-offs.
+
+```bash
+# In another terminal — CLI queries the same dir the agent writes to.
+./bin/ktm --storage-dir /tmp/ktm snapshot list
+./bin/ktm --storage-dir /tmp/ktm diff --from <id> --to <id>
+./bin/ktm --storage-dir /tmp/ktm blame deployment/<namespace>/<name>
+./bin/ktm --storage-dir /tmp/ktm rollback deployment/<namespace>/<name> --to <id>
+```
+
+Stop the agent with `Ctrl-C`; it performs a 5-second best-effort final flush before exiting.
+
+This is the path the launch demo uses — see [examples/demo-scenario/](../examples/demo-scenario/).
+
+## Mode B — continuous in-cluster recording (Helm chart)
+
+For longer-running deployments where you want history captured even when no laptop is attached, install the chart from the OCI artefact published in GHCR:
+
+```bash
+helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
+  --version 0.1.0 \
+  --namespace ktm-system --create-namespace
 ```
 
 Verify:
@@ -29,7 +61,36 @@ kubectl -n ktm-system logs deploy/ktm-kube-time-machine
 
 The agent logs `informer caches synced` once it is ready to record. From that moment, every Add/Update/Delete on a watched Deployment or ConfigMap reaches the local buffer and is flushed to the PVC at the configured cadence (`snapshot.intervalSeconds`, default 300 s).
 
-## Customising the install
+### Querying history from Mode B (CLI ↔ PVC)
+
+The CLI reads directly from the local `--storage-dir`; it does **not** speak to the agent or to the API server for the read commands (`snapshot list/show`, `diff`, `blame`). To query a history that lives in an in-cluster PVC, you currently have to copy the contents to your machine.
+
+The base image is `gcr.io/distroless/static-debian12:nonroot` — no shell, no `tar`, no package manager. The supported recipe is `kubectl debug` with a busybox ephemeral container that shares the agent's mount namespace, plus `kubectl cp` to pull the directory:
+
+```bash
+POD=$(kubectl -n ktm-system get pod -l app.kubernetes.io/name=kube-time-machine -o jsonpath='{.items[0].metadata.name}')
+
+# Attach an ephemeral container that can see the agent's PVC mount.
+kubectl -n ktm-system debug "$POD" \
+  --image=busybox:latest \
+  --target=agent \
+  --profile=general \
+  -- sh -c "sleep 600" >/dev/null 2>&1 &
+
+DEBUG=$(kubectl -n ktm-system get pod "$POD" -o jsonpath='{.spec.ephemeralContainers[*].name}' | tr ' ' '\n' | tail -1)
+
+# Tar the snapshots directory into a local file via `kubectl exec`.
+mkdir -p /tmp/ktm
+kubectl -n ktm-system exec "$POD" -c "$DEBUG" -- \
+  tar -C /proc/1/root/var/lib/ktm -cf - . | tar -xf - -C /tmp/ktm
+
+# Query with the local CLI.
+./bin/ktm --storage-dir /tmp/ktm snapshot list
+```
+
+For routine inspection this is operationally awkward; it is good enough for v0.1.0 forensics on a real incident. A `ktm proxy` subcommand that talks to the agent over the API server is a Phase 2 candidate, gated on real-world traction.
+
+### Customising the install
 
 The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The most relevant knobs:
 
@@ -38,47 +99,31 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 | `snapshot.intervalSeconds` | `300` | Flush cadence in seconds. Smaller = lower MTTR for forensic queries, more storage. |
 | `snapshot.fullEvery` | `12` | Every Nth flush is a full reference snapshot. Bounds chain-reconstruction cost (see [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md)). |
 | `storage.size` | `10Gi` | PVC size. Storage scales with change rate, not snapshot rate. |
-| `storage.storageClassName` | `""` | Empty means cluster default. |
+| `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
 | `agent.resources.*` | conservative | The agent's working set is dominated by the informer cache; tune up if you watch large clusters. |
 | `networkPolicy.enabled` | `true` | Turn off only on clusters whose CNI does not enforce NetworkPolicy. |
 
 There is no `replicaCount` value. The agent writes to a `ReadWriteOnce` PVC and `replicas` is hardcoded to `1` in the template. Two writers would corrupt the storage (see [ADR-0007](adr/0007-packaging-defaults.md)).
 
-## The 30-second capture gap during `helm upgrade`
+### The 30-second capture gap during `helm upgrade`
 
 The Deployment uses `strategy.type: Recreate`, not the default rolling update. This is deliberate and load-bearing: a rolling update would briefly run two pods sharing the same RWO PVC, both racing to write the same files. `Recreate` guarantees the old pod terminates before the new one starts, at the cost of a ~30-second gap during upgrades where no events are captured.
 
 If a change happens to the cluster during that gap it will surface in the next full reference snapshot regardless — KTM detects deletions and additions by comparing the set of keys across consecutive full snapshots, so the data is not lost, only the precise moment of the change is. For routine production use this is acceptable; for incident response while debugging KTM itself, schedule upgrades during quiet windows.
 
-## Inspecting the PVC
-
-The base image is `gcr.io/distroless/static-debian12:nonroot` — there is no shell, no `ls`, no package manager. To inspect the snapshots dir from outside the agent's process namespace, use `kubectl debug` with an ephemeral container:
-
-```bash
-POD=$(kubectl -n ktm-system get pod -l app.kubernetes.io/name=kube-time-machine -o jsonpath='{.items[0].metadata.name}')
-kubectl -n ktm-system debug "$POD" --image=busybox:latest --target=agent -- \
-  sh -c "ls -la /proc/1/root/var/lib/ktm/snapshots/ | tail"
-DEBUG=$(kubectl -n ktm-system get pod "$POD" -o jsonpath='{.spec.ephemeralContainers[*].name}' | tr ' ' '\n' | tail -1)
-kubectl -n ktm-system logs "$POD" -c "$DEBUG"
-```
-
-The `--target=agent` flag attaches the busybox container to the agent's PID/mount namespace; `/proc/1/root/var/lib/ktm/` is the agent's view of the PVC. The output is delivered to the ephemeral container's stdout, which `kubectl logs -c <name>` then surfaces.
-
-For most uses, the same data is available via the CLI (`ktm snapshot list`, `ktm snapshot show <id>`) without needing to enter the cluster.
-
-## RBAC: what the agent can and cannot do
+### RBAC: what the agent can and cannot do
 
 The bundled `ClusterRole` grants `get`, `list`, `watch` on `deployments.apps` and `configmaps` cluster-wide. The agent has no other permissions — it cannot write, cannot read Secrets, cannot watch any other kind.
 
-If you want to scope the agent down further (e.g. to specific namespaces), today the chart does not parameterise the rule subject lists; you would patch the ClusterRole after install. Scoping is a Phase 2 enhancement.
+If you want to scope the agent down further (e.g. to specific namespaces), today the chart does not parameterise the rule subject lists; you would patch the `ClusterRole` after install. Scoping is a Phase 2 enhancement.
 
-## Uninstall
+### Uninstall
 
 ```bash
 helm uninstall ktm -n ktm-system
 ```
 
-`helm uninstall` also removes the cluster-scoped `ClusterRole` and `ClusterRoleBinding` that the chart created (their names are suffixed with the release namespace to avoid collisions between installs). The PVC is removed along with the namespace; **the snapshots stored on it are deleted**. To preserve them, copy them off the PVC first or set up a backup of the storage class.
+`helm uninstall` also removes the cluster-scoped `ClusterRole` and `ClusterRoleBinding` that the chart created (their names are suffixed with the release namespace to avoid collisions between installs). The PVC is removed along with the namespace; **the snapshots stored on it are deleted**. To preserve them, extract them first using the recipe above, or set up a backup of the storage class.
 
 ## Troubleshooting
 
@@ -86,6 +131,7 @@ helm uninstall ktm -n ktm-system
 - **Pod `Running` but no logs / no snapshots.** Check that the agent has watch permission: `kubectl -n ktm-system describe pod ...` for events, `kubectl auth can-i list deployments --as=system:serviceaccount:ktm-system:ktm-kube-time-machine`.
 - **`kubectl exec` returns "no such file or directory"** for `ls`, `cat`, etc. Expected — distroless has no shell or coreutils. Use the `kubectl debug` recipe above.
 - **Two installs collide on `ClusterRole`.** Shouldn't happen — the name includes the release namespace. If it does, check that you used `helm install` with `--namespace` set, not just `kubectl apply`-d the rendered chart with a namespace overlay.
+- **`ktm snapshot list` returns nothing after a Helm install.** The CLI reads from the local `--storage-dir`, not from the cluster. Either switch to Mode A or follow the PVC extraction recipe above.
 
 ## Related docs
 

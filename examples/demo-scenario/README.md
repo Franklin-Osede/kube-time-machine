@@ -13,39 +13,64 @@ Five files, ordered. Each step is one `kubectl apply` away from the next.
 
 ## Recommended demo sequence
 
-Assumes KTM is already installed in the cluster (see [docs/install.md](../../docs/install.md)) and `ktm` is on your PATH.
+The demo uses **Mode A** (local-first): the agent runs on your laptop against your kubeconfig, and the CLI queries the same `--storage-dir` from a second terminal. This is the path that works without extracting PVC contents — see [docs/install.md](../../docs/install.md) for why.
+
+Two terminals open against the same cluster. Build the binaries once with `make build` from the repo root.
+
+### Terminal 1 — start the recorder
 
 ```bash
-# 1. Set up a clean demo cluster state.
+./bin/ktm-agent \
+  --kubeconfig ~/.kube/config \
+  --storage-dir /tmp/ktm \
+  --interval 10s \
+  --full-every 3
+```
+
+Wait for the line `agent: informer caches synced` before continuing.
+
+### Terminal 2 — drive the demo
+
+```bash
+# 1. Apply the healthy baseline.
 kubectl apply -f examples/demo-scenario/00-namespace.yaml
 kubectl apply -f examples/demo-scenario/01-config.yaml
 kubectl apply -f examples/demo-scenario/02-deployment.yaml
 
-# Wait long enough for at least one KTM snapshot to capture the healthy state
-# (the default cadence is 5 min; for the demo you'll want to install with
-# --set snapshot.intervalSeconds=10 so the wait is short).
+# Wait long enough for at least one KTM snapshot to capture the healthy state.
+# With --interval 10s --full-every 3, fifteen seconds covers it.
 sleep 15
 
-# 2. Break it. The deployment will fail to roll out — pods stuck in
-#    ImagePullBackOff while the ReplicaSet from step 2 keeps serving.
+# 2. Break it. Pods stick in ImagePullBackOff; the previous ReplicaSet
+#    keeps serving until its retention kicks in.
 kubectl apply -f examples/demo-scenario/03-break.yaml
 
-# 3. Investigate. Find when it last looked sane.
-ktm snapshot list | tail
-ktm blame deployment/ktm-demo/api
+# Give the agent another tick to record the broken state.
+sleep 12
+
+# 3. Investigate. Find when the deployment last looked sane.
+./bin/ktm --storage-dir /tmp/ktm snapshot list | tail
+./bin/ktm --storage-dir /tmp/ktm blame deployment/ktm-demo/api
 
 # 4. Diff the broken state against the last good one.
-ktm diff --from <last-good-id> --to <latest-id>
+./bin/ktm --storage-dir /tmp/ktm diff \
+  --from <last-good-id> --to <latest-id>
 
-# 5. Roll it back.
-ktm rollback deployment/ktm-demo/api --to <last-good-id>
+# 5. Roll the Deployment back. ktm fetches the live object, shows a
+#    preview, prompts for [y/N], then Updates with the captured RV.
+./bin/ktm --storage-dir /tmp/ktm rollback \
+  deployment/ktm-demo/api --to <last-good-id>
 
 # 6. Pods recover.
 kubectl -n ktm-demo rollout status deployment/api
 ```
 
+The `--storage-dir /tmp/ktm` flag MUST match the one passed to `ktm-agent` in Terminal 1. The agent writes to that directory; the CLI reads from it. If you forget it on the CLI, you'll be querying `~/.ktm/data` (the per-user default) and see an empty history.
+
 ## Cleanup
 
 ```bash
 kubectl delete namespace ktm-demo
+# Stop the agent in Terminal 1 with Ctrl-C; it performs a final flush.
+rm -rf /tmp/ktm
 ```
