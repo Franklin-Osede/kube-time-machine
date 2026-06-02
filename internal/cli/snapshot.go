@@ -116,13 +116,39 @@ func runSnapshotShow(out io.Writer, storageDir string, id types.SnapshotID, keyF
 }
 
 // parseKeyFilter parses a "Kind/Namespace/Name" string into a delta.Key.
-// Used by --key on snapshot show.
+// Used by --key on snapshot show, by blame, and by rollback. The Kind
+// segment is normalised via kubectl-style aliases so users can type
+// `deployment`, `deploy`, `Deployment`, or `DEPLOYMENT` interchangeably
+// — matching kubectl's own behaviour.
 func parseKeyFilter(s string) (delta.Key, error) {
 	parts := strings.SplitN(s, "/", 3)
 	if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
 		return delta.Key{}, errf("--key must be Kind/Namespace/Name (got %q)", s)
 	}
-	return delta.Key{Kind: parts[0], Namespace: parts[1], Name: parts[2]}, nil
+	return delta.Key{Kind: normalizeKind(parts[0]), Namespace: parts[1], Name: parts[2]}, nil
+}
+
+// kindAliases maps kubectl-style aliases (case-insensitive) to KTM's
+// canonical Kind names as they appear in delta.Key. Mirrors kubectl's
+// short names so the mental model is consistent.
+var kindAliases = map[string]string{
+	"deployment":  "Deployment",
+	"deployments": "Deployment",
+	"deploy":      "Deployment",
+	"configmap":   "ConfigMap",
+	"configmaps":  "ConfigMap",
+	"cm":          "ConfigMap",
+}
+
+// normalizeKind resolves a user-supplied kind string to its canonical
+// form. Unknown inputs pass through unchanged so users who already type
+// the canonical form (and future kinds we may add before aliasing them)
+// keep working.
+func normalizeKind(k string) string {
+	if canonical, ok := kindAliases[strings.ToLower(k)]; ok {
+		return canonical
+	}
+	return k
 }
 
 // sortedKeys returns the keys of m sorted by Kind, then Namespace, then Name.

@@ -129,3 +129,43 @@ func TestParseKeyFilter(t *testing.T) {
 		})
 	}
 }
+
+// TestParseKeyFilter_KindNormalization pins the kubectl-style alias
+// table: every input listed here must produce the canonical Kind so
+// downstream lookups against keys stored by the agent (which always
+// uses agent.KindDeployment / agent.KindConfigMap) succeed.
+func TestParseKeyFilter_KindNormalization(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantKind string
+	}{
+		// Deployment aliases.
+		{"Deployment/default/api", "Deployment"},
+		{"deployment/default/api", "Deployment"},
+		{"deployments/default/api", "Deployment"},
+		{"deploy/default/api", "Deployment"},
+		{"DEPLOYMENT/default/api", "Deployment"},
+		{"Deploy/default/api", "Deployment"},
+		// ConfigMap aliases.
+		{"ConfigMap/default/cfg", "ConfigMap"},
+		{"configmap/default/cfg", "ConfigMap"},
+		{"configmaps/default/cfg", "ConfigMap"},
+		{"cm/default/cfg", "ConfigMap"},
+		{"CM/default/cfg", "ConfigMap"},
+		// Unknown kinds pass through unchanged so we don't break future
+		// kinds we forget to alias.
+		{"Service/default/svc", "Service"},
+		{"CustomThing/ns/name", "CustomThing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := parseKeyFilter(tc.in)
+			if err != nil {
+				t.Fatalf("parseKeyFilter(%q): unexpected error: %v", tc.in, err)
+			}
+			if got.Kind != tc.wantKind {
+				t.Errorf("parseKeyFilter(%q).Kind: want %q, got %q", tc.in, tc.wantKind, got.Kind)
+			}
+		})
+	}
+}
