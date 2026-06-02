@@ -136,9 +136,19 @@ func rollbackDeployment(
 	if err := json.Unmarshal(payload, &targetDep); err != nil {
 		return errf("unmarshal target Deployment payload: %w", err)
 	}
-	// Inject the RV captured at preview time. The Kubernetes API server
-	// will reject the Update with 409 Conflict if the cluster-side value
-	// has moved since previewRV was read.
+	// Strip server-owned metadata that the snapshot inherited. sanitiseMeta
+	// in the agent (ADR-0005) deliberately keeps UID and CreationTimestamp
+	// because they carry no per-flush noise; but on the Update path we MUST
+	// drop them. Concretely: if the user deleted and recreated this resource
+	// between snapshot time and now, the live UID is different, and an
+	// Update carrying the snapshot's old UID is rejected by the API server
+	// as an immutable-field violation. Stripping is symmetric with the
+	// create-on-404 path below.
+	stripServerOwned(&targetDep.ObjectMeta)
+	// Re-inject the RV captured at preview time (stripServerOwned cleared
+	// it along with the rest). The Kubernetes API server will reject the
+	// Update with 409 Conflict if the cluster-side value has moved since
+	// previewRV was read.
 	targetDep.ResourceVersion = previewRV
 
 	if _, err := api.Update(ctx, &targetDep, metav1.UpdateOptions{}); err != nil {
@@ -180,6 +190,9 @@ func rollbackConfigMap(
 	if err := json.Unmarshal(payload, &targetCM); err != nil {
 		return errf("unmarshal target ConfigMap payload: %w", err)
 	}
+	// Same UID-stripping invariant as in rollbackDeployment — see the
+	// comment there for why this is load-bearing on delete+recreate.
+	stripServerOwned(&targetCM.ObjectMeta)
 	targetCM.ResourceVersion = previewRV
 
 	if _, err := api.Update(ctx, &targetCM, metav1.UpdateOptions{}); err != nil {

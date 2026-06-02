@@ -172,6 +172,111 @@ func TestRollbackDeployment_ConflictReturnsActionableError(t *testing.T) {
 	}
 }
 
+// TestRollbackDeployment_StripsServerOwnedFieldsOnUpdate is the regression
+// pin for the delete-and-recreate hazard: sanitiseMeta in the agent
+// deliberately keeps UID and CreationTimestamp in the snapshot payload
+// (ADR-0005 reasoning), so the rollback Update path MUST strip them
+// before sending to the API server. Without this, a snapshot taken
+// before a delete+recreate would carry an old UID that the server
+// rejects as an immutable-field violation.
+func TestRollbackDeployment_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
+	// Live cluster: Deployment with the UID it has NOW, post delete+recreate.
+	live := makeDeployment("api", "nginx:1.27", "100")
+	live.UID = "live-uid-xyz"
+	client := fake.NewSimpleClientset(live)
+
+	// Snapshot payload carries the OLD UID — the kind sanitiseMeta produces.
+	snapshotDep := makeDeployment("api", "nginx:1.25", "")
+	snapshotDep.UID = "snapshot-uid-abc"
+	snapshotDep.CreationTimestamp = metav1.Now()
+	payload, _ := json.Marshal(snapshotDep)
+
+	// Capture the object actually sent to Update so we can inspect it.
+	var capturedUpdate *appsv1.Deployment
+	client.PrependReactor("update", "deployments", func(a ktesting.Action) (bool, runtime.Object, error) {
+		if ua, ok := a.(ktesting.UpdateAction); ok {
+			if obj, ok := ua.GetObject().(*appsv1.Deployment); ok {
+				capturedUpdate = obj.DeepCopy()
+			}
+		}
+		// Let the fake apply normally so the rest of the test stays simple.
+		return false, nil, nil
+	})
+
+	var out bytes.Buffer
+	if err := rollbackDeployment(
+		context.Background(), &out, strings.NewReader("y\n"),
+		client, key("Deployment", "default", "api"), payload, false,
+	); err != nil {
+		t.Fatalf("rollbackDeployment: %v", err)
+	}
+
+	if capturedUpdate == nil {
+		t.Fatal("expected an Update call, none captured")
+	}
+	if capturedUpdate.UID != "" {
+		t.Errorf("UID not stripped before Update: got %q, want empty. A real API server would reject this with an immutable-field error if the live UID differs from the payload UID.", capturedUpdate.UID)
+	}
+	if !capturedUpdate.CreationTimestamp.IsZero() {
+		t.Errorf("CreationTimestamp not stripped before Update: got %v, want zero", capturedUpdate.CreationTimestamp)
+	}
+	// The RV on the wire must be the live one captured at preview time
+	// (ADR-0006), NOT empty (which stripServerOwned would have produced
+	// if we forgot to re-inject) and NOT the snapshot's stale RV.
+	if capturedUpdate.ResourceVersion != "100" {
+		t.Errorf("ResourceVersion on Update: want live %q, got %q", "100", capturedUpdate.ResourceVersion)
+	}
+}
+
+// TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate is the analogous
+// regression pin for ConfigMaps. Same invariant, different typed API.
+func TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
+	live := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cfg", Namespace: "default", ResourceVersion: "55", UID: "live-uid",
+		},
+		Data: map[string]string{"env": "prod"},
+	}
+	client := fake.NewSimpleClientset(live)
+
+	snapshotCM := &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{Kind: "ConfigMap", APIVersion: "v1"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cfg", Namespace: "default", UID: "snapshot-uid", CreationTimestamp: metav1.Now(),
+		},
+		Data: map[string]string{"env": "dev"},
+	}
+	payload, _ := json.Marshal(snapshotCM)
+
+	var capturedUpdate *corev1.ConfigMap
+	client.PrependReactor("update", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {
+		if ua, ok := a.(ktesting.UpdateAction); ok {
+			if obj, ok := ua.GetObject().(*corev1.ConfigMap); ok {
+				capturedUpdate = obj.DeepCopy()
+			}
+		}
+		return false, nil, nil
+	})
+
+	var out bytes.Buffer
+	if err := rollbackConfigMap(
+		context.Background(), &out, strings.NewReader("y\n"),
+		client, key("ConfigMap", "default", "cfg"), payload, false,
+	); err != nil {
+		t.Fatalf("rollbackConfigMap: %v", err)
+	}
+
+	if capturedUpdate == nil {
+		t.Fatal("expected an Update call, none captured")
+	}
+	if capturedUpdate.UID != "" {
+		t.Errorf("UID not stripped before Update on ConfigMap: got %q", capturedUpdate.UID)
+	}
+	if capturedUpdate.ResourceVersion != "55" {
+		t.Errorf("ResourceVersion on Update: want live %q, got %q", "55", capturedUpdate.ResourceVersion)
+	}
+}
+
 func TestRollbackDeployment_404PathCreates(t *testing.T) {
 	client := fake.NewSimpleClientset() // empty cluster
 	payload := deploymentSnapshotPayload(t, "api", "nginx:1.25")
