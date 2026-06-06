@@ -1,13 +1,13 @@
 # Estado del proyecto — kube-time-machine
 
 > **Living document.** Snapshot del estado del repo entre sesiones. Se actualiza al cerrar cada sesión.
-> **Última actualización:** 2026-05-23 (Etapa 7 cerrada — doc honesty + release pipeline + declarative-state framing)
+> **Última actualización:** 2026-06-06 (pase de endurecimiento pre-RC en rama `fix/prelaunch-correctness` + auditoría independiente — P0 de release abierto)
 
 ---
 
 ## TL;DR
 
-`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–7 cerradas — listo para lanzar (Etapa 8).**
+`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–7 cerradas; Etapa 8 (lanzamiento) en progreso.** Tras un pase de endurecimiento pre-RC (ver sección dedicada) el código está listo para un RC técnico, pero **hay un P0 de release abierto** que bloquea el lanzamiento final: `release.yml` publica solo el binario `ktm`, no `ktm-agent` (Modo A necesita ambos).
 
 - ✅ Motor de deltas (100% cobertura + fuzz test)
 - ✅ Storage local en filesystem (con index reconstruible)
@@ -20,9 +20,9 @@
 - ✅ Declarative-state recorder: `.status` stripped en marshal.go (ADR-0005) — KTM ya no compite con Velero/observabilidad
 - ✅ Doc completa: architecture.md con Mermaid, comparison.md vs Velero/ArgoCD-Flux/events/observabilidad, install.md operacional
 - ✅ ADRs 0003 (typed informers), 0004 (rebuildable index), 0005 (declarative-state), 0007 (packaging) documentados
-- ✅ release.yml: multi-arch (amd64+arm64) image + chart OCI + CLI binaries en GHCR on tag `v*`
+- ⚠️ release.yml: multi-arch (amd64+arm64) image + chart OCI + binarios en GHCR on tag `v*` — **pero el job CLI solo compila `./cmd/ktm`; falta `ktm-agent`** (P0, ver riesgos)
 
-Lo siguiente es **Etapa 8: lanzamiento público** — repo público + demo recording + launch post.
+Lo siguiente es **Etapa 8: lanzamiento público** — cerrar el P0 de release, RC `v0.1.1-rc.1`, demo recording, launch post.
 
 ---
 
@@ -284,10 +284,32 @@ kube-time-machine/
 
 ---
 
+## Endurecimiento pre-RC (2026-06-06, rama `fix/prelaunch-correctness` → PR #1)
+
+Una segunda revisión profunda (más una auditoría independiente que la confirmó) encontró bugs de correctness que `go test ./...` en verde no revelaba. Arreglados, con tests de regresión, en 4 commits (código y docs separados):
+
+| ID | Hallazgo | Fix |
+|---|---|---|
+| **C1** | El snapshotter arrancaba su ticker en paralelo al sync de informers → el primer full (siempre full) podía capturar una vista parcial del cluster. | `Informers.Ready()` (cerrado tras `WaitForCacheSync`); `Snapshotter.Run(ctx, ready)` espera esa compuerta antes del primer flush. |
+| **C2** | `flushNum`/`prevID` avanzaban antes de la escritura → un full fallido dejaba el siguiente flush emitiendo un delta con `PrevID=""` (cadena no reconstruible). | El estado interno avanza **solo tras un `Put` exitoso**; un fallo reintenta el mismo slot de cadencia. |
+| **C3** | El preview de rollback diffeaba el objeto live crudo contra el payload sanitizado → fugaba `status`/`managedFields`/`resourceVersion` justo en el momento de consentimiento. | El live se sanitiza con el mismo marshaller del agente (ADR-0005) antes de diffear. |
+| **I1** | `release.yml` movía `:latest` para cualquier tag `v*`, incluido un RC. | `:latest` solo en tags estables; tags con guion se marcan prerelease. |
+| **I5** | Perder `index.json` dejaba `list`/`blame` ciegos (el rebuild de ADR-0004 no estaba implementado). | `NewLocal` reconstruye el índice escaneando `snapshots/` cuando falta el cache, y lo re-persiste. |
+| **I2** | `resources.watch` en `values.yaml` era config fantasma (informers y ClusterRole hardcodean el set). | Eliminado, con comentario de dónde vive de verdad el set vigilado. |
+
+Verificado: `go build`, `go vet`, `gofmt -l` limpio, `go test -race -count=2 ./...` verde. No tocado deliberadamente: I4 (colisión de IDs a ms, baja) y `sync.Once` en `Start()` (blindaje opcional).
+
+---
+
 ## Riesgos abiertos
 
 | Riesgo | Estado | Plan |
 |---|---|---|
+| **Release no publica `ktm-agent`** | **P0 — BLOQUEA lanzamiento final** | El job CLI de `release.yml` solo compila `./cmd/ktm`; Modo A (recomendado/demo) necesita ambos binarios. Añadir `./cmd/agent` a la matriz de build (publicar ambos) o documentar build-from-source del agente. |
+| **Flush final puede persistir un full parcial** | **Abierto (residual de C1)** | El flush de shutdown en `cmd/agent/main.go` corre incondicional tras `g.Wait`, incluso si se canceló antes del sync. C1 solo blindó `Run`. Condicionar el flush final a que `inf.Ready()` se haya cerrado. |
+| **`index.json` corrupto no tiene fallback** | Abierto (bajo) | El rebuild solo cubre el caso de índice *ausente*; un Unmarshal fallido hace errar a `NewLocal`. Intentar rebuild con warning, o documentar "borra index.json para reconstruir". |
+| **Snapshot incompleto puede entrar al índice reconstruido** | Abierto (bajo) | meta.json se escribe antes que el payload; un crash entre medias deja un dir que el rebuild acepta (valida solo meta). Escribir payload antes que meta, o validar payload en el rebuild. |
+| Sin tags ni GitHub Releases públicos | **Abierto** | `git ls-remote --tags origin` vacío y Releases API `[]`. Relanzar limpio con `v0.1.1` (RC primero ~2026-06-09, final ~2026-06-16). |
 | Curva de aprendizaje de client-go | **Activo** | Planificar 3 decisiones de diseño antes de tirar código en próxima sesión |
 | Rollback puede romper clusters | Pendiente (Etapa 5) | Probar primero en kind/minikube, nunca cluster real hasta pulir |
 | Storage local se llena sin retención automática | Pendiente (Phase 2 P7) | Warning logs cuando >80% — todavía no implementado |
