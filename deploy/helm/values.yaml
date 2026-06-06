@@ -27,13 +27,12 @@ storage:
   size: 10Gi
   storageClassName: ""         # empty = use the cluster default
 
-# Resources the agent watches. MVP supports Deployments and ConfigMaps
-# only; extending this list is Phase 2 P0 work and also needs the
-# ClusterRole rules to be widened.
-resources:
-  watch:
-    - deployments
-    - configmaps
+# The set of watched resources is fixed in MVP: Deployments and
+# ConfigMaps. It is not a chart value because the agent hardcodes the
+# typed informers (internal/agent/informers.go) and the ClusterRole
+# hardcodes the matching rules (templates/role.yaml) — a value here would
+# be silently ignored. Widening the set is Phase 2 P0 work that touches
+# all three places together.
 
 # Pod resource requests/limits. Conservative defaults for a small cluster.
 agent:
