@@ -2,7 +2,7 @@
 
 KTM has two operating modes. Both share the same agent and CLI binaries and the same on-disk snapshot format — they differ in **where the storage lives**.
 
-- **Mode A — local-first.** Run `ktm-agent` on your laptop against a kubeconfig, then query the same `--storage-dir` with `ktm`. Recommended for v0.1.0 and for incident-response workflows.
+- **Mode A — local-first.** Run `ktm-agent` on your laptop against a kubeconfig, then query the same `--storage-dir` with `ktm`. Recommended for v0.1.1 and for incident-response workflows.
 - **Mode B — continuous in-cluster recording.** Install the Helm chart so the agent runs as a Pod and writes to a PersistentVolume. To query that history with `ktm`, you currently have to extract the PVC contents to your laptop (recipe below) and point the CLI at the local copy.
 
 ## Prerequisites
@@ -10,9 +10,7 @@ KTM has two operating modes. Both share the same agent and CLI binaries and the 
 - A Kubernetes cluster (≥ 1.27 tested; OrbStack K8s 1.33 is the development target).
 - `kubectl` configured against the target cluster.
 - For Mode B: `helm` v3.x.
-- The CLI binary (`ktm`) and the agent binary (`ktm-agent`). Either:
-  - Download the v0.1.0 binaries for your platform from the [Releases page](https://github.com/Franklin-Osede/kube-time-machine/releases), or
-  - Build from source with `make build` from the repo root.
+- The CLI binary (`ktm`) and the agent binary (`ktm-agent`). Release binaries are not published yet; build them from source with `make build` from the repo root.
 
 ## Mode A — local-first agent
 
@@ -43,13 +41,19 @@ This is the path the launch demo uses — see [examples/demo-scenario/](../examp
 
 ## Mode B — continuous in-cluster recording (Helm chart)
 
-For longer-running deployments where you want history captured even when no laptop is attached, install the chart from the OCI artefact published in GHCR:
+For longer-running deployments where you want history captured even when no laptop is attached, install the chart from the repository. The OCI chart and agent image are not published yet, so first build the image and make it available to your cluster:
 
 ```bash
-helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
-  --version 0.1.0 \
-  --namespace ktm-system --create-namespace
+docker build -t ktm-agent:dev .
+
+helm install ktm deploy/helm \
+  --namespace ktm-system --create-namespace \
+  --set image.repository=ktm-agent \
+  --set image.tag=dev \
+  --set image.pullPolicy=Never
 ```
+
+`image.pullPolicy=Never` works for local clusters whose container runtime can see the locally built image. For a remote cluster, push the image to a registry the cluster can access and set `image.repository`, `image.tag`, and `image.pullPolicy` accordingly.
 
 Verify:
 
@@ -88,7 +92,7 @@ kubectl -n ktm-system exec "$POD" -c "$DEBUG" -- \
 ./bin/ktm --storage-dir /tmp/ktm snapshot list
 ```
 
-For routine inspection this is operationally awkward; it is good enough for v0.1.0 forensics on a real incident. A `ktm proxy` subcommand that talks to the agent over the API server is a Phase 2 candidate, gated on real-world traction.
+For routine inspection this is operationally awkward; it is good enough for v0.1.1 forensics on a real incident. A `ktm proxy` subcommand that talks to the agent over the API server is a Phase 2 candidate, gated on real-world traction.
 
 ### Customising the install
 
@@ -116,6 +120,16 @@ If a change happens to the cluster during that gap it will surface in the next f
 The bundled `ClusterRole` grants `get`, `list`, `watch` on `deployments.apps` and `configmaps` cluster-wide. The agent has no other permissions — it cannot write, cannot read Secrets, cannot watch any other kind.
 
 If you want to scope the agent down further (e.g. to specific namespaces), today the chart does not parameterise the rule subject lists; you would patch the `ClusterRole` after install. Scoping is a Phase 2 enhancement.
+
+### Security: the storage is confidential
+
+The PVC (Mode B) and the `--storage-dir` (Mode A) hold the full declarative state of every Deployment and ConfigMap in the cluster, accumulated over time. Treat that data as sensitive:
+
+- **ConfigMaps often carry sensitive configuration** even though they are not Secrets — connection strings, internal hostnames, feature flags, tokens that should have been Secrets but weren't. All of it is recorded verbatim in the snapshots.
+- **Secrets are *not* captured.** The bundled `ClusterRole` grants no access to `secrets`, so the agent cannot read them and they never reach storage. This is by design (see [ADR-0007](adr/0007-packaging-defaults.md)).
+- **Use a StorageClass that encrypts at rest** for the PVC (`storage.storageClassName`). On managed clusters this usually means an encrypted EBS/PD/Disk class.
+- **Restrict access to the data.** Anyone who can read the PVC — or the `kubectl debug` + `kubectl cp` extraction path documented above — can read the recorded state. Limit who can exec into the `ktm-system` namespace, and treat any copy extracted to a laptop as confidential: delete it once the incident is closed.
+- **There is no retention or expiry in v0.1.x.** Snapshots accumulate until the volume fills; the confidential window is the entire lifetime of the volume. Automatic retention is a Phase 2 item (roadmap P7).
 
 ### Uninstall
 

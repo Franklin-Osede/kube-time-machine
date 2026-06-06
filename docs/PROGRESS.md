@@ -182,19 +182,22 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 
 El código está. La doc está. El release pipeline está. Etapa 8 es la mecánica del lanzamiento.
 
+> **Estado real de los artefactos (2026-06):** `release.yml` ya corrió en su día para `v0.0.1-test` y `v0.1.0`, así que **existen paquetes en GHCR** (imagen `ktm-agent` y chart OCI). Sin embargo **hoy no hay tags ni GitHub Releases visibles** (`git ls-remote --tags` y la API de releases devuelven vacío) — el tag/release fue retirado después de publicarse, dejando paquetes huérfanos. Decisión: **relanzar limpio con `v0.1.1`** (rc primero) en lugar de depender de artefactos sin tag asociado. Mientras tanto, README e install.md dirigen a *build from source*, que es lo único reproducible para un visitante hoy.
+
 **Trabajo a hacer:**
 
 | Item | Razón |
 |---|---|
-| Hacer el repo público | Hoy está privado en `github.com/Franklin-Osede/kube-time-machine` |
-| Push del primer tag `v0.1.0` | Dispara `release.yml`: empuja imagen multi-arch a GHCR, sube binarios CLI, pushea chart OCI. Verificar que el workflow corre limpio en el primer intento. |
+| Verificar el repo público | El repo ya es público en `github.com/Franklin-Osede/kube-time-machine`; revisar que README e instalación sean honestos antes de dirigir tráfico. |
+| Push del tag de prueba `v0.1.1-rc.1` | Dispara `release.yml`: empuja imagen multi-arch a GHCR, sube binarios CLI, pushea chart OCI. Verificar los artefactos antes del tag final. |
+| Push del tag final `v0.1.1` | Solo después de validar el release candidate y el install real desde los artefactos publicados. |
 | Grabación del demo (5 min) | Install → modificar un Deployment → `ktm diff` → `ktm blame` → `ktm rollback` → app recovers |
-| Launch post draft | Borrador en `docs/launch.md` (no commitear final hasta tener el demo). Hooks: el problema de las 3 AM + framing declarative-state recorder + comparación con Velero/ArgoCD/observabilidad. |
+| Launch post draft | Mantener `docs/launch.md` como borrador hasta tener el demo. Hooks: el problema de las 3 AM + framing declarative-state recorder + comparación con Velero/ArgoCD/observabilidad. |
 | Habilitar GitHub Discussions | Canal de feedback antes que Issues — la barra de entrada para "tengo una idea vaga" es más baja. |
 
 **Decisiones abiertas para esta etapa:**
 
-1. **Versión inicial.** `v0.1.0` es lo natural. Chart version + appVersion están acoplados (ADR-0007); ambos se pinean al tag desde `release.yml`. Confirmar que el primer push de tag no rompe nada — particularmente, que GHCR acepta el push de OCI chart sin permisos extra más allá de `packages: write`.
+1. **Versión inicial pública.** `v0.1.1` es la versión del lanzamiento. Chart version + appVersion están acoplados (ADR-0007); ambos se pinean al tag desde `release.yml`. Confirmar con `v0.1.1-rc.1` que GHCR acepta el push del chart OCI sin permisos extra más allá de `packages: write`.
 2. **Plataformas del launch post.** LinkedIn (audiencia de Platform Engineering), HackerNews "Show HN" (técnica), Reddit r/kubernetes (técnica). Priorizar el orden — un post fallido en HN quema el carril.
 3. **Phase 2 gate.** PROGRESS.md y roadmap mencionan el gate (50+ stars / 500+ likes / feature requests reales). Ya está documentado — no hace falta tocarlo hasta tener señal real.
 
