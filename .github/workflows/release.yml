@@ -5,8 +5,9 @@
 #   1. Multi-arch ktm-agent image (linux/amd64 + linux/arm64) pushed to
 #      GHCR. Multi-arch is on by default because ARM nodes (Apple Silicon,
 #      Graviton, Ampere) are routine in 2026; see ADR-0007.
-#   2. ktm CLI binaries for linux/macOS/Windows × amd64/arm64, attached
-#      as assets to the GitHub Release.
+#   2. ktm AND ktm-agent binaries for linux/macOS/Windows × amd64/arm64,
+#      attached as assets to the GitHub Release. Both are needed for Mode A
+#      (local-first): ktm-agent records, ktm queries.
 #   3. Helm chart pushed to GHCR as an OCI artefact, with chart.version
 #      and app.version pinned to the tag (kept coupled pre-v1.0; see
 #      ADR-0007).
@@ -85,7 +86,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
 
   cli:
-    name: CLI binaries (5 platforms)
+    name: ktm + ktm-agent binaries (5 platforms)
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -109,19 +110,27 @@ jobs:
         id: meta
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build ktm
+      # Mode A (local-first, the recommended/demo path) runs BOTH binaries
+      # on the user's machine: ktm-agent records, ktm queries. Publishing
+      # only ktm would leave that path uninstallable from a release, so we
+      # build and attach both for every platform.
+      - name: Build ktm and ktm-agent
         run: |
           ext=""
           if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
           mkdir -p dist
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-            go build -trimpath -ldflags="-s -w -X main.version=${{ steps.meta.outputs.version }}" \
-            -o "dist/ktm-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" ./cmd/ktm
+          for pkg in ktm agent; do
+            out="$pkg"
+            [ "$pkg" = "agent" ] && out="ktm-agent"
+            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w -X main.version=${{ steps.meta.outputs.version }}" \
+              -o "dist/${out}-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" "./cmd/${pkg}"
+          done
 
       - name: Upload artefact
         uses: actions/upload-artifact@v4
         with:
-          name: ktm-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
 
   chart:
