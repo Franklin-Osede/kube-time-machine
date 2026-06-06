@@ -188,18 +188,21 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
-// TestSurvivesMissingIndex documents the "reconstructible index"
-// property: with index.json deleted, Get(id) on any existing snapshot
-// still works because each snapshot's own meta.json is self-describing.
-// List will be empty until a (not yet implemented) rebuild routine
-// repopulates the index from disk.
-func TestSurvivesMissingIndex(t *testing.T) {
+// TestRebuildsIndexWhenMissing exercises the "reconstructible index"
+// property (ADR-0004): with index.json deleted, reopening the store
+// rebuilds the index by scanning each snapshot's self-describing
+// meta.json, so both Get(id) AND List/blame keep working. It also checks
+// the rebuilt order (ascending by timestamp) and that index.json is
+// re-persisted so the next open is a cheap read.
+func TestRebuildsIndexWhenMissing(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
 
 	s1, _ := storage.NewLocal(root)
 	snap := delta.Snapshot{key("Deployment", "default", "api"): delta.State("v1")}
-	meta, _ := s1.PutFull(ctx, at(2026, 5, 18, 14, 0, 0, 0), snap)
+	// Put two out of order so the rebuild's sort is actually tested.
+	mB, _ := s1.PutFull(ctx, at(2026, 5, 18, 14, 5, 0, 0), snap)
+	mA, _ := s1.PutFull(ctx, at(2026, 5, 18, 14, 0, 0, 0), snap)
 
 	if err := os.Remove(filepath.Join(root, "index.json")); err != nil {
 		t.Fatalf("remove index: %v", err)
@@ -209,18 +212,31 @@ func TestSurvivesMissingIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLocal after index removal: %v", err)
 	}
-	loaded, err := s2.Get(ctx, meta.ID)
+
+	// Get still works (per-snapshot meta is the source of truth).
+	loaded, err := s2.Get(ctx, mA.ID)
 	if err != nil {
 		t.Fatalf("Get after index removal: %v", err)
 	}
 	if !reflect.DeepEqual(loaded.Full, snap) {
 		t.Errorf("payload mismatch after index removal:\nwant %v\ngot  %v", snap, loaded.Full)
 	}
-	// List is intentionally empty here — the index isn't rebuilt
-	// automatically yet. This test exists to document that behaviour
-	// so the rebuild can be added later without surprise.
-	if got, _ := s2.List(ctx); len(got) != 0 {
-		t.Errorf("expected empty List after index removal (no auto-rebuild yet), got %v", got)
+
+	// List is now rebuilt from disk, in timestamp order.
+	got, _ := s2.List(ctx)
+	want := []types.SnapshotID{mA.ID, mB.ID}
+	if len(got) != len(want) {
+		t.Fatalf("rebuilt List len: want %d, got %d (%v)", len(want), len(got), got)
+	}
+	for i, m := range got {
+		if m.ID != want[i] {
+			t.Errorf("rebuilt List position %d: want %q, got %q", i, want[i], m.ID)
+		}
+	}
+
+	// index.json was re-persisted: a third open finds it without rescanning.
+	if _, err := os.Stat(filepath.Join(root, "index.json")); err != nil {
+		t.Errorf("index.json not re-persisted after rebuild: %v", err)
 	}
 }
 

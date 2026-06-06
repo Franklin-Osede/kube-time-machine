@@ -66,13 +66,58 @@ func NewLocal(root string) (*Local, error) {
 func (l *Local) loadIndex() error {
 	b, err := os.ReadFile(filepath.Join(l.root, indexFileName))
 	if errors.Is(err, os.ErrNotExist) {
+		// index.json is a pure cache of the per-snapshot meta.json files
+		// (ADR-0004). If it is missing we rebuild it from disk rather than
+		// starting blind — otherwise `list` and `blame` would report no
+		// history even though every snapshot is intact in snapshots/.
+		return l.rebuildIndex()
+	}
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, &l.index)
+}
+
+// rebuildIndex reconstructs the in-memory index by scanning the meta.json
+// of every directory under snapshots/, then best-effort re-writes
+// index.json so the next open is a cheap read. Directories without a
+// readable meta.json are skipped — an incomplete write leaves the rest of
+// the history usable rather than failing the whole open. Called only when
+// index.json is absent.
+func (l *Local) rebuildIndex() error {
+	dir := filepath.Join(l.root, snapshotsDirName)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
 		l.index = nil
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(b, &l.index)
+
+	var rebuilt []types.SnapshotMeta
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		var meta types.SnapshotMeta
+		if err := readJSON(filepath.Join(dir, e.Name(), metaFileName), &meta); err != nil {
+			continue // incomplete/unreadable snapshot dir — skip, keep the rest
+		}
+		rebuilt = append(rebuilt, meta)
+	}
+	sort.SliceStable(rebuilt, func(i, j int) bool {
+		return rebuilt[i].Timestamp.Before(rebuilt[j].Timestamp)
+	})
+	l.index = rebuilt
+
+	// Persist the rebuilt cache. A write failure is not fatal: the
+	// in-memory index is already correct for this process, and the next
+	// open will simply rebuild again.
+	if len(rebuilt) > 0 {
+		_ = l.writeIndexLocked()
+	}
+	return nil
 }
 
 func (l *Local) writeIndexLocked() error {
