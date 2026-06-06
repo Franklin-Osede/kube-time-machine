@@ -70,7 +70,10 @@ func run() error {
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return inf.Start(gctx) })
-	g.Go(func() error { return snap.Run(gctx) })
+	// snap.Run waits on inf.Ready() before its first flush so the first
+	// (always-full) snapshot reflects a fully-synced cluster, not the
+	// partial buffer that exists during the informers' initial list/watch.
+	g.Go(func() error { return snap.Run(gctx, inf.Ready()) })
 
 	runErr := g.Wait()
 

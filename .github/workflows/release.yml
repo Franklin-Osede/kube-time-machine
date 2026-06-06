@@ -51,14 +51,29 @@ jobs:
       # OCI repository names MUST be lowercase (distribution spec). The
       # GitHub-supplied ${{ github.repository_owner }} preserves case, so
       # we lowercase it here before composing any GHCR reference.
-      - name: Derive version and lowercase owner
+      - name: Derive version, lowercase owner, compute image tags
         id: meta
         env:
           OWNER: ${{ github.repository_owner }}
         run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          REPO="${{ env.REGISTRY }}/${OWNER,,}/ktm-agent"
           {
-            echo "version=${GITHUB_REF#refs/tags/v}"
+            echo "version=${VERSION}"
             echo "owner=${OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Always publish the version tag. Only move :latest for stable
+          # releases — a prerelease tag (anything with a hyphen, e.g.
+          # v0.1.1-rc.1) must NOT repoint :latest at an RC build.
+          TAGS="${REPO}:${VERSION}"
+          if [[ "$VERSION" != *-* ]]; then
+            TAGS="${TAGS}"$'\n'"${REPO}:latest"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "${TAGS}"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push (linux/amd64 + linux/arm64)
@@ -67,9 +82,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/ktm-agent:${{ steps.meta.outputs.version }}
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/ktm-agent:latest
+          tags: ${{ steps.meta.outputs.tags }}
 
   cli:
     name: CLI binaries (5 platforms)
@@ -172,3 +185,7 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
+          # Mark hyphenated tags (e.g. v0.1.1-rc.1) as prereleases so they
+          # don't become the repo's "Latest release", matching the :latest
+          # image-tag guard above.
+          prerelease: ${{ contains(github.ref_name, '-') }}

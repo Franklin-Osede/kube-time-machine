@@ -128,7 +128,17 @@ func rollbackDeployment(
 	// informed consent.
 	previewRV := live.ResourceVersion
 
-	if !showPreviewAndConfirm(out, in, target, live, payload, autoYes) {
+	// Sanitise the live object through the SAME marshaller the agent uses
+	// to record snapshots (ADR-0005: strip .status, resourceVersion,
+	// managedFields, generation). Without this the preview diffs the raw
+	// live object — full of server-owned churn — against the sanitised
+	// snapshot payload, drowning the one hunk the user actually cares
+	// about in noise at the exact moment they give informed consent.
+	_, beforeBytes, err := agent.MarshalDeployment(live)
+	if err != nil {
+		return errf("render preview for %s: %w", keyString(target), err)
+	}
+	if !showPreviewAndConfirm(out, in, target, beforeBytes, payload, autoYes) {
 		return nil
 	}
 
@@ -182,7 +192,14 @@ func rollbackConfigMap(
 
 	previewRV := live.ResourceVersion
 
-	if !showPreviewAndConfirm(out, in, target, live, payload, autoYes) {
+	// Same sanitisation as in rollbackDeployment — diff the snapshot
+	// payload against a like-for-like sanitised view of the live object,
+	// not the raw server representation. See the comment there.
+	_, beforeBytes, err := agent.MarshalConfigMap(live)
+	if err != nil {
+		return errf("render preview for %s: %w", keyString(target), err)
+	}
+	if !showPreviewAndConfirm(out, in, target, beforeBytes, payload, autoYes) {
 		return nil
 	}
 
@@ -259,22 +276,23 @@ func createConfigMap(
 	return nil
 }
 
-// showPreviewAndConfirm marshals the live object and the target payload,
-// renders a unified diff with the existing printDelta machinery, and
-// prompts the user. Returns true if the apply should proceed.
+// showPreviewAndConfirm renders a unified diff between the sanitised live
+// state (beforeBytes) and the target snapshot payload using the existing
+// printDelta machinery, then prompts the user. Both sides are sanitised
+// the same way (see callers), so the diff shows only the declarative
+// fields that actually differ. Returns true if the apply should proceed.
 func showPreviewAndConfirm(
 	out io.Writer,
 	in io.Reader,
 	target delta.Key,
-	live any,
+	beforeBytes delta.State,
 	payload delta.State,
 	autoYes bool,
 ) bool {
-	liveBytes, _ := json.Marshal(live)
 	d := delta.Delta{
 		Modified: map[delta.Key]delta.State{target: payload},
 	}
-	prev := delta.Snapshot{target: liveBytes}
+	prev := delta.Snapshot{target: beforeBytes}
 	fmt.Fprintln(out, "--- preview (apply will Update with the ResourceVersion read above) ---")
 	printDelta(out, d, prev)
 	return autoYes || promptConfirm(in, out)

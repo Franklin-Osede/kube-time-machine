@@ -16,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
+
+	"github.com/Franklin-Osede/kube-time-machine/internal/agent"
 )
 
 // makeDeployment is a small helper used by rollback tests to build a
@@ -274,6 +276,46 @@ func TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
 	}
 	if capturedUpdate.ResourceVersion != "55" {
 		t.Errorf("ResourceVersion on Update: want live %q, got %q", "55", capturedUpdate.ResourceVersion)
+	}
+}
+
+// TestRollbackDeployment_PreviewIsSanitised pins the C3 fix: the rollback
+// preview must diff a SANITISED view of the live object against the
+// snapshot payload, so server-owned churn (resourceVersion, managedFields,
+// status) never appears in the diff the user confirms. Before the fix the
+// preview marshalled the raw live object and drowned the one meaningful
+// hunk in noise.
+func TestRollbackDeployment_PreviewIsSanitised(t *testing.T) {
+	live := makeDeployment("api", "nginx:1.27", "100")
+	live.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl"}}
+	live.Status = appsv1.DeploymentStatus{ObservedGeneration: 7, Replicas: 3}
+	client := fake.NewSimpleClientset(live)
+
+	// Build the snapshot payload exactly as the agent's recorder would,
+	// so before/after are sanitised the same way.
+	_, payload, err := agent.MarshalDeployment(makeDeployment("api", "nginx:1.25", ""))
+	if err != nil {
+		t.Fatalf("MarshalDeployment: %v", err)
+	}
+
+	var out bytes.Buffer
+	// Decline at the prompt: we only want to inspect the rendered preview,
+	// not mutate the cluster.
+	if err := rollbackDeployment(
+		context.Background(), &out, strings.NewReader("n\n"),
+		client, key("Deployment", "default", "api"), []byte(payload), false,
+	); err != nil {
+		t.Fatalf("rollbackDeployment: %v", err)
+	}
+
+	preview := out.String()
+	if !strings.Contains(preview, "nginx:1.25") {
+		t.Errorf("preview should show the rollback target image; got:\n%s", preview)
+	}
+	for _, noise := range []string{"resourceVersion", "managedFields", "observedGeneration"} {
+		if strings.Contains(preview, noise) {
+			t.Errorf("preview leaked server-owned field %q (C3 regression):\n%s", noise, preview)
+		}
 	}
 }
 

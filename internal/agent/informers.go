@@ -25,6 +25,7 @@ type Informers struct {
 	deployInf cache.SharedIndexInformer
 	cmInf     cache.SharedIndexInformer
 	buf       *Buffer
+	ready     chan struct{} // closed once the initial cache sync completes
 }
 
 // NewInformers constructs Informers wired to buf.
@@ -40,6 +41,7 @@ func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration
 		deployInf: factory.Apps().V1().Deployments().Informer(),
 		cmInf:     factory.Core().V1().ConfigMaps().Informer(),
 		buf:       buf,
+		ready:     make(chan struct{}),
 	}
 	// AddEventHandler can fail (e.g. if the informer was already
 	// started). At construction time the informers are fresh, so the
@@ -72,9 +74,24 @@ func (i *Informers) Start(ctx context.Context) error {
 		}
 		return fmt.Errorf("agent: informer cache sync failed")
 	}
+	// Signal readiness so the Snapshotter can take its first flush against
+	// a complete buffer. Closed exactly once, only on a successful sync —
+	// callers waiting on Ready() will keep waiting if sync fails or the
+	// context is cancelled first, which is the correct behaviour (no
+	// partial snapshot is ever taken).
+	close(i.ready)
 	slog.Info("agent: informer caches synced")
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// Ready returns a channel that is closed once the initial informer cache
+// sync has completed successfully. It is the synchronisation point the
+// Snapshotter waits on before its first flush; see the contract note on
+// Start. The channel is never closed if Start exits due to a sync failure
+// or a cancelled context.
+func (i *Informers) Ready() <-chan struct{} {
+	return i.ready
 }
 
 func (i *Informers) deploymentHandler() cache.ResourceEventHandlerFuncs {

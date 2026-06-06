@@ -173,6 +173,105 @@ func TestSnapshotter_FlushPropagatesStoreErrors(t *testing.T) {
 	}
 }
 
+// flakyFullStore wraps a real Store and fails the first PutFull, then
+// delegates. Used to prove a failed full write does not advance the
+// Snapshotter's cadence (the C2 regression).
+type flakyFullStore struct {
+	storage.Store
+	fullCalls int
+}
+
+func (f *flakyFullStore) PutFull(ctx context.Context, ts time.Time, snap delta.Snapshot) (types.SnapshotMeta, error) {
+	f.fullCalls++
+	if f.fullCalls == 1 {
+		return types.SnapshotMeta{}, errBoom
+	}
+	return f.Store.PutFull(ctx, ts, snap)
+}
+
+// TestSnapshotter_FailedFullDoesNotAdvanceCadence pins the fix for the
+// chain-corruption bug: if a full snapshot write fails, the next Flush
+// must retry the SAME cadence slot (another full), not emit a delta
+// anchored to a snapshot that was never persisted. Before the fix,
+// flushNum advanced before the write, so the recovery flush was a delta
+// with an empty PrevID — unreconstructable.
+func TestSnapshotter_FailedFullDoesNotAdvanceCadence(t *testing.T) {
+	store := &flakyFullStore{Store: newFSStore(t)}
+	buf := agent.NewBuffer()
+	buf.Upsert(k("Deployment", "default", "api"), delta.State("v1"))
+
+	s := agent.NewSnapshotter(buf, store, time.Minute, 3).
+		WithClock(stepClock(at(2026, 5, 18, 14, 0), time.Minute))
+
+	// First flush attempts a full and fails.
+	if _, err := s.Flush(context.Background()); !errors.Is(err, errBoom) {
+		t.Fatalf("first Flush: want errBoom, got %v", err)
+	}
+
+	// Recovery flush must still be a full (cadence not advanced).
+	full, err := s.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("recovery Flush: %v", err)
+	}
+	if full.Kind != types.KindFull {
+		t.Fatalf("after a failed full, recovery kind: want full, got %q", full.Kind)
+	}
+	if full.PrevID != "" {
+		t.Errorf("recovered full should have empty PrevID, got %q", full.PrevID)
+	}
+
+	// The following flush is a delta correctly anchored to the recovered full.
+	buf.Upsert(k("Deployment", "default", "api2"), delta.State("v2"))
+	d, err := s.Flush(context.Background())
+	if err != nil {
+		t.Fatalf("delta Flush: %v", err)
+	}
+	if d.Kind != types.KindDelta {
+		t.Fatalf("kind after recovery: want delta, got %q", d.Kind)
+	}
+	if d.PrevID != full.ID {
+		t.Errorf("delta PrevID: want recovered full %q, got %q", full.ID, d.PrevID)
+	}
+}
+
+// TestSnapshotter_RunWaitsForReady pins the fix for the informer-sync
+// race: Run must not take its first flush until the ready channel is
+// closed, so the first (always-full) snapshot reflects a synced cluster
+// rather than a partially-populated buffer.
+func TestSnapshotter_RunWaitsForReady(t *testing.T) {
+	store := newFSStore(t)
+	buf := agent.NewBuffer()
+	buf.Upsert(k("Deployment", "default", "api"), delta.State("v1"))
+
+	s := agent.NewSnapshotter(buf, store, 20*time.Millisecond, 12)
+
+	ready := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = s.Run(ctx, ready) }()
+
+	// Several ticker intervals pass while ready is still open: no flush.
+	time.Sleep(80 * time.Millisecond)
+	metas, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(metas) != 0 {
+		t.Fatalf("Run flushed %d snapshot(s) before ready was closed", len(metas))
+	}
+
+	// Closing ready releases the loop; flushes begin.
+	close(ready)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if m, _ := store.List(context.Background()); len(m) > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("Run did not flush after ready was closed")
+}
+
 // TestSnapshotter_RunStopsOnContextCancel exercises the goroutine loop:
 // a cancelled context must cause Run to return ctx.Err() promptly,
 // without leaking the ticker goroutine.
@@ -182,7 +281,7 @@ func TestSnapshotter_RunStopsOnContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- s.Run(ctx) }()
+	go func() { done <- s.Run(ctx, nil) }()
 
 	// Let one or two ticks pass so we know the loop is alive.
 	time.Sleep(120 * time.Millisecond)

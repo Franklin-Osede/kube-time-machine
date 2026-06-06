@@ -77,15 +77,21 @@ func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 	ts := s.now()
 
 	isFull := s.flushNum%s.fullEvery == 0
-	s.flushNum++
 
 	if isFull {
 		meta, err := s.store.PutFull(ctx, ts, curr)
 		if err != nil {
 			return types.SnapshotMeta{}, fmt.Errorf("agent: put full: %w", err)
 		}
+		// Advance internal state ONLY after the write succeeds. If the
+		// write failed and we had already incremented flushNum, the next
+		// Flush would emit a delta anchored to a snapshot that was never
+		// persisted (prevID still "" or stale) — an unreconstructable
+		// chain. Keeping the position pinned means a failed flush simply
+		// retries the same cadence slot (here: another full) next tick.
 		s.prevState = curr
 		s.prevID = meta.ID
+		s.flushNum++
 		return meta, nil
 	}
 
@@ -96,6 +102,7 @@ func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 	}
 	s.prevState = curr
 	s.prevID = meta.ID
+	s.flushNum++
 	return meta, nil
 }
 
@@ -103,7 +110,22 @@ func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 // and then returns ctx.Err(). Errors during individual flushes are
 // logged but do not stop the loop — losing one snapshot is better than
 // losing the agent.
-func (s *Snapshotter) Run(ctx context.Context) error {
+//
+// ready gates the first flush: Run waits for it to be closed before
+// starting the ticker, so the first (always-full) snapshot captures a
+// complete cluster view rather than the partial buffer that exists
+// before the informer caches finish their initial sync. Pass nil to
+// skip the gate (used by tests that drive Flush directly). If ctx is
+// cancelled while waiting, Run returns without ever flushing.
+func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
+	if ready != nil {
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 

@@ -137,6 +137,32 @@ func TestInformers_DeleteRemovesFromBuffer(t *testing.T) {
 	waitForBufferLen(t, buf, 0)
 }
 
+// TestInformers_ReadyClosesAfterSync pins the readiness signal the
+// Snapshotter relies on: Ready() is open before Start and closed once the
+// initial cache sync completes.
+func TestInformers_ReadyClosesAfterSync(t *testing.T) {
+	client := fake.NewSimpleClientset(deploymentFixture("api", "nginx:1.0"))
+	buf := agent.NewBuffer()
+	inf := agent.NewInformers(client, buf, 0)
+
+	select {
+	case <-inf.Ready():
+		t.Fatal("Ready() was closed before Start()")
+	default:
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = inf.Start(ctx) }()
+
+	select {
+	case <-inf.Ready():
+		// closed after sync — correct.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Ready() never closed after Start() synced")
+	}
+}
+
 func TestInformers_StartReturnsContextErrorOnCancel(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	buf := agent.NewBuffer()
