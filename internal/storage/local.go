@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -75,7 +76,16 @@ func (l *Local) loadIndex() error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(b, &l.index)
+	if err := json.Unmarshal(b, &l.index); err != nil {
+		// The cache exists but is corrupt (truncated mid-write, garbled).
+		// Same recovery as a missing cache: rebuild from the authoritative
+		// per-snapshot meta.json files rather than refusing to open the
+		// store. rebuildIndex re-persists a clean index.json, healing it.
+		slog.Warn("storage: index.json is corrupt; rebuilding from snapshots", "err", err)
+		l.index = nil
+		return l.rebuildIndex()
+	}
+	return nil
 }
 
 // rebuildIndex reconstructs the in-memory index by scanning the meta.json

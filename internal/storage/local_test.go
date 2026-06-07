@@ -240,6 +240,41 @@ func TestRebuildsIndexWhenMissing(t *testing.T) {
 	}
 }
 
+// TestRebuildsIndexWhenCorrupt is the sibling of the missing-index case: a
+// corrupt index.json (truncated mid-write, garbled bytes) must not make
+// NewLocal fail. The store recovers by rebuilding from the per-snapshot
+// meta.json files and re-persists a clean index.json.
+func TestRebuildsIndexWhenCorrupt(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+
+	s1, _ := storage.NewLocal(root)
+	snap := delta.Snapshot{key("Deployment", "default", "api"): delta.State("v1")}
+	m, _ := s1.PutFull(ctx, at(2026, 5, 18, 14, 0, 0, 0), snap)
+
+	if err := os.WriteFile(filepath.Join(root, "index.json"), []byte("{not valid json"), 0o644); err != nil {
+		t.Fatalf("corrupt index: %v", err)
+	}
+
+	s2, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal with a corrupt index should recover, got: %v", err)
+	}
+	got, _ := s2.List(ctx)
+	if len(got) != 1 || got[0].ID != m.ID {
+		t.Fatalf("rebuilt List after corruption: want [%s], got %v", m.ID, got)
+	}
+
+	// The corrupt cache was healed: a third open reads a valid index.json.
+	s3, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal #3 after repair: %v", err)
+	}
+	if got3, _ := s3.List(ctx); len(got3) != 1 {
+		t.Errorf("index.json not repaired; third open got %v", got3)
+	}
+}
+
 func TestGet_UnknownIDReturnsError(t *testing.T) {
 	s := newStore(t)
 	_, err := s.Get(context.Background(), types.SnapshotID("does-not-exist"))
