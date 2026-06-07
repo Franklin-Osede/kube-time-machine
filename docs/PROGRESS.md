@@ -309,7 +309,7 @@ Verificado: `go build`, `go vet`, `gofmt -l` limpio, `go test -race -count=2 ./.
 |---|---|---|
 | Release no publica `ktm-agent` | ✅ **Resuelto (2026-06-06)** | El job de `release.yml` ahora compila y adjunta `ktm` **y** `ktm-agent` para las 5 plataformas. Verificado: `ktm-agent` cross-compila en linux/darwin/windows (amd64+arm64). |
 | Flush final puede persistir un full parcial | ✅ **Resuelto (2026-06-06)** | El flush de shutdown en `cmd/agent/main.go` está ahora condicionado a un receive no-bloqueante de `inf.Ready()`; si el agente se cancela antes del sync, se omite el flush en vez de persistir una vista parcial. |
-| **`index.json` corrupto no tiene fallback** | Abierto (bajo) | El rebuild solo cubre el caso de índice *ausente*; un Unmarshal fallido hace errar a `NewLocal`. Intentar rebuild con warning, o documentar "borra index.json para reconstruir". |
+| `index.json` corrupto no tiene fallback | ✅ **Resuelto (2026-06-07)** | Un Unmarshal fallido ahora cae al rebuild desde `snapshots/` con un warning y re-persiste un índice limpio; `NewLocal` ya no falla por un cache corrupto. |
 | **Snapshot incompleto puede entrar al índice reconstruido** | Abierto (bajo) | meta.json se escribe antes que el payload; un crash entre medias deja un dir que el rebuild acepta (valida solo meta). Escribir payload antes que meta, o validar payload en el rebuild. |
 | Sin tags ni GitHub Releases públicos | **Abierto** | `git ls-remote --tags origin` vacío y Releases API `[]`. Relanzar limpio con `v0.1.1` (RC primero ~2026-06-09, final ~2026-06-16). |
 | Curva de aprendizaje de client-go | **Activo** | Planificar 3 decisiones de diseño antes de tirar código en próxima sesión |
