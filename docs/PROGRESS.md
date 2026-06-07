@@ -7,7 +7,7 @@
 
 ## TL;DR
 
-`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–7 cerradas; Etapa 8 (lanzamiento) en progreso.** Tras un pase de endurecimiento pre-RC (ver sección dedicada) el código está listo para un RC técnico, pero **hay un P0 de release abierto** que bloquea el lanzamiento final: `release.yml` publica solo el binario `ktm`, no `ktm-agent` (Modo A necesita ambos).
+`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–7 cerradas; Etapa 8 (lanzamiento) en progreso.** Tras un pase de endurecimiento pre-RC (ver sección dedicada) el código está listo para un RC técnico: el P0 de release (`release.yml` no publicaba `ktm-agent`) está **resuelto**, igual que el residual del flush final. Lo que queda es mecánica de lanzamiento: tag RC, verificar artefactos, demo y post.
 
 - ✅ Motor de deltas (100% cobertura + fuzz test)
 - ✅ Storage local en filesystem (con index reconstruible)
@@ -20,7 +20,7 @@
 - ✅ Declarative-state recorder: `.status` stripped en marshal.go (ADR-0005) — KTM ya no compite con Velero/observabilidad
 - ✅ Doc completa: architecture.md con Mermaid, comparison.md vs Velero/ArgoCD-Flux/events/observabilidad, install.md operacional
 - ✅ ADRs 0003 (typed informers), 0004 (rebuildable index), 0005 (declarative-state), 0007 (packaging) documentados
-- ⚠️ release.yml: multi-arch (amd64+arm64) image + chart OCI + binarios en GHCR on tag `v*` — **pero el job CLI solo compila `./cmd/ktm`; falta `ktm-agent`** (P0, ver riesgos)
+- ✅ release.yml: multi-arch (amd64+arm64) image + chart OCI + binarios `ktm` **y** `ktm-agent` (5 plataformas) en GHCR on tag `v*`; `:latest` solo en tags estables
 
 Lo siguiente es **Etapa 8: lanzamiento público** — cerrar el P0 de release, RC `v0.1.1-rc.1`, demo recording, launch post.
 
@@ -296,8 +296,10 @@ Una segunda revisión profunda (más una auditoría independiente que la confirm
 | **I1** | `release.yml` movía `:latest` para cualquier tag `v*`, incluido un RC. | `:latest` solo en tags estables; tags con guion se marcan prerelease. |
 | **I5** | Perder `index.json` dejaba `list`/`blame` ciegos (el rebuild de ADR-0004 no estaba implementado). | `NewLocal` reconstruye el índice escaneando `snapshots/` cuando falta el cache, y lo re-persiste. |
 | **I2** | `resources.watch` en `values.yaml` era config fantasma (informers y ClusterRole hardcodean el set). | Eliminado, con comentario de dónde vive de verdad el set vigilado. |
+| **P0** | `release.yml` publicaba solo `ktm`, no `ktm-agent` — Modo A necesita ambos. | El job compila y adjunta ambos binarios para las 5 plataformas; `ktm-agent` gana `--version`. Verificado cross-compile. |
+| **Flush final** | Residual de C1: el flush de shutdown corría incondicional aunque el sync no hubiera ocurrido. | Condicionado a un receive no-bloqueante de `inf.Ready()`. |
 
-Verificado: `go build`, `go vet`, `gofmt -l` limpio, `go test -race -count=2 ./...` verde. No tocado deliberadamente: I4 (colisión de IDs a ms, baja) y `sync.Once` en `Start()` (blindaje opcional).
+Verificado: `go build`, `go vet`, `gofmt -l` limpio, `go test -race -count=2 ./...` verde, y `ktm-agent` cross-compila en las 5 plataformas del release. No tocado deliberadamente: I4 (colisión de IDs a ms, baja) y `sync.Once` en `Start()` (blindaje opcional).
 
 ---
 
@@ -305,8 +307,8 @@ Verificado: `go build`, `go vet`, `gofmt -l` limpio, `go test -race -count=2 ./.
 
 | Riesgo | Estado | Plan |
 |---|---|---|
-| **Release no publica `ktm-agent`** | **P0 — BLOQUEA lanzamiento final** | El job CLI de `release.yml` solo compila `./cmd/ktm`; Modo A (recomendado/demo) necesita ambos binarios. Añadir `./cmd/agent` a la matriz de build (publicar ambos) o documentar build-from-source del agente. |
-| **Flush final puede persistir un full parcial** | **Abierto (residual de C1)** | El flush de shutdown en `cmd/agent/main.go` corre incondicional tras `g.Wait`, incluso si se canceló antes del sync. C1 solo blindó `Run`. Condicionar el flush final a que `inf.Ready()` se haya cerrado. |
+| Release no publica `ktm-agent` | ✅ **Resuelto (2026-06-06)** | El job de `release.yml` ahora compila y adjunta `ktm` **y** `ktm-agent` para las 5 plataformas. Verificado: `ktm-agent` cross-compila en linux/darwin/windows (amd64+arm64). |
+| Flush final puede persistir un full parcial | ✅ **Resuelto (2026-06-06)** | El flush de shutdown en `cmd/agent/main.go` está ahora condicionado a un receive no-bloqueante de `inf.Ready()`; si el agente se cancela antes del sync, se omite el flush en vez de persistir una vista parcial. |
 | **`index.json` corrupto no tiene fallback** | Abierto (bajo) | El rebuild solo cubre el caso de índice *ausente*; un Unmarshal fallido hace errar a `NewLocal`. Intentar rebuild con warning, o documentar "borra index.json para reconstruir". |
 | **Snapshot incompleto puede entrar al índice reconstruido** | Abierto (bajo) | meta.json se escribe antes que el payload; un crash entre medias deja un dir que el rebuild acepta (valida solo meta). Escribir payload antes que meta, o validar payload en el rebuild. |
 | Sin tags ni GitHub Releases públicos | **Abierto** | `git ls-remote --tags origin` vacío y Releases API `[]`. Relanzar limpio con `v0.1.1` (RC primero ~2026-06-09, final ~2026-06-16). |
