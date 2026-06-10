@@ -60,3 +60,17 @@ jobs:
 
       - name: helm template (render must succeed)
         run: helm template ktm deploy/helm --namespace ktm-system >/dev/null
+
+      - name: helm template health toggle contract
+        run: |
+          enabled="$(helm template ktm deploy/helm --namespace ktm-system)"
+          echo "$enabled" | grep -q -- '- --health-addr=:8080'
+          echo "$enabled" | grep -q 'containerPort: 8080'
+          echo "$enabled" | grep -q 'livenessProbe:'
+          echo "$enabled" | grep -q 'readinessProbe:'
+
+          disabled="$(helm template ktm deploy/helm --namespace ktm-system --set agent.health.enabled=false)"
+          echo "$disabled" | grep -q -- '- --health-addr=$'
+          ! echo "$disabled" | grep -q 'containerPort: 8080'
+          ! echo "$disabled" | grep -q 'livenessProbe:'
+          ! echo "$disabled" | grep -q 'readinessProbe:'
