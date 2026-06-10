@@ -301,6 +301,8 @@ Una segunda revisión profunda (más una auditoría independiente que la confirm
 
 Verificado: `go build`, `go vet`, `gofmt -l` limpio, `go test -race -count=2 ./...` verde, y `ktm-agent` cross-compila en las 5 plataformas del release. No tocado deliberadamente: I4 (colisión de IDs a ms, baja) y `sync.Once` en `Start()` (blindaje opcional).
 
+Seguimiento de production-readiness (2026-06-10): resueltos los tres fixes de mayor ratio impacto/esfuerzo detectados en la auditoría: health endpoints + probes (`/healthz`, `/readyz`), escrituras durables con fsync, y orden payload-before-meta con validación de payload durante rebuild. El chart abre NetworkPolicy ingress solo al puerto de salud cuando `agent.health.enabled=true`, y pasa `--health-addr=` cuando está desactivado para que el binario no levante el servidor por su default local `:8080`.
+
 ---
 
 ## Riesgos abiertos
@@ -310,7 +312,8 @@ Verificado: `go build`, `go vet`, `gofmt -l` limpio, `go test -race -count=2 ./.
 | Release no publica `ktm-agent` | ✅ **Resuelto (2026-06-06)** | El job de `release.yml` ahora compila y adjunta `ktm` **y** `ktm-agent` para las 5 plataformas. Verificado: `ktm-agent` cross-compila en linux/darwin/windows (amd64+arm64). |
 | Flush final puede persistir un full parcial | ✅ **Resuelto (2026-06-06)** | El flush de shutdown en `cmd/agent/main.go` está ahora condicionado a un receive no-bloqueante de `inf.Ready()`; si el agente se cancela antes del sync, se omite el flush en vez de persistir una vista parcial. |
 | `index.json` corrupto no tiene fallback | ✅ **Resuelto (2026-06-07)** | Un Unmarshal fallido ahora cae al rebuild desde `snapshots/` con un warning y re-persiste un índice limpio; `NewLocal` ya no falla por un cache corrupto. |
-| **Snapshot incompleto puede entrar al índice reconstruido** | Abierto (bajo) | meta.json se escribe antes que el payload; un crash entre medias deja un dir que el rebuild acepta (valida solo meta). Escribir payload antes que meta, o validar payload en el rebuild. |
+| **Snapshot incompleto puede entrar al índice reconstruido** | ✅ **Resuelto (2026-06-10)** | `writeSnapshot` escribe payload antes de `meta.json`; `rebuildIndex` valida que el payload declarado exista y sea JSON del wire format esperado antes de aceptar el snapshot. |
+| Sin liveness/readiness probes en el agente | ✅ **Resuelto (2026-06-10)** | `ktm-agent` expone `/healthz` y `/readyz`; el chart añade probes y NetworkPolicy ingress al puerto de salud, con `agent.health.enabled=false` deshabilitando realmente el servidor. |
 | Sin tags ni GitHub Releases públicos | **Abierto** | `git ls-remote --tags origin` vacío y Releases API `[]`. Relanzar limpio con `v0.1.1` (RC primero ~2026-06-09, final ~2026-06-16). |
 | Curva de aprendizaje de client-go | **Activo** | Planificar 3 decisiones de diseño antes de tirar código en próxima sesión |
 | Rollback puede romper clusters | Pendiente (Etapa 5) | Probar primero en kind/minikube, nunca cluster real hasta pulir |
