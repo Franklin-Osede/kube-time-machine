@@ -40,6 +40,11 @@ spec:
             - --full-every={{ .Values.snapshot.fullEvery }}
             {{- if .Values.agent.health.enabled }}
             - --health-addr={{ .Values.agent.health.addr }}
+            {{- else }}
+            # Explicitly empty: the binary defaults to :8080, so omitting the
+            # flag would leave the health server running even though the chart
+            # says it is disabled (no port, no probes, NetworkPolicy deny-all).
+            - --health-addr=
             {{- end }}
           {{- if .Values.agent.health.enabled }}
           ports:
