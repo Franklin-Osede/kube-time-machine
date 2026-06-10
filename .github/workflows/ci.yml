@@ -63,14 +63,17 @@ jobs:
 
       - name: helm template health toggle contract
         run: |
+          # here-strings, not `echo | grep`: GitHub Actions runs steps with
+          # `-eo pipefail`, where `grep -q` exiting early on a match can
+          # SIGPIPE the upstream `echo` and fail the step on large renders.
           enabled="$(helm template ktm deploy/helm --namespace ktm-system)"
-          echo "$enabled" | grep -q -- '- --health-addr=:8080'
-          echo "$enabled" | grep -q 'containerPort: 8080'
-          echo "$enabled" | grep -q 'livenessProbe:'
-          echo "$enabled" | grep -q 'readinessProbe:'
+          grep -q -- '- --health-addr=:8080' <<<"$enabled"
+          grep -q 'containerPort: 8080'      <<<"$enabled"
+          grep -q 'livenessProbe:'           <<<"$enabled"
+          grep -q 'readinessProbe:'          <<<"$enabled"
 
           disabled="$(helm template ktm deploy/helm --namespace ktm-system --set agent.health.enabled=false)"
-          echo "$disabled" | grep -q -- '- --health-addr=$'
-          ! echo "$disabled" | grep -q 'containerPort: 8080'
-          ! echo "$disabled" | grep -q 'livenessProbe:'
-          ! echo "$disabled" | grep -q 'readinessProbe:'
+          grep -q -- '- --health-addr=$'  <<<"$disabled"
+          ! grep -q 'containerPort: 8080' <<<"$disabled"
+          ! grep -q 'livenessProbe:'      <<<"$disabled"
+          ! grep -q 'readinessProbe:'     <<<"$disabled"
