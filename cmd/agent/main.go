@@ -9,6 +9,7 @@
 //	--storage-dir   directory where snapshots are persisted
 //	--interval      how often to flush snapshots
 //	--full-every    take a full reference snapshot every N flushes
+//	--health-addr   HTTP listen address for /healthz and /readyz (empty = disabled)
 package main
 
 import (
@@ -26,6 +27,7 @@ import (
 	"os/signal"
 
 	"github.com/Franklin-Osede/kube-time-machine/internal/agent"
+	"github.com/Franklin-Osede/kube-time-machine/internal/health"
 	"github.com/Franklin-Osede/kube-time-machine/internal/kubeclient"
 	"github.com/Franklin-Osede/kube-time-machine/internal/storage"
 )
@@ -47,6 +49,7 @@ func run() error {
 		storageDir  = flag.String("storage-dir", "/var/lib/ktm", "directory where snapshots are persisted")
 		interval    = flag.Duration("interval", 5*time.Minute, "how often to flush snapshots")
 		fullEvery   = flag.Int("full-every", 12, "take a full reference snapshot every N flushes")
+		healthAddr  = flag.String("health-addr", ":8080", "HTTP listen address for /healthz and /readyz (empty = disabled)")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -76,10 +79,13 @@ func run() error {
 	slog.Info("ktm-agent: starting",
 		"storageDir", *storageDir,
 		"interval", interval.String(),
-		"fullEvery", *fullEvery)
+		"fullEvery", *fullEvery,
+		"healthAddr", *healthAddr)
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return inf.Start(gctx) })
+	healthSrv := health.New(*healthAddr, func() bool { return health.Ready(inf.Ready()) })
+	g.Go(func() error { return healthSrv.Run(gctx) })
 	// snap.Run waits on inf.Ready() before its first flush so the first
 	// (always-full) snapshot reflects a fully-synced cluster, not the
 	// partial buffer that exists during the informers' initial list/watch.

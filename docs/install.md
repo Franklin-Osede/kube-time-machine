@@ -104,6 +104,7 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 | `snapshot.fullEvery` | `12` | Every Nth flush is a full reference snapshot. Bounds chain-reconstruction cost (see [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md)). |
 | `storage.size` | `10Gi` | PVC size. Storage scales with change rate, not snapshot rate. |
 | `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
+| `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes liveness/readiness probes. |
 | `agent.resources.*` | conservative | The agent's working set is dominated by the informer cache; tune up if you watch large clusters. |
 | `networkPolicy.enabled` | `true` | Turn off only on clusters whose CNI does not enforce NetworkPolicy. |
 
