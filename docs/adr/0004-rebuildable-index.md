@@ -37,10 +37,10 @@ Read paths reflect this hierarchy:
 
 Write paths maintain the invariant that the per-snapshot files are durable before the index is updated:
 
-1. `writeSnapshot` creates the directory and writes `meta.json` and the payload via `atomicWriteJSON` (tempfile + rename) in sequence.
+1. `writeSnapshot` creates the directory, writes the payload via `atomicWriteJSON`, then writes `meta.json` via `atomicWriteJSON`.
 2. `appendIndex` then takes the in-memory lock, appends the new meta, sorts by timestamp, and writes the updated `index.json` atomically.
 
-If the agent crashes between (1) and (2), the snapshot is on disk but the index is one entry short. A startup-time rebuild would close that gap. **The rebuild routine is not implemented today** — the format is designed to support it, and the consequence of not running it is purely cosmetic (a snapshot is invisible to `List` but reachable by id).
+`meta.json` is the commit marker for a snapshot directory. If the agent crashes after the payload write but before `meta.json`, startup-time rebuild skips the incomplete directory. If it crashes between (1) and (2), the snapshot is on disk but the index is one entry short; startup rebuild closes that gap by scanning valid `meta.json` plus payload pairs.
 
 ## Alternatives considered
 
@@ -60,12 +60,8 @@ If the agent crashes between (1) and (2), the snapshot is on disk but the index 
 
 **Harder**
 
-- Two writes per snapshot persist (per-snapshot files + index). Each is atomic on its own; the pair is not. A crash between writes leaves the index one entry short of the directory listing — recoverable but only by a routine we have not written yet.
-- No fsync is performed (see comment on `atomicWriteJSON`). Rename gives us crash-consistency at the page-cache level but not full durability against kernel crashes. Acceptable for MVP: the agent re-snapshots on restart, so a lost trailing snapshot reappears within one interval.
-
-## Non-decision
-
-The rebuild routine itself — when it runs (startup? on-demand subcommand?), what it logs, how it handles `meta.json` files that fail to parse — is deliberately left open. The format supports it; the operational shape can wait until we have evidence it is needed.
+- Two writes per snapshot persist (per-snapshot files + index). Each is atomic on its own; the pair is not. A crash between writes leaves the index one entry short of the directory listing; startup rebuild repairs it.
+- `atomicWriteJSON` fsyncs the temporary file and parent directory after rename. This improves durability across node crashes on filesystems that honor fsync, at the cost of extra IO per snapshot.
 
 ## Related
 

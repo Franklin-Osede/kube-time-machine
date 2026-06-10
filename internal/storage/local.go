@@ -110,9 +110,13 @@ func (l *Local) rebuildIndex() error {
 		if !e.IsDir() {
 			continue
 		}
+		snapDir := filepath.Join(dir, e.Name())
 		var meta types.SnapshotMeta
-		if err := readJSON(filepath.Join(dir, e.Name(), metaFileName), &meta); err != nil {
+		if err := readJSON(filepath.Join(snapDir, metaFileName), &meta); err != nil {
 			continue // incomplete/unreadable snapshot dir — skip, keep the rest
+		}
+		if !snapshotPayloadPresent(snapDir, meta) {
+			continue // meta without a valid payload — incomplete write, skip
 		}
 		rebuilt = append(rebuilt, meta)
 	}
@@ -200,18 +204,23 @@ func (l *Local) List(_ context.Context) ([]types.SnapshotMeta, error) {
 	return out, nil
 }
 
-// writeSnapshot creates the per-snapshot directory and writes meta.json
-// and the payload file atomically (rename-based, per file).
+// writeSnapshot creates the per-snapshot directory and writes the payload
+// before meta.json so a crash mid-write never leaves a meta-only dir that
+// rebuildIndex would accept. Each file is written atomically (rename-based)
+// with fsync for durability across node crashes.
 func (l *Local) writeSnapshot(meta types.SnapshotMeta, payloadName string, payload any) error {
 	dir := filepath.Join(l.root, snapshotsDirName, string(meta.ID))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("storage: mkdir %s: %w", meta.ID, err)
 	}
-	if err := atomicWriteJSON(filepath.Join(dir, metaFileName), meta); err != nil {
-		return fmt.Errorf("storage: write meta %s: %w", meta.ID, err)
+	if err := syncDir(filepath.Join(l.root, snapshotsDirName)); err != nil {
+		return fmt.Errorf("storage: sync snapshots dir %s: %w", meta.ID, err)
 	}
 	if err := atomicWriteJSON(filepath.Join(dir, payloadName), payload); err != nil {
 		return fmt.Errorf("storage: write payload %s: %w", meta.ID, err)
+	}
+	if err := atomicWriteJSON(filepath.Join(dir, metaFileName), meta); err != nil {
+		return fmt.Errorf("storage: write meta %s: %w", meta.ID, err)
 	}
 	return nil
 }
@@ -238,23 +247,63 @@ func idFromTime(t time.Time) types.SnapshotID {
 }
 
 // atomicWriteJSON marshals v as JSON and writes it to path via a
-// tempfile-then-rename, so concurrent readers never see a partial file.
-//
-// Note: we do not fsync. The rename gives us crash-consistency at the
-// page-cache level (readers see old or new, never partial). Full
-// durability across kernel crashes would require fsync on both the
-// tempfile and the parent directory, which is acceptable to defer for
-// MVP given the agent re-snapshots on restart.
+// tempfile-then-rename with fsync on the file and parent directory, so
+// concurrent readers never see a partial file and committed data survives
+// a node crash.
 func atomicWriteJSON(path string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// syncDir fsyncs a directory so a rename into it is durable across crashes.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// snapshotPayloadPresent reports whether the on-disk payload for meta exists
+// and is readable JSON. Used during index rebuild to skip incomplete writes.
+func snapshotPayloadPresent(dir string, meta types.SnapshotMeta) bool {
+	switch meta.Kind {
+	case types.KindFull:
+		var w wireSnapshot
+		return readJSON(filepath.Join(dir, fullFileName), &w) == nil
+	case types.KindDelta:
+		var w wireDelta
+		return readJSON(filepath.Join(dir, deltaFileName), &w) == nil
+	default:
+		return false
+	}
 }
 
 func readJSON(path string, v any) error {

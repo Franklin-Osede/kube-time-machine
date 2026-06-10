@@ -247,8 +247,12 @@ func TestSnapshotter_RunWaitsForReady(t *testing.T) {
 
 	ready := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = s.Run(ctx, ready) }()
+	// Wait for Run to fully exit before the test returns. Otherwise its
+	// flush loop can still be mid-write when t.TempDir cleanup runs
+	// RemoveAll, racing on the storage dir ("directory not empty").
+	done := make(chan struct{})
+	go func() { _ = s.Run(ctx, ready); close(done) }()
+	defer func() { cancel(); <-done }()
 
 	// Several ticker intervals pass while ready is still open: no flush.
 	time.Sleep(80 * time.Millisecond)

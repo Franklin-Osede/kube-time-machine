@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -280,6 +281,45 @@ func TestGet_UnknownIDReturnsError(t *testing.T) {
 	_, err := s.Get(context.Background(), types.SnapshotID("does-not-exist"))
 	if err == nil {
 		t.Fatal("expected error for unknown ID, got nil")
+	}
+}
+
+// TestRebuildSkipsMetaWithoutPayload ensures a crash mid-write that left
+// meta.json but no payload does not pollute the rebuilt index.
+func TestRebuildSkipsMetaWithoutPayload(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+
+	s1, _ := storage.NewLocal(root)
+	snap := delta.Snapshot{key("Deployment", "default", "api"): delta.State("v1")}
+	good, _ := s1.PutFull(ctx, at(2026, 5, 18, 14, 0, 0, 0), snap)
+
+	// Simulate a crash after meta was written but before payload landed.
+	badDir := filepath.Join(root, "snapshots", "20260518T140500000Z")
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatalf("mkdir bad snapshot: %v", err)
+	}
+	badMeta := types.SnapshotMeta{
+		ID:        types.SnapshotID("20260518T140500000Z"),
+		Kind:      types.KindFull,
+		Timestamp: at(2026, 5, 18, 14, 5, 0, 0),
+	}
+	metaBytes, _ := json.Marshal(badMeta)
+	if err := os.WriteFile(filepath.Join(badDir, "meta.json"), metaBytes, 0o644); err != nil {
+		t.Fatalf("write orphan meta: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(root, "index.json")); err != nil {
+		t.Fatalf("remove index: %v", err)
+	}
+
+	s2, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal after orphan meta: %v", err)
+	}
+	got, _ := s2.List(ctx)
+	if len(got) != 1 || got[0].ID != good.ID {
+		t.Fatalf("rebuilt List: want only [%s], got %v", good.ID, got)
 	}
 }
 
