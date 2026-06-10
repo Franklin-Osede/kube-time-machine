@@ -34,7 +34,11 @@ Cluster-scoped (not namespace-scoped) because the product value is "see the whol
 
 ### 4. NetworkPolicy: deny ingress, allow DNS, allow all egress; gated by `networkPolicy.enabled` (default `true`)
 
-The agent exposes no ports, so `Ingress: []` (deny-all) is unconditionally correct. Egress is trickier: a strict "only kube-apiserver" rule is portable in theory but brittle in practice — the apiserver endpoint moves between cluster types (ClusterIP in kind/OrbStack, external LB in EKS/GKE), and the chart cannot derive it generically. The MVP ships an explicit allow-DNS + allow-all-egress rule with a comment in the template explaining the trade-off, so the policy is a clear signal-of-intent without breaking on any cluster.
+The agent exposes no ports, so `Ingress: []` (deny-all) is unconditionally correct.
+
+> **Amendment (2026-06-10):** the agent now exposes a single health port for Kubernetes liveness/readiness probes (`agent.health`, default `:8080`). Ingress is therefore no longer unconditional deny-all — the policy allows that one port (and nothing else) so probes succeed on CNIs that filter node→pod traffic (e.g. Cilium), and falls back to deny-all when the health server is disabled. The endpoint serves only `/healthz` and `/readyz`, never snapshot data, so this opens no confidential surface.
+
+Egress is trickier: a strict "only kube-apiserver" rule is portable in theory but brittle in practice — the apiserver endpoint moves between cluster types (ClusterIP in kind/OrbStack, external LB in EKS/GKE), and the chart cannot derive it generically. The MVP ships an explicit allow-DNS + allow-all-egress rule with a comment in the template explaining the trade-off, so the policy is a clear signal-of-intent without breaking on any cluster.
 
 The flag `networkPolicy.enabled` lets users opt out on clusters whose CNI doesn't support NetworkPolicy (vanilla kindnet, flannel without the extension). Tightening egress is a Phase 2 task once we have real deployment data.
 

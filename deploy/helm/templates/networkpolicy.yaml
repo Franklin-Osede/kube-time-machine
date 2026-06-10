@@ -1,6 +1,10 @@
 {{- if .Values.networkPolicy.enabled -}}
-# Ingress: deny-all. The agent exposes no ports — nobody should be
-# talking to it.
+# Ingress: the agent has no Service, but it exposes a health port for the
+# kubelet's liveness/readiness probes. We allow ingress to exactly that
+# port and nothing else, so probes succeed even on CNIs that subject
+# node→pod traffic to NetworkPolicy (e.g. Cilium). The endpoint serves only
+# /healthz and /readyz — never snapshot data — so this opens no confidential
+# surface. When the health server is disabled, ingress stays deny-all.
 #
 # Egress: DNS plus allow-all to the rest of the cluster + internet.
 # A stricter "only kube-apiserver" rule is brittle across providers
@@ -22,7 +26,14 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  ingress: []
+  ingress:
+    {{- if .Values.agent.health.enabled }}
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.agent.health.port }}
+    {{- else }}
+    []
+    {{- end }}
   egress:
     # DNS — kube-dns / CoreDNS in kube-system.
     - to:
