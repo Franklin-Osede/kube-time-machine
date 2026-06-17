@@ -93,27 +93,41 @@ func TestMarshalDeployment_DeterministicAcrossCalls(t *testing.T) {
 	}
 }
 
-// TestMarshalDeployment_StripsResourceVersionAndManagedFields is the key
-// behavioural test: two Deployments that differ ONLY in those fields
-// must produce identical State bytes, so the snapshotter doesn't record
-// a spurious "modified" delta on every flush.
+// TestMarshalDeployment_StripsResourceVersionAndManagedFields verifies that
+// ResourceVersion, Generation, and ManagedFields are stripped so that two
+// Deployments differing only in those fields produce identical State bytes.
+// Manager names from ManagedFields are preserved as ktm.io/managers, so
+// both deployments use the same manager set to keep the states equal.
 func TestMarshalDeployment_StripsResourceVersionAndManagedFields(t *testing.T) {
+	managers := []metav1.ManagedFieldsEntry{{Manager: "kubectl"}}
+
 	d1 := newDeployment("nginx:1.0")
 	d1.ResourceVersion = "100"
 	d1.Generation = 1
-	d1.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "a"}}
+	d1.ManagedFields = managers
 
 	d2 := newDeployment("nginx:1.0")
 	d2.ResourceVersion = "9999"
 	d2.Generation = 42
-	d2.ManagedFields = []metav1.ManagedFieldsEntry{
-		{Manager: "x"}, {Manager: "y"}, {Manager: "z"},
-	}
+	d2.ManagedFields = managers
 
 	_, s1, _ := agent.MarshalDeployment(d1)
 	_, s2, _ := agent.MarshalDeployment(d2)
 	if string(s1) != string(s2) {
 		t.Errorf("noise fields leaked into state:\nd1: %s\nd2: %s", s1, s2)
+	}
+}
+
+// TestMarshalDeployment_ManagersAnnotation verifies that manager names from
+// ManagedFields are extracted and injected as ktm.io/managers.
+func TestMarshalDeployment_ManagersAnnotation(t *testing.T) {
+	d := newDeployment("nginx:1.0")
+	d.ManagedFields = []metav1.ManagedFieldsEntry{
+		{Manager: "kubectl"}, {Manager: "helm"}, {Manager: "kubectl"},
+	}
+	_, s, _ := agent.MarshalDeployment(d)
+	if !strings.Contains(string(s), `"ktm.io/managers":"helm,kubectl"`) {
+		t.Errorf("managers annotation missing or wrong in state: %s", s)
 	}
 }
 
@@ -217,6 +231,94 @@ func TestMarshalDeployment_StatusOnlyDifferenceProducesIdenticalBytes(t *testing
 	_, s2, _ := agent.MarshalDeployment(d2)
 	if string(s1) != string(s2) {
 		t.Errorf("status differences leaked into state:\ns1: %s\ns2: %s", s1, s2)
+	}
+}
+
+// TestMarshalDeployment_StripsNoiseAnnotations verifies that well-known
+// controller-owned annotations (kubectl last-applied, Helm, Argo CD, Flux)
+// are removed before serialisation so they don't produce spurious MODIFIED
+// deltas in the blame timeline.
+func TestMarshalDeployment_StripsNoiseAnnotations(t *testing.T) {
+	cases := []struct {
+		name string
+		ann  map[string]string
+	}{
+		{"kubectl", map[string]string{
+			"kubectl.kubernetes.io/last-applied-configuration": `{"apiVersion":"apps/v1"}`,
+			"app": "api", // user annotation — must survive
+		}},
+		{"deployment-revision", map[string]string{
+			"deployment.kubernetes.io/revision": "42",
+			"team": "platform",
+		}},
+		{"helm-prefix", map[string]string{
+			"meta.helm.sh/release-name":      "my-release",
+			"meta.helm.sh/release-namespace": "prod",
+			"version": "1.0",
+		}},
+		{"argocd-prefix", map[string]string{
+			"argocd.argoproj.io/sync-wave": "1",
+			"env": "prod",
+		}},
+		{"flux-prefix", map[string]string{
+			"fluxcd.io/sync-checksum": "abc123",
+			"owner": "platform-team",
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Baseline: same deployment but with all annotations removed.
+			base := newDeployment("nginx:1.0")
+			base.Annotations = nil
+			_, baseState, err := agent.MarshalDeployment(base)
+			if err != nil {
+				t.Fatalf("marshal base: %v", err)
+			}
+
+			// Noisy: same deployment with controller annotations present.
+			noisy := newDeployment("nginx:1.0")
+			noisy.Annotations = tc.ann
+			_, noisyState, err := agent.MarshalDeployment(noisy)
+			if err != nil {
+				t.Fatalf("marshal noisy: %v", err)
+			}
+
+			// States must be equal IFF all annotations in tc.ann are noise.
+			// If any user annotation is present we just verify it survived.
+			hasUserAnn := false
+			for k := range tc.ann {
+				switch k {
+				case "kubectl.kubernetes.io/last-applied-configuration",
+					"deployment.kubernetes.io/revision",
+					"deprecated.daemonset.template.generation":
+				default:
+					// Check for prefix noise
+					isPrefix := false
+					for _, p := range []string{"argocd.argoproj.io/", "fluxcd.io/", "kustomize.toolkit.fluxcd.io/", "meta.helm.sh/"} {
+						if len(k) >= len(p) && k[:len(p)] == p {
+							isPrefix = true
+							break
+						}
+					}
+					if !isPrefix {
+						hasUserAnn = true
+					}
+				}
+			}
+
+			if !hasUserAnn {
+				// All annotations were noise — state must equal the no-annotation baseline.
+				if string(noisyState) != string(baseState) {
+					t.Errorf("noise annotations leaked into state:\nnoisy: %s\nbase:  %s", noisyState, baseState)
+				}
+			} else {
+				// At least one user annotation — state must differ from the baseline.
+				if string(noisyState) == string(baseState) {
+					t.Errorf("user annotation was incorrectly stripped: noisy state equals baseline")
+				}
+			}
+		})
 	}
 }
 

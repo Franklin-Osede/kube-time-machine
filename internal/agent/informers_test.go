@@ -53,7 +53,7 @@ func configMapFixture(name, val string) *corev1.ConfigMap {
 // cleanup.
 func startInformers(t *testing.T, client *fake.Clientset, buf *agent.Buffer) context.CancelFunc {
 	t.Helper()
-	inf := agent.NewInformers(client, buf, 0)
+	inf := agent.NewInformers(client, buf, 0, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = inf.Start(ctx) }()
 	t.Cleanup(cancel)
@@ -140,10 +140,44 @@ func TestInformers_DeleteRemovesFromBuffer(t *testing.T) {
 // TestInformers_ReadyClosesAfterSync pins the readiness signal the
 // Snapshotter relies on: Ready() is open before Start and closed once the
 // initial cache sync completes.
+// TestInformers_ExcludeNamespaceDropsEvents verifies that resources in
+// excluded namespaces never reach the buffer.
+func TestInformers_ExcludeNamespaceDropsEvents(t *testing.T) {
+	// One resource in an excluded namespace, one in a watched namespace.
+	excluded := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "system-dep", Namespace: "kube-system"},
+		Spec: appsv1.DeploymentSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "c", Image: "nginx"}},
+				},
+			},
+		},
+	}
+	watched := deploymentFixture("api", "nginx:1.0")
+	client := fake.NewSimpleClientset(excluded, watched)
+	buf := agent.NewBuffer()
+
+	inf := agent.NewInformers(client, buf, 0, []string{"kube-system"})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = inf.Start(ctx) }()
+
+	// Only the watched resource should land in the buffer.
+	waitForBufferLen(t, buf, 1)
+
+	snap := buf.Snapshot()
+	for k := range snap {
+		if k.Namespace == "kube-system" {
+			t.Errorf("excluded namespace 'kube-system' leaked into buffer: key=%+v", k)
+		}
+	}
+}
+
 func TestInformers_ReadyClosesAfterSync(t *testing.T) {
 	client := fake.NewSimpleClientset(deploymentFixture("api", "nginx:1.0"))
 	buf := agent.NewBuffer()
-	inf := agent.NewInformers(client, buf, 0)
+	inf := agent.NewInformers(client, buf, 0, nil)
 
 	select {
 	case <-inf.Ready():
@@ -166,7 +200,7 @@ func TestInformers_ReadyClosesAfterSync(t *testing.T) {
 func TestInformers_StartReturnsContextErrorOnCancel(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	buf := agent.NewBuffer()
-	inf := agent.NewInformers(client, buf, 0)
+	inf := agent.NewInformers(client, buf, 0, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

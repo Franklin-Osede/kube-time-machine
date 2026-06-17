@@ -25,17 +25,28 @@ import (
 //
 // This bounds reconstruction cost: replaying any historical state needs
 // at most one full snapshot + `fullEvery-1` deltas.
+//
+// Reactive flush: when `burstThreshold` > 0, Run also polls the buffer's
+// pending-change counter every `burstPollInterval`. If the counter exceeds
+// `burstThreshold` before the normal tick fires, an early flush is triggered.
+// This preserves intra-interval granularity during deploy storms (e.g. 20
+// resources changed in 30 seconds) without altering the normal cadence.
+// Set burstThreshold = 0 to disable reactive flushing.
 type Snapshotter struct {
-	buf       *Buffer
-	store     storage.Store
-	interval  time.Duration
-	fullEvery int
-	now       func() time.Time
+	buf               *Buffer
+	store             storage.Store
+	interval          time.Duration
+	fullEvery         int
+	burstThreshold    int           // flush early when pending changes >= this; 0 = disabled
+	burstPollInterval time.Duration // how often to check the change counter
+	now               func() time.Time
 
-	mu        sync.Mutex
-	prevState delta.Snapshot
-	prevID    types.SnapshotID
-	flushNum  int
+	mu         sync.Mutex
+	prevState  delta.Snapshot
+	prevID     types.SnapshotID
+	flushNum   int
+	flushFull  int // successful full-snapshot flushes since startup
+	flushDelta int // successful delta flushes since startup
 }
 
 // NewSnapshotter constructs a Snapshotter with the given cadence policy.
@@ -47,12 +58,23 @@ func NewSnapshotter(buf *Buffer, store storage.Store, interval time.Duration, fu
 		fullEvery = 1
 	}
 	return &Snapshotter{
-		buf:       buf,
-		store:     store,
-		interval:  interval,
-		fullEvery: fullEvery,
-		now:       time.Now,
+		buf:               buf,
+		store:             store,
+		interval:          interval,
+		fullEvery:         fullEvery,
+		burstThreshold:    50,            // flush early after 50 changes in one poll window
+		burstPollInterval: 10 * time.Second,
+		now:               time.Now,
 	}
+}
+
+// WithBurstFlush configures reactive flushing. threshold is the number of
+// pending changes that triggers an early flush; set to 0 to disable.
+// pollInterval is how often the change counter is sampled.
+func (s *Snapshotter) WithBurstFlush(threshold int, pollInterval time.Duration) *Snapshotter {
+	s.burstThreshold = threshold
+	s.burstPollInterval = pollInterval
+	return s
 }
 
 // WithClock injects a custom time source. Production code uses the
@@ -92,6 +114,7 @@ func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 		s.prevState = curr
 		s.prevID = meta.ID
 		s.flushNum++
+		s.flushFull++
 		return meta, nil
 	}
 
@@ -103,7 +126,16 @@ func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 	s.prevState = curr
 	s.prevID = meta.ID
 	s.flushNum++
+	s.flushDelta++
 	return meta, nil
+}
+
+// FlushCounts returns the number of successful full and delta flushes since
+// the agent started. Safe to call concurrently with Flush and Run.
+func (s *Snapshotter) FlushCounts() (full, delta int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flushFull, s.flushDelta
 }
 
 // Run starts the periodic flush loop. It blocks until ctx is cancelled
@@ -117,6 +149,11 @@ func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 // before the informer caches finish their initial sync. Pass nil to
 // skip the gate (used by tests that drive Flush directly). If ctx is
 // cancelled while waiting, Run returns without ever flushing.
+//
+// Reactive flush: when burstThreshold > 0, Run also polls buf.PendingChanges()
+// every burstPollInterval. If the counter reaches the threshold before the
+// normal tick, an early flush is triggered and the tick timer is reset, so
+// we don't double-flush within the same window.
 func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 	if ready != nil {
 		select {
@@ -129,13 +166,42 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
+	// burstTicker drives the burst-detection poll. When burst flushing is
+	// disabled (threshold == 0) we still create the ticker but never act on
+	// it — the overhead is negligible and it simplifies the select.
+	burstInterval := s.burstPollInterval
+	if burstInterval <= 0 {
+		burstInterval = s.interval // fall back to normal interval, effectively a no-op
+	}
+	burstTicker := time.NewTicker(burstInterval)
+	defer burstTicker.Stop()
+
+	doFlush := func(reason string) {
+		s.buf.DrainChanges() // reset counter before flush so the next window starts clean
+		if _, err := s.Flush(ctx); err != nil {
+			slog.Error("snapshotter: flush failed", "err", err, "reason", reason)
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
 		case <-ticker.C:
-			if _, err := s.Flush(ctx); err != nil {
-				slog.Error("snapshotter: flush failed", "err", err)
+			doFlush("periodic")
+			// Reset the burst ticker so a burst flush immediately after a
+			// periodic flush doesn't fire again within burstPollInterval.
+			burstTicker.Reset(burstInterval)
+
+		case <-burstTicker.C:
+			if s.burstThreshold > 0 && s.buf.PendingChanges() >= s.burstThreshold {
+				slog.Info("snapshotter: burst threshold reached, flushing early",
+					"pending", s.buf.PendingChanges(), "threshold", s.burstThreshold)
+				doFlush("burst")
+				// Reset the periodic ticker so we don't double-flush within
+				// the same normal interval.
+				ticker.Reset(s.interval)
 			}
 		}
 	}

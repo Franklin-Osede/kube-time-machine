@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -55,4 +56,19 @@ func NewClient(explicit string) (kubernetes.Interface, error) {
 		return nil, fmt.Errorf("kubeclient: build client: %w", err)
 	}
 	return client, nil
+}
+
+// NewDynamicClient runs BuildConfig and returns a dynamic client that can
+// work with any Kubernetes resource, including CRDs, without requiring
+// generated typed structs. Used by DynamicInformers in Phase 2.
+func NewDynamicClient(explicit string) (dynamic.Interface, error) {
+	cfg, err := BuildConfig(explicit)
+	if err != nil {
+		return nil, err
+	}
+	dc, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("kubeclient: build dynamic client: %w", err)
+	}
+	return dc, nil
 }

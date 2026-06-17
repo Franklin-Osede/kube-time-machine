@@ -143,7 +143,7 @@ func TestComputeBlame_TargetNeverPresent(t *testing.T) {
 func TestRunBlame_EmptyMessage(t *testing.T) {
 	dir, _ := seedBlameStore(t)
 	var buf bytes.Buffer
-	if err := runBlame(&buf, dir, key("Deployment", "default", "api")); err != nil {
+	if err := runBlame(&buf, dir, key("Deployment", "default", "api"), ""); err != nil {
 		t.Fatalf("runBlame: %v", err)
 	}
 	if !strings.Contains(buf.String(), "no history found") {
@@ -162,7 +162,7 @@ func TestRunBlame_RendersTable(t *testing.T) {
 	store.PutDelta(ctx, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
 
 	var buf bytes.Buffer
-	if err := runBlame(&buf, dir, target); err != nil {
+	if err := runBlame(&buf, dir, target, ""); err != nil {
 		t.Fatalf("runBlame: %v", err)
 	}
 	out := buf.String()

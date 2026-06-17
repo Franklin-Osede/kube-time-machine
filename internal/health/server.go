@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,10 +15,12 @@ import (
 	"time"
 )
 
-// Server serves /healthz (liveness) and /readyz (readiness).
+// Server serves /healthz (liveness), /readyz (readiness), and optionally
+// /metrics in Prometheus text format.
 type Server struct {
-	addr    string
-	readyFn func() bool
+	addr      string
+	readyFn   func() bool
+	metricsFn func() string // nil = no /metrics endpoint
 
 	mu sync.RWMutex
 	ln net.Listener
@@ -32,6 +35,14 @@ func New(addr string, readyFn func() bool) *Server {
 	}
 }
 
+// WithMetrics enables a /metrics endpoint. fn is called on every request
+// and must return a valid Prometheus text-format string. Keeping the
+// formatter outside the health package avoids pulling agent types into it.
+func (s *Server) WithMetrics(fn func() string) *Server {
+	s.metricsFn = fn
+	return s
+}
+
 // Run listens until ctx is cancelled. It returns listener/server failures
 // so the agent fails loudly if Kubernetes probes cannot bind.
 func (s *Server) Run(ctx context.Context) error {
@@ -43,6 +54,9 @@ func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/readyz", s.handleReadyz)
+	if s.metricsFn != nil {
+		mux.HandleFunc("/metrics", s.handleMetrics)
+	}
 
 	ln, err := net.Listen("tcp", s.addr)
 	if err != nil {
@@ -85,6 +99,14 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
+}
+
+// handleMetrics serves Prometheus-format metrics. The body is generated
+// by the metricsFn provided via WithMetrics — the health package has no
+// dependency on the agent or Prometheus client library.
+func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = io.WriteString(w, s.metricsFn())
 }
 
 // handleReadyz is the readiness probe: the agent is ready once informer

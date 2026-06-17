@@ -38,6 +38,7 @@ spec:
             - --storage-dir=/var/lib/ktm
             - --interval={{ .Values.snapshot.intervalSeconds }}s
             - --full-every={{ .Values.snapshot.fullEvery }}
+            - --burst-threshold={{ .Values.snapshot.burstThreshold }}
             {{- if .Values.agent.health.enabled }}
             - --health-addr={{ .Values.agent.health.addr }}
             {{- else }}
@@ -45,6 +46,12 @@ spec:
             # flag would leave the health server running even though the chart
             # says it is disabled (no port, no probes, NetworkPolicy deny-all).
             - --health-addr=
+            {{- end }}
+            {{- if .Values.agent.excludeNamespaces }}
+            - --exclude-namespaces={{ join "," .Values.agent.excludeNamespaces }}
+            {{- end }}
+            {{- if .Values.agent.watchResources }}
+            - --watch-resources={{ join "," .Values.agent.watchResources }}
             {{- end }}
           {{- if .Values.agent.health.enabled }}
           ports:

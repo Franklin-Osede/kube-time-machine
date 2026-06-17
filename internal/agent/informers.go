@@ -21,11 +21,12 @@ import (
 // kinds in Phase 2 means adding new informers here and a marshal
 // function in marshal.go — nothing else changes.
 type Informers struct {
-	factory   informers.SharedInformerFactory
-	deployInf cache.SharedIndexInformer
-	cmInf     cache.SharedIndexInformer
-	buf       *Buffer
-	ready     chan struct{} // closed once the initial cache sync completes
+	factory    informers.SharedInformerFactory
+	deployInf  cache.SharedIndexInformer
+	cmInf      cache.SharedIndexInformer
+	buf        *Buffer
+	excludeNS  map[string]struct{} // namespaces whose events are silently dropped
+	ready      chan struct{}        // closed once the initial cache sync completes
 }
 
 // NewInformers constructs Informers wired to buf.
@@ -34,13 +35,24 @@ type Informers struct {
 // disable resync — the K8s API guarantees the informer cache stays
 // coherent via watch, so resync is paranoia, not correctness. Enable
 // only if real-world drift appears.
-func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration) *Informers {
+//
+// excludeNamespaces is the list of namespaces whose events are silently
+// dropped before reaching the buffer. Typical values: "kube-system",
+// "kube-public", "kube-node-lease". Pass nil to watch all namespaces.
+func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration, excludeNamespaces []string) *Informers {
 	factory := informers.NewSharedInformerFactory(client, resync)
+	excludeNS := make(map[string]struct{}, len(excludeNamespaces))
+	for _, ns := range excludeNamespaces {
+		if ns != "" {
+			excludeNS[ns] = struct{}{}
+		}
+	}
 	in := &Informers{
 		factory:   factory,
 		deployInf: factory.Apps().V1().Deployments().Informer(),
 		cmInf:     factory.Core().V1().ConfigMaps().Informer(),
 		buf:       buf,
+		excludeNS: excludeNS,
 		ready:     make(chan struct{}),
 	}
 	// AddEventHandler can fail (e.g. if the informer was already
@@ -94,6 +106,15 @@ func (i *Informers) Ready() <-chan struct{} {
 	return i.ready
 }
 
+// isExcluded reports whether ns is in the exclude list. Events from
+// excluded namespaces are dropped before reaching the buffer, preventing
+// kube-system / kube-public / kube-node-lease churn from appearing in
+// snapshots and blame output.
+func (i *Informers) isExcluded(ns string) bool {
+	_, ok := i.excludeNS[ns]
+	return ok
+}
+
 func (i *Informers) deploymentHandler() cache.ResourceEventHandlerFuncs {
 	return cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj any) {
@@ -109,6 +130,9 @@ func (i *Informers) deploymentHandler() cache.ResourceEventHandlerFuncs {
 					"type", fmt.Sprintf("%T", obj))
 				return
 			}
+			if i.isExcluded(d.Namespace) {
+				return
+			}
 			i.buf.Delete(KeyForDeployment(d))
 		},
 	}
@@ -119,6 +143,9 @@ func (i *Informers) handleDeploymentUpsert(obj any, op string) {
 	if !ok {
 		slog.Warn("agent: Deployment "+op+" handler got unexpected type",
 			"type", fmt.Sprintf("%T", obj))
+		return
+	}
+	if i.isExcluded(d.Namespace) {
 		return
 	}
 	key, state, err := MarshalDeployment(d)
@@ -145,6 +172,9 @@ func (i *Informers) configMapHandler() cache.ResourceEventHandlerFuncs {
 					"type", fmt.Sprintf("%T", obj))
 				return
 			}
+			if i.isExcluded(cm.Namespace) {
+				return
+			}
 			i.buf.Delete(KeyForConfigMap(cm))
 		},
 	}
@@ -155,6 +185,9 @@ func (i *Informers) handleConfigMapUpsert(obj any, op string) {
 	if !ok {
 		slog.Warn("agent: ConfigMap "+op+" handler got unexpected type",
 			"type", fmt.Sprintf("%T", obj))
+		return
+	}
+	if i.isExcluded(cm.Namespace) {
 		return
 	}
 	key, state, err := MarshalConfigMap(cm)

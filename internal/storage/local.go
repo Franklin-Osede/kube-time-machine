@@ -144,6 +144,7 @@ func (l *Local) PutFull(_ context.Context, ts time.Time, snap delta.Snapshot) (t
 		ID:        idFromTime(ts),
 		Kind:      types.KindFull,
 		Timestamp: ts.UTC(),
+		Kinds:     kindsFromSnapshot(snap),
 	}
 	if err := l.writeSnapshot(meta, fullFileName, snapshotToWire(snap)); err != nil {
 		return types.SnapshotMeta{}, err
@@ -158,6 +159,7 @@ func (l *Local) PutDelta(_ context.Context, ts time.Time, prevID types.SnapshotI
 		Kind:      types.KindDelta,
 		Timestamp: ts.UTC(),
 		PrevID:    prevID,
+		Kinds:     kindsFromDelta(d),
 	}
 	if err := l.writeSnapshot(meta, deltaFileName, deltaToWire(d)); err != nil {
 		return types.SnapshotMeta{}, err
@@ -401,4 +403,46 @@ func keyLess(a, b delta.Key) bool {
 		return a.Namespace < b.Namespace
 	}
 	return a.Name < b.Name
+}
+
+// -- kind index helpers --------------------------------------------------
+
+// kindsFromSnapshot returns a sorted list of unique Kind strings present
+// in the snapshot. Called during PutFull to populate SnapshotMeta.Kinds.
+func kindsFromSnapshot(s delta.Snapshot) []string {
+	seen := make(map[string]struct{}, 8)
+	for k := range s {
+		seen[k.Kind] = struct{}{}
+	}
+	return sortedStringSet(seen)
+}
+
+// kindsFromDelta returns a sorted list of unique Kind strings touched by
+// the delta (added, modified, or removed entries). Called during PutDelta
+// to populate SnapshotMeta.Kinds.
+func kindsFromDelta(d delta.Delta) []string {
+	seen := make(map[string]struct{}, 8)
+	for k := range d.Added {
+		seen[k.Kind] = struct{}{}
+	}
+	for k := range d.Modified {
+		seen[k.Kind] = struct{}{}
+	}
+	for k := range d.Removed {
+		seen[k.Kind] = struct{}{}
+	}
+	return sortedStringSet(seen)
+}
+
+// sortedStringSet converts a set-style map into a sorted slice of its keys.
+func sortedStringSet(m map[string]struct{}) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

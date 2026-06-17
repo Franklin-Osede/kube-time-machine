@@ -20,6 +20,9 @@ image:
 snapshot:
   intervalSeconds: 300
   fullEvery: 12
+  # Flush early when this many changes accumulate before the next periodic tick.
+  # Useful during deploy storms to capture fine-grained history. 0 = disabled.
+  burstThreshold: 50
 
 # Local PVC storage. Cloud drivers are Phase 2 (see roadmap).
 storage:
@@ -40,6 +43,23 @@ agent:
     enabled: true
     addr: ":8080"
     port: 8080
+  # Namespaces to exclude from watching. Events from these namespaces are
+  # dropped before reaching the buffer, preventing system controller churn
+  # (e.g. kube-root-ca.crt rotations) from polluting snapshots and blame output.
+  excludeNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+  # Additional resource kinds to watch via dynamic informers (Phase 2).
+  # Format: "resource.group/version". The typed informers cover Deployments
+  # and ConfigMaps; add any other resource kinds here.
+  # NOTE: the ClusterRole in role.yaml must grant get/list/watch for each
+  # resource listed here, or the informers will fail to sync.
+  watchResources:
+    - statefulsets.apps/v1
+    - services/v1
+    - ingresses.networking.k8s.io/v1
+    - horizontalpodautoscalers.autoscaling/v2
   # Pod resource requests/limits. Conservative defaults for a small cluster.
   resources:
     requests:
