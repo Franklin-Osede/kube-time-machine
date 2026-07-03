@@ -32,6 +32,11 @@ import (
 // This preserves intra-interval granularity during deploy storms (e.g. 20
 // resources changed in 30 seconds) without altering the normal cadence.
 // Set burstThreshold = 0 to disable reactive flushing.
+//
+// Retention / GC: when `retainDays` > 0, a GC pass runs before every flush
+// attempt. Running it before the write allows eligible old snapshots to free
+// space even when the subsequent Put fails with ENOSPC. The anchor algorithm
+// guarantees that every retained delta remains reconstructable.
 type Snapshotter struct {
 	buf               *Buffer
 	store             storage.Store
@@ -39,6 +44,7 @@ type Snapshotter struct {
 	fullEvery         int
 	burstThreshold    int           // flush early when pending changes >= this; 0 = disabled
 	burstPollInterval time.Duration // how often to check the change counter
+	retainDays        int           // delete snapshots older than this many days; 0 = keep forever
 	now               func() time.Time
 
 	mu         sync.Mutex
@@ -47,6 +53,20 @@ type Snapshotter struct {
 	flushNum   int
 	flushFull  int // successful full-snapshot flushes since startup
 	flushDelta int // successful delta flushes since startup
+
+	healthMu            sync.RWMutex
+	lastFlushAttempt    time.Time
+	lastFlushSuccess    time.Time
+	lastFlushErr        error
+	consecutiveFailures int
+}
+
+// FlushHealth is a point-in-time view of snapshot persistence health.
+type FlushHealth struct {
+	LastAttempt         time.Time
+	LastSuccess         time.Time
+	LastError           error
+	ConsecutiveFailures int
 }
 
 // NewSnapshotter constructs a Snapshotter with the given cadence policy.
@@ -62,7 +82,7 @@ func NewSnapshotter(buf *Buffer, store storage.Store, interval time.Duration, fu
 		store:             store,
 		interval:          interval,
 		fullEvery:         fullEvery,
-		burstThreshold:    50,            // flush early after 50 changes in one poll window
+		burstThreshold:    50, // flush early after 50 changes in one poll window
 		burstPollInterval: 10 * time.Second,
 		now:               time.Now,
 	}
@@ -74,6 +94,17 @@ func NewSnapshotter(buf *Buffer, store storage.Store, interval time.Duration, fu
 func (s *Snapshotter) WithBurstFlush(threshold int, pollInterval time.Duration) *Snapshotter {
 	s.burstThreshold = threshold
 	s.burstPollInterval = pollInterval
+	return s
+}
+
+// WithRetention sets the snapshot retention policy. Snapshots older than
+// days days are eligible for deletion before each flush attempt.
+// Setting days to 0 (the default) disables GC and keeps all snapshots.
+func (s *Snapshotter) WithRetention(days int) *Snapshotter {
+	if days < 0 {
+		days = 0
+	}
+	s.retainDays = days
 	return s
 }
 
@@ -138,6 +169,117 @@ func (s *Snapshotter) FlushCounts() (full, delta int) {
 	return s.flushFull, s.flushDelta
 }
 
+// FlushHealth returns the latest persistence outcome recorded by Run.
+// Direct calls to Flush do not update this status because they do not represent
+// the agent's scheduled recording loop.
+func (s *Snapshotter) FlushHealth() FlushHealth {
+	s.healthMu.RLock()
+	defer s.healthMu.RUnlock()
+	return FlushHealth{
+		LastAttempt:         s.lastFlushAttempt,
+		LastSuccess:         s.lastFlushSuccess,
+		LastError:           s.lastFlushErr,
+		ConsecutiveFailures: s.consecutiveFailures,
+	}
+}
+
+// FlushHealthy reports whether the scheduled recording loop is healthy enough
+// for readiness. Before the first attempt there is no evidence of a storage
+// failure, so informer readiness remains authoritative. Once maxFailures
+// consecutive attempts fail, readiness degrades until a successful flush.
+func (s *Snapshotter) FlushHealthy(maxFailures int) bool {
+	if maxFailures < 1 {
+		maxFailures = 1
+	}
+	return s.FlushHealth().ConsecutiveFailures < maxFailures
+}
+
+func (s *Snapshotter) recordFlushOutcome(err error) {
+	now := s.now()
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	s.lastFlushAttempt = now
+	s.lastFlushErr = err
+	if err != nil {
+		s.consecutiveFailures++
+		return
+	}
+	s.lastFlushSuccess = now
+	s.consecutiveFailures = 0
+}
+
+// GC runs the snapshot retention/GC algorithm immediately and blocks until
+// it completes. It is identical to the gc pass that Run triggers after each
+// full flush, but exposed so callers (tests, a future "ktm gc" CLI command)
+// can invoke it on demand. Returns nil when retainDays==0 (GC disabled).
+func (s *Snapshotter) GC(ctx context.Context) { s.gc(ctx) }
+
+// gc runs the snapshot retention / garbage-collection algorithm.
+// Run calls it before every flush attempt.
+//
+// Algorithm — anchor-based GC:
+//
+//  1. Compute the cutoff time: now - retainDays.
+//  2. Walk the index in chronological order to find the "anchor" — the
+//     most-recent full snapshot whose timestamp is at or before the cutoff.
+//     This is the oldest full snapshot we must keep so that all deltas
+//     in the retention window remain reconstructable.
+//  3. Delete every snapshot strictly before the anchor (full and delta alike).
+//     The anchor itself is preserved.
+//
+// If no anchor exists (i.e. the oldest full snapshot is still within the
+// retention window) we do nothing — there is nothing safe to delete.
+//
+// gc acquires no internal lock of its own because it is always called from
+// a context where the caller does NOT hold s.mu. Delete calls on the store
+// are independent operations protected by the store's own lock.
+func (s *Snapshotter) gc(ctx context.Context) {
+	if s.retainDays <= 0 {
+		return
+	}
+
+	cutoff := s.now().UTC().AddDate(0, 0, -s.retainDays)
+
+	metas, err := s.store.List(ctx)
+	if err != nil {
+		slog.Error("snapshotter: gc: list snapshots", "err", err)
+		return
+	}
+	// metas is sorted by Timestamp ascending (guaranteed by Local.List).
+
+	// Find the anchor: the last full snapshot at or before cutoff.
+	anchorIdx := -1
+	for i, m := range metas {
+		if m.Kind == types.KindFull && !m.Timestamp.After(cutoff) {
+			anchorIdx = i
+		}
+	}
+	if anchorIdx < 0 {
+		// No full snapshot is old enough to serve as an anchor.
+		// Nothing to delete.
+		return
+	}
+
+	// Delete everything strictly before the anchor.
+	deleted := 0
+	for _, m := range metas[:anchorIdx] {
+		if err := s.store.Delete(ctx, m.ID); err != nil {
+			slog.Error("snapshotter: gc: delete snapshot", "id", m.ID, "err", err)
+			// Continue — best-effort; leave the store consistent for the
+			// index entries we did not touch.
+			continue
+		}
+		deleted++
+	}
+	if deleted > 0 {
+		slog.Info("snapshotter: gc: deleted old snapshots",
+			"count", deleted,
+			"cutoff", cutoff.Format("2006-01-02"),
+			"retainDays", s.retainDays,
+		)
+	}
+}
+
 // Run starts the periodic flush loop. It blocks until ctx is cancelled
 // and then returns ctx.Err(). Errors during individual flushes are
 // logged but do not stop the loop — losing one snapshot is better than
@@ -178,9 +320,17 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 
 	doFlush := func(reason string) {
 		s.buf.DrainChanges() // reset counter before flush so the next window starts clean
+		// Run GC before every flush attempt. This ensures old snapshots are
+		// freed even when the subsequent full write fails (e.g. ENOSPC), which
+		// would otherwise deadlock the agent because GC only ran post-success.
+		// GC is a no-op when nothing is old enough to delete.
+		s.gc(ctx)
 		if _, err := s.Flush(ctx); err != nil {
+			s.recordFlushOutcome(err)
 			slog.Error("snapshotter: flush failed", "err", err, "reason", reason)
+			return
 		}
+		s.recordFlushOutcome(nil)
 	}
 
 	for {

@@ -32,7 +32,7 @@ const (
 type blameEntry struct {
 	Time       time.Time
 	Op         blameOp
-	Actors     string           // comma-separated SSA manager names from ktm.io/managers
+	Actors     string // comma-separated SSA manager names from ktm.io/managers
 	SnapshotID types.SnapshotID
 }
 
@@ -134,6 +134,22 @@ func computeBlame(ctx context.Context, store storage.Store, target delta.Key) ([
 	)
 
 	for _, meta := range metas {
+		// Optimisation: delta snapshots whose Kinds list is populated and
+		// does not include the target kind cannot contain any change to the
+		// target resource. We can skip the store.Get() and carry the current
+		// running state forward unchanged.
+		//
+		// Full snapshots must always be loaded because they replace the
+		// entire running state — skipping one would leave `running` based
+		// on a stale full that predates the skipped one.
+		//
+		// When Kinds is empty (snapshots written before Phase 3.3 or empty
+		// payloads) we conservatively load to avoid false negatives.
+		if meta.Kind == types.KindDelta && len(meta.Kinds) > 0 && !kindsContain(meta.Kinds, target.Kind) {
+			// The delta is guaranteed not to touch target — no state change.
+			continue
+		}
+
 		loaded, err := store.Get(ctx, meta.ID)
 		if err != nil {
 			return nil, errf("load snapshot %s: %w", meta.ID, err)
@@ -163,6 +179,19 @@ func computeBlame(ctx context.Context, store storage.Store, target delta.Key) ([
 		prevSt = curSt
 	}
 	return entries, nil
+}
+
+// kindsContain reports whether the sorted kinds slice contains kind.
+// Kinds is always sorted (populated by sortedStringSet in storage/local.go),
+// so a linear scan is fine at the cardinalities involved (typically < 20
+// distinct kinds per snapshot).
+func kindsContain(kinds []string, kind string) bool {
+	for _, k := range kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // actorsFromState decodes the synthetic "ktm.io/managers" annotation that

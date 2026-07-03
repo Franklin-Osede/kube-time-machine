@@ -46,6 +46,48 @@ func TestEmptyStore_ListIsEmpty(t *testing.T) {
 	}
 }
 
+func TestWriterLock_RejectsSecondWriterButAllowsReaders(t *testing.T) {
+	root := t.TempDir()
+
+	first, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal first: %v", err)
+	}
+	if err := first.AcquireWriterLock(); err != nil {
+		t.Fatalf("AcquireWriterLock first: %v", err)
+	}
+	defer first.Close()
+
+	// Opening the same store without acquiring the writer lock must remain
+	// possible so CLI read commands can inspect history while the agent runs.
+	reader, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal reader while writer active: %v", err)
+	}
+	if _, err := reader.List(context.Background()); err != nil {
+		t.Fatalf("reader List while writer active: %v", err)
+	}
+
+	second, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal second: %v", err)
+	}
+	if err := second.AcquireWriterLock(); err == nil {
+		_ = second.Close()
+		t.Fatal("second writer acquired the same store lock")
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close first writer: %v", err)
+	}
+	if err := second.AcquireWriterLock(); err != nil {
+		t.Fatalf("second writer did not acquire lock after release: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close second writer: %v", err)
+	}
+}
+
 func TestPutFull_RoundTrip(t *testing.T) {
 	s := newStore(t)
 	snap := delta.Snapshot{
@@ -112,6 +154,37 @@ func TestPutDelta_RoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.Delta, d) {
 		t.Errorf("delta payload mismatch:\nwant %+v\ngot  %+v", d, loaded.Delta)
+	}
+}
+
+func TestPutFull_RejectsMillisecondIDCollisionWithoutOverwrite(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	ts := at(2026, 5, 18, 14, 5, 30, 123)
+	first := delta.Snapshot{key("Deployment", "default", "api"): delta.State("v1")}
+	second := delta.Snapshot{key("Deployment", "default", "api"): delta.State("v2")}
+
+	meta, err := s.PutFull(ctx, ts, first)
+	if err != nil {
+		t.Fatalf("first PutFull: %v", err)
+	}
+	if _, err := s.PutFull(ctx, ts.Add(500*time.Microsecond), second); err == nil {
+		t.Fatal("second PutFull in the same millisecond should report an ID collision")
+	}
+
+	loaded, err := s.Get(ctx, meta.ID)
+	if err != nil {
+		t.Fatalf("Get original snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Full, first) {
+		t.Fatalf("collision overwrote original payload: want %q, got %q", first, loaded.Full)
+	}
+	metas, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("collision added an index entry: got %d entries", len(metas))
 	}
 }
 
@@ -320,6 +393,199 @@ func TestRebuildSkipsMetaWithoutPayload(t *testing.T) {
 	got, _ := s2.List(ctx)
 	if len(got) != 1 || got[0].ID != good.ID {
 		t.Fatalf("rebuilt List: want only [%s], got %v", good.ID, got)
+	}
+}
+
+// ---- Delete tests ---------------------------------------------------------
+
+func TestDelete_RemovesFromIndexAndDisk(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	snap := delta.Snapshot{key("Pod", "default", "p"): delta.State("s")}
+	meta, err := s.PutFull(ctx, at(2026, 1, 1, 0, 0, 0, 0), snap)
+	if err != nil {
+		t.Fatalf("PutFull: %v", err)
+	}
+
+	if err := s.Delete(ctx, meta.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// Index must not contain the deleted entry.
+	metas, _ := s.List(ctx)
+	for _, m := range metas {
+		if m.ID == meta.ID {
+			t.Errorf("deleted snapshot still appears in index: %s", meta.ID)
+		}
+	}
+
+	// Directory must be gone.
+	dir := filepath.Join(s.Root(), "snapshots", string(meta.ID))
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("snapshot directory still exists after delete: %s", dir)
+	}
+}
+
+func TestDelete_Idempotent(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	meta, _ := s.PutFull(ctx, at(2026, 1, 1, 0, 0, 0, 0), delta.Snapshot{})
+	if err := s.Delete(ctx, meta.ID); err != nil {
+		t.Fatalf("first Delete: %v", err)
+	}
+	if err := s.Delete(ctx, meta.ID); err != nil {
+		t.Errorf("second Delete (idempotent) returned error: %v", err)
+	}
+}
+
+func TestDelete_NonExistentID(t *testing.T) {
+	s := newStore(t)
+	if err := s.Delete(context.Background(), types.SnapshotID("doesnotexist")); err != nil {
+		t.Errorf("Delete of non-existent ID returned error: %v", err)
+	}
+}
+
+func TestDelete_PreservesOtherSnapshots(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	m0, _ := s.PutFull(ctx, at(2026, 1, 1, 10, 0, 0, 0), delta.Snapshot{})
+	m1, _ := s.PutFull(ctx, at(2026, 1, 1, 11, 0, 0, 0), delta.Snapshot{})
+	m2, _ := s.PutFull(ctx, at(2026, 1, 1, 12, 0, 0, 0), delta.Snapshot{})
+
+	if err := s.Delete(ctx, m1.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	metas, _ := s.List(ctx)
+	ids := make(map[types.SnapshotID]bool)
+	for _, m := range metas {
+		ids[m.ID] = true
+	}
+	if !ids[m0.ID] {
+		t.Error("m0 should still be present after deleting m1")
+	}
+	if ids[m1.ID] {
+		t.Error("m1 should be absent after delete")
+	}
+	if !ids[m2.ID] {
+		t.Error("m2 should still be present after deleting m1")
+	}
+}
+
+func TestDelete_IndexPersistedAfterDelete(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+
+	s, _ := storage.NewLocal(root)
+	m0, _ := s.PutFull(ctx, at(2026, 1, 1, 10, 0, 0, 0), delta.Snapshot{})
+	m1, _ := s.PutFull(ctx, at(2026, 1, 1, 11, 0, 0, 0), delta.Snapshot{})
+
+	if err := s.Delete(ctx, m0.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	// Re-open the store: the deleted entry must not reappear.
+	s2, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("reopen NewLocal: %v", err)
+	}
+	metas, _ := s2.List(ctx)
+	if len(metas) != 1 || metas[0].ID != m1.ID {
+		t.Errorf("after reopen: expected only m1 in index, got %v", metas)
+	}
+}
+
+// ---- Kind index tests -----------------------------------------------------
+
+func TestKindsPopulatedOnPutFull(t *testing.T) {
+	s := newStore(t)
+	snap := delta.Snapshot{
+		key("Deployment", "default", "api"): delta.State("v1"),
+		key("ConfigMap", "default", "cfg"):  delta.State("c1"),
+	}
+	meta, err := s.PutFull(context.Background(), at(2026, 5, 18, 14, 0, 0, 0), snap)
+	if err != nil {
+		t.Fatalf("PutFull: %v", err)
+	}
+	want := []string{"ConfigMap", "Deployment"} // sorted
+	if !reflect.DeepEqual(meta.Kinds, want) {
+		t.Errorf("Kinds: want %v, got %v", want, meta.Kinds)
+	}
+}
+
+func TestKindsPopulatedOnPutDelta(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	full, _ := s.PutFull(ctx, at(2026, 5, 18, 14, 0, 0, 0), delta.Snapshot{})
+	d := delta.Delta{
+		Added:    map[delta.Key]delta.State{key("Service", "default", "svc"): delta.State("s1")},
+		Modified: map[delta.Key]delta.State{key("Deployment", "default", "api"): delta.State("v2")},
+		Removed:  map[delta.Key]struct{}{key("ConfigMap", "default", "cfg"): {}},
+	}
+	meta, err := s.PutDelta(ctx, at(2026, 5, 18, 14, 5, 0, 0), full.ID, d)
+	if err != nil {
+		t.Fatalf("PutDelta: %v", err)
+	}
+	want := []string{"ConfigMap", "Deployment", "Service"} // sorted, de-duped
+	if !reflect.DeepEqual(meta.Kinds, want) {
+		t.Errorf("Kinds: want %v, got %v", want, meta.Kinds)
+	}
+}
+
+// TestPutFull_OrphanCleanedUpOnIndexFailure verifies R-05: if writeSnapshot
+// succeeds but appendIndex cannot update index.json (e.g. out of disk space),
+// PutFull must roll back the snapshot directory so no orphan is left behind,
+// AND the in-memory index must remain unchanged.
+func TestPutFull_OrphanCleanedUpOnIndexFailure(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+
+	s, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+
+	// First snapshot writes successfully — establishes a known-good baseline.
+	first, err := s.PutFull(ctx, at(2026, 1, 1, 10, 0, 0, 0), delta.Snapshot{
+		key("Deployment", "default", "api"): delta.State("v1"),
+	})
+	if err != nil {
+		t.Fatalf("seed PutFull: %v", err)
+	}
+
+	// Corrupt the index path: replace the file with a directory so any
+	// subsequent attempt to write index.json fails at the rename step.
+	indexPath := filepath.Join(root, "index.json")
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatalf("remove index.json: %v", err)
+	}
+	if err := os.MkdirAll(indexPath, 0o755); err != nil {
+		t.Fatalf("mkdir index.json: %v", err)
+	}
+
+	// Second PutFull: writeSnapshot should succeed (creates snapshots/<id>/)
+	// but appendIndex must fail (can't rename over a directory).
+	// The expected snapshot ID for at(2026,1,1,11,0,0,0) is "20260101T110000000Z".
+	const wantOrphanID = "20260101T110000000Z"
+	_, putErr := s.PutFull(ctx, at(2026, 1, 1, 11, 0, 0, 0), delta.Snapshot{})
+	if putErr == nil {
+		t.Fatal("expected PutFull to return an error when index write fails")
+	}
+
+	// The snapshot directory for the second write must have been removed.
+	orphanDir := filepath.Join(root, "snapshots", wantOrphanID)
+	if _, statErr := os.Stat(orphanDir); !os.IsNotExist(statErr) {
+		t.Errorf("orphan snapshot directory must be cleaned up after appendIndex failure: %s", orphanDir)
+	}
+
+	// The in-memory index must still hold exactly the first snapshot.
+	metas, _ := s.List(ctx)
+	if len(metas) != 1 || metas[0].ID != first.ID {
+		t.Errorf("after failed appendIndex, List: want [%s], got %v", first.ID, metas)
 	}
 }
 

@@ -102,9 +102,11 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 |---|---|---|
 | `snapshot.intervalSeconds` | `300` | Flush cadence in seconds. Smaller = lower MTTR for forensic queries, more storage. |
 | `snapshot.fullEvery` | `12` | Every Nth flush is a full reference snapshot. Bounds chain-reconstruction cost (see [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md)). |
+| `snapshot.retainDays` | `30` | Deletes history before the safe full-snapshot anchor. Set `0` to retain everything. |
 | `storage.size` | `10Gi` | PVC size. Storage scales with change rate, not snapshot rate. |
 | `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
 | `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes liveness/readiness probes. |
+| `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. |
 | `agent.resources.*` | conservative | The agent's working set is dominated by the informer cache; tune up if you watch large clusters. |
 | `networkPolicy.enabled` | `true` | Turn off only on clusters whose CNI does not enforce NetworkPolicy. |
 
@@ -118,7 +120,10 @@ If a change happens to the cluster during that gap it will surface in the next f
 
 ### RBAC: what the agent can and cannot do
 
-The bundled `ClusterRole` grants `get`, `list`, `watch` on `deployments.apps` and `configmaps` cluster-wide. The agent has no other permissions — it cannot write, cannot read Secrets, cannot watch any other kind.
+The bundled `ClusterRole` grants `get`, `list`, `watch` on `deployments.apps`
+and `configmaps` cluster-wide. The default agent has no other permissions — it
+cannot write or read Secrets. Experimental dynamic watches are opt-in and
+require matching rules in both `agent.watchResources` and `rbac.extraRules`.
 
 If you want to scope the agent down further (e.g. to specific namespaces), today the chart does not parameterise the rule subject lists; you would patch the `ClusterRole` after install. Scoping is a Phase 2 enhancement.
 
@@ -130,7 +135,9 @@ The PVC (Mode B) and the `--storage-dir` (Mode A) hold the full declarative stat
 - **Secrets are *not* captured.** The bundled `ClusterRole` grants no access to `secrets`, so the agent cannot read them and they never reach storage. This is by design (see [ADR-0007](adr/0007-packaging-defaults.md)).
 - **Use a StorageClass that encrypts at rest** for the PVC (`storage.storageClassName`). On managed clusters this usually means an encrypted EBS/PD/Disk class.
 - **Restrict access to the data.** Anyone who can read the PVC — or the `kubectl debug` + `kubectl cp` extraction path documented above — can read the recorded state. Limit who can exec into the `ktm-system` namespace, and treat any copy extracted to a laptop as confidential: delete it once the incident is closed.
-- **There is no retention or expiry in v0.1.x.** Snapshots accumulate until the volume fills; the confidential window is the entire lifetime of the volume. Automatic retention is a Phase 2 item (roadmap P7).
+- **Retention defaults to 30 days.** GC preserves the latest full snapshot at
+  or before the cutoff as a reconstruction anchor, so actual retained history
+  can be slightly longer. Set `snapshot.retainDays=0` to keep all history.
 
 ### Uninstall
 

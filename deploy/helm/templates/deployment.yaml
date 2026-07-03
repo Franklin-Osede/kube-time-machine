@@ -39,6 +39,7 @@ spec:
             - --interval={{ .Values.snapshot.intervalSeconds }}s
             - --full-every={{ .Values.snapshot.fullEvery }}
             - --burst-threshold={{ .Values.snapshot.burstThreshold }}
+            - --retain-days={{ .Values.snapshot.retainDays }}
             {{- if .Values.agent.health.enabled }}
             - --health-addr={{ .Values.agent.health.addr }}
             {{- else }}

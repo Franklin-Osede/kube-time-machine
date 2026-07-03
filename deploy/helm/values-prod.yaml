@@ -1,0 +1,79 @@
+# Production baseline for kube-time-machine Phase 1.
+#
+# This file is intentionally not deployable without replacing the storage
+# class placeholder and publishing v0.1.1. The chart currently supports a tag
+# but not an image digest; add image.digest support before environments that
+# require immutable digest pinning.
+
+image:
+  repository: ghcr.io/franklin-osede/ktm-agent
+  tag: "0.1.1"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+snapshot:
+  # Five minutes limits write amplification. Lower this only after measuring
+  # PVC growth and API-server load.
+  intervalSeconds: 300
+  fullEvery: 12
+  burstThreshold: 100
+
+  # Replace with the retention approved by security/compliance. The anchor
+  # algorithm can retain slightly more than this value.
+  retainDays: 30
+
+storage:
+  create: true
+  # Size from measured object count/change rate. Keep enough free space that
+  # retention can still write a full snapshot before GC runs.
+  size: 50Gi
+  # REQUIRED: use a CSI StorageClass with encryption at rest, expansion, and
+  # preferably VolumeSnapshot support.
+  storageClassName: REPLACE_WITH_ENCRYPTED_STORAGE_CLASS
+
+agent:
+  health:
+    enabled: true
+    addr: ":8080"
+    port: 8080
+
+  # Add namespaces containing plaintext credentials or other ConfigMap data
+  # that must not be retained. Exclusion removes all Deployments and ConfigMaps
+  # in those namespaces from KTM history.
+  excludeNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+    # - security-sensitive
+    # - payments-secrets-in-configmaps
+
+  # Keep empty for the production Phase 1 deployment unless each GVR and its
+  # matching read-only RBAC rule have been validated. Dynamic cache sync has a
+  # hard-coded two-minute timeout in v0.1.1.
+  watchResources: []
+
+  # Starting point for clusters above ~500 Deployments/ConfigMaps. Confirm with
+  # representative load tests and adjust from observed RSS/CPU.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+  # Must remain empty while agent.watchResources is empty.
+  extraRules: []
+
+networkPolicy:
+  # Keep enabled only if the destination CNI enforces NetworkPolicy and the
+  # kubelet can reach Pod port 8080 under this policy. The current chart allows
+  # all non-DNS egress; tighten it with a provider-specific overlay.
+  enabled: true

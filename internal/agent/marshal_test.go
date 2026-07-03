@@ -249,20 +249,20 @@ func TestMarshalDeployment_StripsNoiseAnnotations(t *testing.T) {
 		}},
 		{"deployment-revision", map[string]string{
 			"deployment.kubernetes.io/revision": "42",
-			"team": "platform",
+			"team":                              "platform",
 		}},
 		{"helm-prefix", map[string]string{
 			"meta.helm.sh/release-name":      "my-release",
 			"meta.helm.sh/release-namespace": "prod",
-			"version": "1.0",
+			"version":                        "1.0",
 		}},
 		{"argocd-prefix", map[string]string{
 			"argocd.argoproj.io/sync-wave": "1",
-			"env": "prod",
+			"env":                          "prod",
 		}},
 		{"flux-prefix", map[string]string{
 			"fluxcd.io/sync-checksum": "abc123",
-			"owner": "platform-team",
+			"owner":                   "platform-team",
 		}},
 	}
 

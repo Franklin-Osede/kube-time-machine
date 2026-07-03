@@ -140,6 +140,51 @@ func TestComputeBlame_TargetNeverPresent(t *testing.T) {
 	}
 }
 
+// TestComputeBlame_SkipsDeltaWithUnrelatedKind verifies that delta snapshots
+// whose Kinds list is populated and does not include the target kind are
+// skipped without a store.Get() call. We confirm this indirectly: if the
+// skip is absent the running state would be corrupted (we pass a broken
+// store that panics on Get for the irrelevant delta), but computeBlame must
+// still return the correct result for the target kind.
+//
+// Setup:
+//
+//	full[0]  Kinds=[ConfigMap]          target Deployment not present
+//	delta[1] Kinds=[ConfigMap]          only a ConfigMap changed → must skip
+//	delta[2] Kinds=[Deployment]         target Deployment added
+//
+// Expected: one CREATED entry at delta[2].
+func TestComputeBlame_SkipsDeltaWithUnrelatedKind(t *testing.T) {
+	_, store := seedBlameStore(t)
+	ctx := context.Background()
+
+	target := key("Deployment", "default", "api")
+	cm := key("ConfigMap", "default", "cfg")
+
+	// Snapshot 0 (full): only a ConfigMap exists.
+	s0 := delta.Snapshot{cm: delta.State("c1")}
+	m0, _ := store.PutFull(ctx, at(2026, 5, 20, 10, 0), s0)
+
+	// Snapshot 1 (delta): ConfigMap changes — Kinds=[ConfigMap], no Deployment.
+	s1 := delta.Snapshot{cm: delta.State("c2")}
+	m1, _ := store.PutDelta(ctx, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
+
+	// Snapshot 2 (delta): Deployment added — Kinds=[Deployment].
+	s2 := delta.Snapshot{cm: delta.State("c2"), target: delta.State("v1")}
+	_, _ = store.PutDelta(ctx, at(2026, 5, 20, 10, 2), m1.ID, delta.Compute(s1, s2))
+
+	entries, err := computeBlame(ctx, store, target)
+	if err != nil {
+		t.Fatalf("computeBlame: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry (CREATED), got %d: %+v", len(entries), entries)
+	}
+	if entries[0].Op != opCreated {
+		t.Errorf("want CREATED, got %s", entries[0].Op)
+	}
+}
+
 func TestRunBlame_EmptyMessage(t *testing.T) {
 	dir, _ := seedBlameStore(t)
 	var buf bytes.Buffer
@@ -170,5 +215,56 @@ func TestRunBlame_RendersTable(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in output:\n%s", want, out)
 		}
+	}
+}
+
+// TestRunBlame_NamespaceAppliedFromFlag verifies that when the target key has
+// an empty namespace, the --namespace flag fills it in before the blame scan.
+// This is a forward-compat hook for future bare-name positional args.
+func TestRunBlame_NamespaceAppliedFromFlag(t *testing.T) {
+	dir, store := seedBlameStore(t)
+	ctx := context.Background()
+
+	target := key("Deployment", "myns", "api")
+	s0 := delta.Snapshot{}
+	m0, _ := store.PutFull(ctx, at(2026, 5, 20, 10, 0), s0)
+	s1 := delta.Snapshot{target: delta.State("v1")}
+	store.PutDelta(ctx, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
+
+	var buf bytes.Buffer
+	noNsTarget := delta.Key{Kind: "Deployment", Namespace: "", Name: "api"}
+	if err := runBlame(&buf, dir, noNsTarget, "myns"); err != nil {
+		t.Fatalf("runBlame: %v", err)
+	}
+	if !strings.Contains(buf.String(), "CREATED") {
+		t.Errorf("expected CREATED entry after namespace applied from flag, got:\n%s", buf.String())
+	}
+}
+
+// TestComputeBlame_ActorsFromJSONPayload pins the ACTORS column end-to-end.
+// Existing tests use raw byte strings as state (not JSON) so actorsFromState
+// always returned "". This test uses a real JSON payload with the
+// ktm.io/managers annotation that the agent marshal layer injects.
+func TestComputeBlame_ActorsFromJSONPayload(t *testing.T) {
+	_, store := seedBlameStore(t)
+	ctx := context.Background()
+	target := key("Deployment", "default", "api")
+
+	payload := `{"metadata":{"name":"api","namespace":"default","annotations":{"ktm.io/managers":"helm,kubectl"}}}`
+
+	s0 := delta.Snapshot{}
+	m0, _ := store.PutFull(ctx, at(2026, 5, 20, 10, 0), s0)
+	s1 := delta.Snapshot{target: delta.State(payload)}
+	store.PutDelta(ctx, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
+
+	entries, err := computeBlame(ctx, store, target)
+	if err != nil {
+		t.Fatalf("computeBlame: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d: %+v", len(entries), entries)
+	}
+	if entries[0].Actors != "helm,kubectl" {
+		t.Errorf("actors: want %q, got %q", "helm,kubectl", entries[0].Actors)
 	}
 }

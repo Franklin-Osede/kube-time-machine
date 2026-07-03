@@ -21,12 +21,12 @@ import (
 // kinds in Phase 2 means adding new informers here and a marshal
 // function in marshal.go — nothing else changes.
 type Informers struct {
-	factory    informers.SharedInformerFactory
-	deployInf  cache.SharedIndexInformer
-	cmInf      cache.SharedIndexInformer
-	buf        *Buffer
-	excludeNS  map[string]struct{} // namespaces whose events are silently dropped
-	ready      chan struct{}        // closed once the initial cache sync completes
+	factory   informers.SharedInformerFactory
+	deployInf cache.SharedIndexInformer
+	cmInf     cache.SharedIndexInformer
+	buf       *Buffer
+	excludeNS map[string]struct{} // namespaces whose events are silently dropped
+	ready     chan struct{}       // closed once the initial cache sync completes
 }
 
 // NewInformers constructs Informers wired to buf.

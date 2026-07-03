@@ -52,11 +52,12 @@ var DefaultDynamicGVRs = []schema.GroupVersionResource{
 // DynamicInformers watches a configurable set of GroupVersionResources and
 // writes sanitised snapshots into a shared Buffer.
 type DynamicInformers struct {
-	factory   dynamicinformer.DynamicSharedInformerFactory
-	gvrs      []schema.GroupVersionResource
-	buf       *Buffer
-	excludeNS map[string]struct{}
-	ready     chan struct{} // closed once all informer caches are synced
+	factory     dynamicinformer.DynamicSharedInformerFactory
+	gvrs        []schema.GroupVersionResource
+	buf         *Buffer
+	excludeNS   map[string]struct{}
+	ready       chan struct{} // closed once all informer caches are synced
+	syncTimeout time.Duration
 }
 
 // NewDynamicInformers constructs a DynamicInformers. gvrs is the list of
@@ -92,6 +93,16 @@ func (d *DynamicInformers) Ready() <-chan struct{} {
 	return d.ready
 }
 
+// WithSyncTimeout sets the maximum duration to wait for all informer caches
+// to sync before Start() returns an error. When zero (the default), Start()
+// waits until ctx is cancelled. Set this when watchResources may name GVRs
+// that don't exist in the cluster — without a timeout, WaitForCacheSync
+// blocks the agent indefinitely while the pod stays Running-but-not-Ready.
+func (d *DynamicInformers) WithSyncTimeout(timeout time.Duration) *DynamicInformers {
+	d.syncTimeout = timeout
+	return d
+}
+
 // Start wires event handlers for every GVR, starts the factory, waits for
 // all caches to sync, and then blocks until ctx is cancelled. Returns
 // ctx.Err() on clean shutdown or an error if initial sync fails.
@@ -121,11 +132,21 @@ func (d *DynamicInformers) Start(ctx context.Context) error {
 
 	d.factory.Start(ctx.Done())
 
-	if !cache.WaitForCacheSync(ctx.Done(), hasSynced...) {
+	// When a syncTimeout is configured, use a derived context so that a
+	// non-existent or RBAC-denied GVR surfaces a loud error quickly instead
+	// of blocking WaitForCacheSync until the parent context (SIGTERM) fires.
+	syncCtx := ctx
+	var syncCancel context.CancelFunc
+	if d.syncTimeout > 0 {
+		syncCtx, syncCancel = context.WithTimeout(ctx, d.syncTimeout)
+		defer syncCancel()
+	}
+
+	if !cache.WaitForCacheSync(syncCtx.Done(), hasSynced...) {
 		if err := ctx.Err(); err != nil {
-			return err
+			return err // parent cancelled (SIGTERM) — not a timeout
 		}
-		return fmt.Errorf("agent: dynamic: informer cache sync failed")
+		return fmt.Errorf("agent: dynamic: informer cache sync timed out after %s (GVR not found or RBAC denied?)", d.syncTimeout)
 	}
 	close(d.ready)
 	slog.Info("agent: dynamic informer caches synced", "resources", d.resourceNames())
@@ -336,4 +357,3 @@ func CombinedReady(a, b <-chan struct{}) <-chan struct{} {
 	}()
 	return out
 }
-

@@ -140,7 +140,6 @@ and runtime signals.
 - Automatic rollback or unqualified production-safety claims.
 - Support for resources beyond Deployments and ConfigMaps.
 - Querying Mode B without extracting the PVC.
-- Automatic retention or lifecycle management.
 - Disaster-recovery or backup positioning.
 
 ## Success signals

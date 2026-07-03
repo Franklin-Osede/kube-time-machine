@@ -4,6 +4,11 @@
 
 FROM golang:1.26-alpine AS builder
 
+# VERSION is injected by the release workflow via --build-arg so that
+# `ktm-agent --version` reports the real tag inside the container image.
+# Defaults to "dev" for local `docker build` runs without the arg.
+ARG VERSION=dev
+
 WORKDIR /src
 
 # Cache module downloads — only invalidates when go.mod / go.sum move.
@@ -19,7 +24,7 @@ COPY pkg ./pkg
 # static. -trimpath gives reproducible paths in stack traces.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
-    go build -trimpath -ldflags="-s -w" \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/ktm-agent ./cmd/agent
 
 FROM gcr.io/distroless/static-debian12:nonroot

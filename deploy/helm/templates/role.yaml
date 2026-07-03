@@ -19,17 +19,8 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch"]
-  # Dynamic informers (Phase 2) — default --watch-resources set
-  - apiGroups: ["apps"]
-    resources: ["statefulsets"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: [""]
-    resources: ["services"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["ingresses"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["autoscaling"]
-    resources: ["horizontalpodautoscalers"]
-    verbs: ["get", "list", "watch"]
+  {{- with .Values.rbac.extraRules }}
+  # Explicit opt-in permissions for experimental dynamic informers.
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
 {{- end }}

@@ -30,9 +30,15 @@ func reconstruct(ctx context.Context, store storage.Store, id types.SnapshotID) 
 	// chain holds Loaded records ordered from `id` back to the anchoring
 	// full snapshot. chain[0] is `id`; chain[len-1] is the full.
 	var chain []storage.Loaded
+	visited := make(map[types.SnapshotID]bool)
 
 	cur := id
 	for {
+		if visited[cur] {
+			return nil, fmt.Errorf("reconstruct: cycle detected in delta chain at snapshot %s", cur)
+		}
+		visited[cur] = true
+
 		loaded, err := store.Get(ctx, cur)
 		if err != nil {
 			return nil, fmt.Errorf("reconstruct: load %s: %w", cur, err)

@@ -84,6 +84,12 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
   cli:
     name: ktm + ktm-agent binaries (5 platforms)
@@ -103,7 +109,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
+          go-version-file: go.mod
           cache: true
 
       - name: Derive version from tag
@@ -189,7 +195,11 @@ jobs:
           find artefacts -type f -exec cp {} release/ \;
           ls -la release/
 
-      - name: Create release with binaries attached
+      - name: Generate SHA-256 checksums
+        working-directory: release
+        run: sha256sum ./* > checksums.txt
+
+      - name: Create release with binaries and checksums attached
         uses: softprops/action-gh-release@v2
         with:
           files: release/*

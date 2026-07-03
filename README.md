@@ -109,6 +109,7 @@ See [docs/comparison.md](docs/comparison.md) for the long-form discussion.
 ## Contributing
 
 The MVP architecture is stable and v0.1.1 launch preparation is in progress. Issues and focused PRs are welcome. If you have feedback on the design or have tried KTM during an incident-response workflow, [open an issue](https://github.com/Franklin-Osede/kube-time-machine/issues).
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [security policy](SECURITY.md), and the [Code of Conduct](CODE_OF_CONDUCT.md) before contributing.
 
 ## License
 
@@ -116,5 +117,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## About the author
 
-Built by **Franklin Osede** — backend engineer transitioning into Platform Engineering, learning Go in public.
+Built by **Franklin Osede** — backend and platform engineer. The storage,
+rollback, and packaging trade-offs are documented in the
+[architecture decisions](docs/adr/).
 [LinkedIn](https://www.linkedin.com/in/franklinosede/) · [GitHub](https://github.com/Franklin-Osede)

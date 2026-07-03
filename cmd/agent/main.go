@@ -52,10 +52,11 @@ func run() error {
 		healthAddr        = flag.String("health-addr", ":8080", "HTTP listen address for /healthz and /readyz (empty = disabled)")
 		excludeNamespaces = flag.String("exclude-namespaces", "kube-system,kube-public,kube-node-lease", "comma-separated list of namespaces to exclude from watching")
 		watchResources    = flag.String("watch-resources",
-			"statefulsets.apps/v1,services/v1,ingresses.networking.k8s.io/v1,horizontalpodautoscalers.autoscaling/v2",
+			"",
 			"comma-separated list of resource[.group[/version]] to watch via dynamic informers (complements typed Deployment/ConfigMap watchers)")
 		burstThreshold = flag.Int("burst-threshold", 50,
 			"flush early when this many changes accumulate before the next periodic tick; 0 disables burst flushing")
+		retainDays  = flag.Int("retain-days", 30, "delete snapshots older than this many days after each full flush; 0 keeps all snapshots forever")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -78,6 +79,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
 	}
+	if err := store.AcquireWriterLock(); err != nil {
+		return fmt.Errorf("lock storage for writing: %w", err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			slog.Error("ktm-agent: close storage", "err", err)
+		}
+	}()
 
 	excludeNS := splitTrimmed(*excludeNamespaces)
 
@@ -88,9 +97,13 @@ func run() error {
 
 	buf := agent.NewBuffer()
 	snap := agent.NewSnapshotter(buf, store, *interval, *fullEvery).
-		WithBurstFlush(*burstThreshold, 10*time.Second)
+		WithBurstFlush(*burstThreshold, 10*time.Second).
+		WithRetention(*retainDays)
 	inf := agent.NewInformers(client, buf, 0, excludeNS)
 	dynInf := agent.NewDynamicInformers(dynClient, buf, 0, gvrs, excludeNS)
+	if len(gvrs) > 0 {
+		dynInf = dynInf.WithSyncTimeout(2 * time.Minute)
+	}
 
 	// Gate the Snapshotter on BOTH typed and dynamic informers syncing.
 	// This ensures the first (always-full) snapshot is complete across all
@@ -104,6 +117,7 @@ func run() error {
 		"storageDir", *storageDir,
 		"interval", interval.String(),
 		"fullEvery", *fullEvery,
+		"retainDays", *retainDays,
 		"healthAddr", *healthAddr,
 		"excludeNamespaces", excludeNS,
 		"dynamicResources", *watchResources)
@@ -111,7 +125,9 @@ func run() error {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return inf.Start(gctx) })
 	g.Go(func() error { return dynInf.Start(gctx) })
-	healthSrv := health.New(*healthAddr, func() bool { return health.Ready(allReady) }).
+	healthSrv := health.New(*healthAddr, func() bool {
+		return health.Ready(allReady) && snap.FlushHealthy(3)
+	}).
 		WithMetrics(func() string { return agentMetrics(buf, snap) })
 	g.Go(func() error { return healthSrv.Run(gctx) })
 	// snap.Run waits on allReady before its first flush so the first

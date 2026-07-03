@@ -2,14 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
-    branches: [main]
+    branches: ["**"]
 
 jobs:
-  test:
-    name: Lint, vet, test, build
+  build-and-test:
+    name: Format, vet, test, build
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,35 +18,31 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # Keep this in sync with go.mod. The toolchain directive in
-          # go.mod will pull the exact patch version automatically.
-          go-version: '1.26.x'
+          go-version-file: go.mod
           cache: true
 
       - name: Verify formatting
         run: |
-          unformatted=$(gofmt -l .)
+          unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt found unformatted files:"
             echo "$unformatted"
             exit 1
           fi
 
-      - name: go vet
+      - name: Test (race detector)
+        run: go test -race -count=1 -timeout 5m ./...
+
+      - name: Vet
         run: go vet ./...
-
-      - name: Unit tests
-        run: go test ./...
-
-      - name: Race detector
-        run: go test -race -count=1 ./...
 
       - name: Build both binaries
         run: make build
 
   helm:
-    name: Helm lint + template
+    name: Helm lint and render contracts
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,25 +52,22 @@ jobs:
         with:
           version: v3.14.0
 
-      - name: helm lint
+      - name: Lint chart
         run: helm lint deploy/helm
 
-      - name: helm template (render must succeed)
+      - name: Render chart
         run: helm template ktm deploy/helm --namespace ktm-system >/dev/null
 
-      - name: helm template health toggle contract
+      - name: Verify health toggle contract
         run: |
-          # here-strings, not `echo | grep`: GitHub Actions runs steps with
-          # `-eo pipefail`, where `grep -q` exiting early on a match can
-          # SIGPIPE the upstream `echo` and fail the step on large renders.
           enabled="$(helm template ktm deploy/helm --namespace ktm-system)"
           grep -q -- '- --health-addr=:8080' <<<"$enabled"
-          grep -q 'containerPort: 8080'      <<<"$enabled"
-          grep -q 'livenessProbe:'           <<<"$enabled"
-          grep -q 'readinessProbe:'          <<<"$enabled"
+          grep -q 'containerPort: 8080' <<<"$enabled"
+          grep -q 'livenessProbe:' <<<"$enabled"
+          grep -q 'readinessProbe:' <<<"$enabled"
 
           disabled="$(helm template ktm deploy/helm --namespace ktm-system --set agent.health.enabled=false)"
-          grep -q -- '- --health-addr=$'  <<<"$disabled"
+          grep -q -- '- --health-addr=$' <<<"$disabled"
           ! grep -q 'containerPort: 8080' <<<"$disabled"
-          ! grep -q 'livenessProbe:'      <<<"$disabled"
-          ! grep -q 'readinessProbe:'     <<<"$disabled"
+          ! grep -q 'livenessProbe:' <<<"$disabled"
+          ! grep -q 'readinessProbe:' <<<"$disabled"

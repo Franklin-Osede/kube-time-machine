@@ -1,6 +1,8 @@
 # Binaries built locally
 /bin/
 /dist/
+/agent
+/ktm
 *.exe
 *.test
 *.out

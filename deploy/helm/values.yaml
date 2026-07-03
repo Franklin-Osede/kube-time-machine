@@ -23,19 +23,17 @@ snapshot:
   # Flush early when this many changes accumulate before the next periodic tick.
   # Useful during deploy storms to capture fine-grained history. 0 = disabled.
   burstThreshold: 50
+  # Delete snapshots older than this many days after each full-snapshot flush.
+  # The GC algorithm keeps the most-recent full snapshot before the cutoff as
+  # an anchor so every delta in the retention window remains reconstructable.
+  # 0 = keep all snapshots forever (useful for development / small clusters).
+  retainDays: 30
 
 # Local PVC storage. Cloud drivers are Phase 2 (see roadmap).
 storage:
   create: true                 # set false to bring your own PVC and bind it via fullnameOverride
   size: 10Gi
   storageClassName: ""         # empty = use the cluster default
-
-# The set of watched resources is fixed in MVP: Deployments and
-# ConfigMaps. It is not a chart value because the agent hardcodes the
-# typed informers (internal/agent/informers.go) and the ClusterRole
-# hardcodes the matching rules (templates/role.yaml) — a value here would
-# be silently ignored. Widening the set is Phase 2 P0 work that touches
-# all three places together.
 
 # Health endpoints for Kubernetes probes (/healthz liveness, /readyz readiness).
 agent:
@@ -50,16 +48,11 @@ agent:
     - kube-system
     - kube-public
     - kube-node-lease
-  # Additional resource kinds to watch via dynamic informers (Phase 2).
+  # Additional resource kinds to watch via dynamic informers (experimental).
   # Format: "resource.group/version". The typed informers cover Deployments
-  # and ConfigMaps; add any other resource kinds here.
-  # NOTE: the ClusterRole in role.yaml must grant get/list/watch for each
-  # resource listed here, or the informers will fail to sync.
-  watchResources:
-    - statefulsets.apps/v1
-    - services/v1
-    - ingresses.networking.k8s.io/v1
-    - horizontalpodautoscalers.autoscaling/v2
+  # and ConfigMaps. Keep this empty unless matching read-only rules are also
+  # supplied through rbac.extraRules.
+  watchResources: []
   # Pod resource requests/limits. Conservative defaults for a small cluster.
   resources:
     requests:
@@ -82,6 +75,12 @@ serviceAccount:
 # Cluster-scoped read-only RBAC. See ADR-0007.
 rbac:
   create: true
+  # Additional read-only rules for agent.watchResources. Example:
+  # extraRules:
+  #   - apiGroups: ["apps"]
+  #     resources: ["statefulsets"]
+  #     verbs: ["get", "list", "watch"]
+  extraRules: []
 
 # NetworkPolicy: ingress deny-all, egress allows DNS + everything else
 # (a stricter "only kube-apiserver" rule is brittle across cluster

@@ -37,6 +37,9 @@ import (
 type Local struct {
 	root string
 
+	lockMu   sync.Mutex
+	lockFile *os.File
+
 	mu    sync.Mutex
 	index []types.SnapshotMeta // sorted by Timestamp ascending
 }
@@ -48,6 +51,10 @@ const (
 	fullFileName     = "full.json"
 	deltaFileName    = "delta.json"
 )
+
+// Root returns the root directory path of the store. Useful in tests that
+// need to inspect the on-disk layout without bypassing the Store interface.
+func (l *Local) Root() string { return l.root }
 
 // NewLocal opens (or initializes) a Local store rooted at the given path.
 // The root and its snapshots/ subdirectory are created if missing. If
@@ -62,6 +69,58 @@ func NewLocal(root string) (*Local, error) {
 		return nil, fmt.Errorf("storage: load index: %w", err)
 	}
 	return l, nil
+}
+
+// AcquireWriterLock obtains a process-scoped exclusive lock for this store.
+//
+// NewLocal deliberately does not acquire the lock: CLI read commands must be
+// able to inspect a store while the agent is recording. The agent is the only
+// writer process and calls this method during startup. A second agent pointed
+// at the same PVC fails fast instead of racing writes to index.json and the
+// snapshot directories.
+func (l *Local) AcquireWriterLock() error {
+	l.lockMu.Lock()
+	defer l.lockMu.Unlock()
+
+	if l.lockFile != nil {
+		return nil
+	}
+
+	path := filepath.Join(l.root, ".writer.lock")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("storage: open writer lock: %w", err)
+	}
+	if err := lockFileExclusive(f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("storage: another process holds the writer lock on %s: %w", l.root, err)
+	}
+	l.lockFile = f
+	return nil
+}
+
+// Close releases the writer lock, when held. Closing the file descriptor also
+// releases the OS lock automatically if the process exits without calling
+// Close, so stale lock files do not create stale locks.
+func (l *Local) Close() error {
+	l.lockMu.Lock()
+	defer l.lockMu.Unlock()
+
+	if l.lockFile == nil {
+		return nil
+	}
+	f := l.lockFile
+	l.lockFile = nil
+
+	unlockErr := unlockFile(f)
+	closeErr := f.Close()
+	if unlockErr != nil {
+		return fmt.Errorf("storage: unlock writer lock: %w", unlockErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("storage: close writer lock: %w", closeErr)
+	}
+	return nil
 }
 
 func (l *Local) loadIndex() error {
@@ -149,7 +208,14 @@ func (l *Local) PutFull(_ context.Context, ts time.Time, snap delta.Snapshot) (t
 	if err := l.writeSnapshot(meta, fullFileName, snapshotToWire(snap)); err != nil {
 		return types.SnapshotMeta{}, err
 	}
-	return l.appendIndex(meta)
+	result, err := l.appendIndex(meta)
+	if err != nil {
+		// Roll back the on-disk snapshot directory so a failed index write
+		// does not leave an orphan that rebuildIndex would silently accept.
+		_ = os.RemoveAll(filepath.Join(l.root, snapshotsDirName, string(meta.ID)))
+		return types.SnapshotMeta{}, err
+	}
+	return result, nil
 }
 
 // PutDelta persists an incremental delta from prevID.
@@ -164,7 +230,12 @@ func (l *Local) PutDelta(_ context.Context, ts time.Time, prevID types.SnapshotI
 	if err := l.writeSnapshot(meta, deltaFileName, deltaToWire(d)); err != nil {
 		return types.SnapshotMeta{}, err
 	}
-	return l.appendIndex(meta)
+	result, err := l.appendIndex(meta)
+	if err != nil {
+		_ = os.RemoveAll(filepath.Join(l.root, snapshotsDirName, string(meta.ID)))
+		return types.SnapshotMeta{}, err
+	}
+	return result, nil
 }
 
 // Get loads the payload at id from disk. The index is not consulted —
@@ -197,6 +268,44 @@ func (l *Local) Get(_ context.Context, id types.SnapshotID) (Loaded, error) {
 	return out, nil
 }
 
+// Delete removes the snapshot directory and its index entry. It is
+// idempotent: if id does not exist the call returns nil. The caller is
+// responsible for ensuring no remaining delta references id as its PrevID.
+func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
+	dir := filepath.Join(l.root, snapshotsDirName, string(id))
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Remove the on-disk directory first (while holding the lock) so there
+	// is no window where a concurrent List sees a stale index entry pointing
+	// to a directory that has already been deleted. A crash after RemoveAll
+	// but before writeIndexLocked leaves the directory gone; rebuildIndex
+	// (called on next open) will not find it and will not include it in the
+	// rebuilt index, so the store self-heals on restart.
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("storage: delete snapshot dir %s: %w", id, err)
+	}
+
+	// Filter the in-memory index.
+	filtered := l.index[:0]
+	for _, m := range l.index {
+		if m.ID != id {
+			filtered = append(filtered, m)
+		}
+	}
+	if len(filtered) == len(l.index) {
+		// id was not in the index — nothing more to do.
+		return nil
+	}
+	l.index = filtered
+
+	if err := l.writeIndexLocked(); err != nil {
+		return fmt.Errorf("storage: write index after delete: %w", err)
+	}
+	return nil
+}
+
 // List returns a copy of the in-memory index, sorted by Timestamp.
 func (l *Local) List(_ context.Context) ([]types.SnapshotMeta, error) {
 	l.mu.Lock()
@@ -212,9 +321,17 @@ func (l *Local) List(_ context.Context) ([]types.SnapshotMeta, error) {
 // with fsync for durability across node crashes.
 func (l *Local) writeSnapshot(meta types.SnapshotMeta, payloadName string, payload any) error {
 	dir := filepath.Join(l.root, snapshotsDirName, string(meta.ID))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.Mkdir(dir, 0o755); errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("storage: snapshot ID collision at %s", meta.ID)
+	} else if err != nil {
 		return fmt.Errorf("storage: mkdir %s: %w", meta.ID, err)
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.RemoveAll(dir)
+		}
+	}()
 	if err := syncDir(filepath.Join(l.root, snapshotsDirName)); err != nil {
 		return fmt.Errorf("storage: sync snapshots dir %s: %w", meta.ID, err)
 	}
@@ -224,17 +341,27 @@ func (l *Local) writeSnapshot(meta types.SnapshotMeta, payloadName string, paylo
 	if err := atomicWriteJSON(filepath.Join(dir, metaFileName), meta); err != nil {
 		return fmt.Errorf("storage: write meta %s: %w", meta.ID, err)
 	}
+	committed = true
 	return nil
 }
 
 func (l *Local) appendIndex(meta types.SnapshotMeta) (types.SnapshotMeta, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.index = append(l.index, meta)
-	sort.SliceStable(l.index, func(i, j int) bool {
-		return l.index[i].Timestamp.Before(l.index[j].Timestamp)
+
+	// Build the updated index in a fresh slice so a disk-write failure leaves
+	// l.index entirely unchanged — no partial mutation to roll back.
+	updated := make([]types.SnapshotMeta, len(l.index)+1)
+	copy(updated, l.index)
+	updated[len(l.index)] = meta
+	sort.SliceStable(updated, func(i, j int) bool {
+		return updated[i].Timestamp.Before(updated[j].Timestamp)
 	})
+
+	old := l.index
+	l.index = updated
 	if err := l.writeIndexLocked(); err != nil {
+		l.index = old // restore: do not advance in-memory state on disk failure
 		return types.SnapshotMeta{}, fmt.Errorf("storage: write index: %w", err)
 	}
 	return meta, nil
