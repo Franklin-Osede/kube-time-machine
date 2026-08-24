@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage build for the in-cluster agent.
-# Result: ~2 MB distroless image, runs as UID 65532, no shell, no apt.
+# Result: ~41 MB distroless image (static client-go binary), runs as UID
+# 65532, no shell, no apt.
 
 FROM golang:1.26-alpine AS builder
 
