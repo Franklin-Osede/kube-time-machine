@@ -1,5 +1,10 @@
 # Auditoría pre-producción — kube-time-machine v0.1.1
 
+> **Superada por [`PRE-DEPLOY-AUDIT.md`](PRE-DEPLOY-AUDIT.md) (2026-08-24).**
+> El veredicto NO-GO de este documento se emitió sobre el árbol previo al merge de
+> `fix/prelaunch-correctness`. Los bloqueadores de código que describe están
+> corregidos y verificados. Se conserva como registro histórico de la auditoría.
+
 Fecha de auditoría: 2026-06-24  
 Revalidación de fixes: 2026-06-25  
 Revisión local: `dc810a6624a385fe4cdd0ff957c64dae7bbac1be` más cambios staged/unstaged sin commit.
