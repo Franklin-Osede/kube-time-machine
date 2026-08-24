@@ -109,7 +109,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # Pinned explicitly rather than inferred from go.mod: released
+          # binaries must be built by a toolchain with the stdlib advisories
+          # fixed. go.mod's 'go' directive is the 1.26.0 floor client-go
+          # requires, and building with exactly 1.26.0 would ship the
+          # vulnerable net/http, crypto/tls, net/url and encoding/asn1.
+          go-version: '1.26.6'
           cache: true
 
       - name: Derive version from tag

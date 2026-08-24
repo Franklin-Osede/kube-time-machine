@@ -2,6 +2,13 @@ module github.com/Franklin-Osede/kube-time-machine
 
 go 1.26.0
 
+// Build toolchain pin, separate from the 'go' directive above. The floor of
+// 1.26.0 is inherited from k8s.io/client-go v0.36.1 and must stay there so
+// source builds work; 1.26.6 is the first patch fixing the reachable stdlib
+// advisories GO-2026-6218, GO-2026-6090, GO-2026-6089, GO-2026-5972 and
+// GO-2026-5026. Raise this, not the 'go' line, for future stdlib CVEs.
+toolchain go1.26.6
+
 require (
 	github.com/fatih/color v1.19.0
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
