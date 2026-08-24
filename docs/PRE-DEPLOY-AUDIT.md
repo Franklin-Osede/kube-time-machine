@@ -84,9 +84,10 @@ tree rather than inferred from commit messages:
   when missing or corrupt instead of blocking startup.
 - **Retention** — `--retain-days` with GC that preserves the newest full snapshot before
   the cutoff as an anchor, so deltas in the window stay reconstructable.
-- **Operability** — `/healthz`, `/readyz`, `/metrics`, liveness/readiness probes, kubelet
-  admitted through the NetworkPolicy, egress narrowed from `0.0.0.0/0` to DNS + API
-  server.
+- **Operability** — `/healthz`, `/readyz`, `/metrics`, liveness/readiness probes, and
+  kubelet admitted through the NetworkPolicy's deny-all ingress. Egress is **not**
+  narrowed: `networkpolicy.yaml:48` still allows `0.0.0.0/0`, so the agent can still
+  reach cloud metadata at 169.254.169.254. Tightening it stays a Phase 2 item.
 - **Release correctness** — `ktm-agent` now published (Mode A was unreachable from release
   artefacts before), `:latest` gated against prereleases, SHA-256 checksums attached.
 - **Honesty** — README no longer claims a shipped v0.1.0; the `install.md` Security

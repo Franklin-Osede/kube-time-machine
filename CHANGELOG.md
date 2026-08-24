@@ -47,8 +47,10 @@ version to install.
 - `:latest` is no longer repointed by prerelease tags.
 - Removed the unused `resources.watch` chart value, which collided with the
   conventional Helm `resources` key and silently did nothing when set.
-- The NetworkPolicy now admits kubelet probe traffic and scopes egress to DNS
-  and the API server instead of `0.0.0.0/0`.
+- The NetworkPolicy now admits kubelet probe traffic, so liveness and readiness
+  probes are not blocked by the deny-all ingress rule. Egress remains open
+  (`0.0.0.0/0`) with DNS called out explicitly; narrowing it is a Phase 2
+  follow-up tracked in `deploy/helm/templates/networkpolicy.yaml`.
 
 ### Security
 
