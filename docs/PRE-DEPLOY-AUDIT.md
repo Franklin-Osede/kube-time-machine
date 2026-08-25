@@ -135,41 +135,54 @@ tree rather than inferred from commit messages:
 ### Blocking the tag
 
 **Orphaned `0.1.0` packages are still live.** See above. Nothing in the code fixes
-this; it needs the packages deleted or deprecated in GHCR.
+this; it needs the packages deleted or deprecated in GHCR. This is the only remaining
+blocker.
 
-### Correctness — should fix before a wide launch
+### Correctness
 
-1. **Rollback shows no cluster identity before applying.** No context, API server, or
-   user is displayed, kubeconfig is resolved implicitly, and `--yes` removes the last
-   prompt. Separately, a 404 silently recreates the resource from the snapshot, so a
-   deliberate deletion becomes an accidental resurrection. Recreation should be opt-in
-   behind `--allow-create`.
-
-2. **A failed flush loses the burst signal.** `DrainChanges()` runs before `Flush`
+1. **A failed flush loses the burst signal.** `DrainChanges()` runs before `Flush`
    (`snapshot.go:322`). The changes themselves survive — only the counter is reset — so a
-   failed flush silently disarms burst detection until the next periodic tick.
+   failed flush silently disarms burst detection until the next periodic tick. Known and
+   deliberately deferred: it degrades responsiveness, not correctness.
 
 ### Operational
 
-3. **PVC is destroyed by `helm uninstall`** — no `helm.sh/resource-policy: keep`, no
-   `existingClaim`, no VolumeSnapshot support. For a tool whose product *is* the history,
-   losing it on uninstall is the sharpest operational edge left.
-4. **NetworkPolicy egress is still `0.0.0.0/0`** (`networkpolicy.yaml:48`), deliberately,
-   so the agent can always reach the API server. Cloud metadata at 169.254.169.254 stays
-   reachable. Narrowing it is a Phase 2 item.
-5. **No cosign signing or SBOM.** Checksums ship.
-6. **No E2E test.** Nothing has ever verified install → record → change → reconstruct →
-   blame → rollback against a real cluster. This is the largest untested surface.
-7. **`idFromTime` has millisecond precision and no collision guard.** Safe at the 300s
-   default, reachable at the 10s interval the demo docs suggest.
-8. **Chart has no `icon`** (the only `helm lint` finding) and no image digest pinning.
+2. **NetworkPolicy egress is still `0.0.0.0/0`** (`networkpolicy.yaml:48`), deliberately,
+   so the agent can always reach the API server across providers. Cloud metadata at
+   169.254.169.254 stays reachable. Narrowing it is a Phase 2 item.
+3. **No cosign signing or SBOM.** Checksums ship.
+4. **`idFromTime` has millisecond precision and no collision guard.** Safe at the 300s
+   default, reachable at the 10s interval the demo docs suggest — and the E2E runs at 5s
+   without hitting it, since flushes are serialised by the writer lock.
+5. **Chart has no `icon`** (the only `helm lint` finding) and no image digest pinning.
+6. **Scanning the published RC image is still manual.** The E2E builds and installs an
+   image, but nothing scans the artefact that actually ships.
 
 ### Documentation
 
-9. `docs/roadmap.md:22` scope-locks to "No metrics", but `/metrics` exists and
-    `roadmap.md:43` lists it as a stage. The file contradicts itself.
-10. `docs/PROGRESS.md` and `docs/audit-preproduction-v0.1.1.md` are Spanish internal
-    working logs in an otherwise English public repo.
+7. `docs/roadmap.md:22` scope-locks to "No metrics", but `/metrics` exists and
+   `roadmap.md:43` lists it as a stage. The file contradicts itself.
+8. `docs/PROGRESS.md` and `docs/audit-preproduction-v0.1.1.md` are Spanish internal
+   working logs in an otherwise English public repo.
+
+### Closed since this audit began
+
+- Empty-snapshot corruption, durability, retention, health probes, release correctness,
+  and the dishonest "v0.1.0 shipped" framing — closed by the `fix/prelaunch-correctness`
+  merge.
+- Reachable dependency advisories and the unpinned release toolchain — `govulncheck` now
+  reports zero.
+- Agent flag validation, the `--watch-resources` contract, snapshot-ID path traversal,
+  file modes, and health-server timeouts.
+- `Local.Delete` crash-consistency, via a staged `.deleting` tombstone reconciled on open.
+- Readiness now requires a durably written snapshot, not just synced informers.
+- Rollback prints the destination cluster and gates create-on-404 behind `--allow-create`.
+- The PVC survives `helm uninstall` (`storage.retain`), and `storage.existingClaim`
+  re-attaches a kept volume.
+- **The E2E gap.** `test/e2e/e2e.sh` drives install → record → mutate → reconstruct →
+  blame → rollback against a real kind cluster, plus the create-on-404 refusal and PVC
+  retention, and passes. It also exercises the documented extraction recipe, so
+  `docs/install.md` is tested rather than assumed.
 
 ---
 
