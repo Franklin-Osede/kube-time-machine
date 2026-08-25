@@ -192,7 +192,8 @@ this; it needs the packages deleted or deprecated in GHCR.
 ## Remaining sequence
 
 1. Delete or deprecate the orphaned `0.1.0` GHCR packages.
-2. Push — 12 commits are still local-only, and this is the first run of the new
+2. Push — 29 commits are still local-only (18 from the merge, 11 from the hardening
+   pass), and this is the first run of the new
    lint/vuln/tidy gates on CI.
 3. Fix the `Delete` index-consistency bug and the readiness gate.
 4. Add rollback guardrails and put create-on-404 behind `--allow-create`.
