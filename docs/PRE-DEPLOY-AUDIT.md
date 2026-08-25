@@ -188,14 +188,15 @@ blocker.
 
 ## Remaining sequence
 
-1. Delete or deprecate the orphaned `0.1.0` GHCR packages.
-2. Push — 29 commits are still local-only (18 from the merge, 11 from the hardening
-   pass), and this is the first run of the new
-   lint/vuln/tidy gates on CI.
-3. Add rollback guardrails and put create-on-404 behind `--allow-create`.
-4. `v0.1.1-rc.1` — first artefact rehearsal since the withdrawn 0.1.0.
-5. Build and scan the RC image; smoke-test against a real cluster.
-6. `v0.1.1`, then make the docs public.
+1. **Delete or deprecate the orphaned `0.1.0` GHCR packages.** Delete the *versions*,
+   not the packages: GHCR recreates a deleted package as private, which would break
+   anonymous `helm install` and `docker pull` after v0.1.1 ships.
+2. **Push.** 37 commits are local-only, and this is the first remote run of the new
+   lint, vuln, tidy, storage-contract, and E2E gates.
+3. **`v0.1.1-rc.1`** — the first artefact rehearsal since 0.1.0 was withdrawn.
+4. **Verify the RC artefacts**: multi-arch image, OCI chart, five-platform binaries,
+   `checksums.txt`, and a vulnerability scan of the *published* image.
+5. **`v0.1.1`**, then make the docs public.
 
-Step 3 is the remaining code gate for a *wide* launch. Steps 1, 2, 4 and 5 are the
-release-mechanics gate before the final tag.
+All code gates are closed. What remains is release mechanics plus the GHCR cleanup in
+step 1, which is the only item that can mislead a user today.
