@@ -183,15 +183,14 @@ func (s *Snapshotter) FlushHealth() FlushHealth {
 	}
 }
 
-// FlushHealthy reports whether the scheduled recording loop is healthy enough
-// for readiness. Before the first attempt there is no evidence of a storage
-// failure, so informer readiness remains authoritative. Once maxFailures
-// consecutive attempts fail, readiness degrades until a successful flush.
+// FlushHealthy reports whether the scheduled recording loop has persisted at
+// least one snapshot and has fewer than maxFailures consecutive failures.
 func (s *Snapshotter) FlushHealthy(maxFailures int) bool {
 	if maxFailures < 1 {
 		maxFailures = 1
 	}
-	return s.FlushHealth().ConsecutiveFailures < maxFailures
+	health := s.FlushHealth()
+	return !health.LastSuccess.IsZero() && health.ConsecutiveFailures < maxFailures
 }
 
 func (s *Snapshotter) recordFlushOutcome(err error) {
@@ -285,9 +284,9 @@ func (s *Snapshotter) gc(ctx context.Context) {
 // logged but do not stop the loop — losing one snapshot is better than
 // losing the agent.
 //
-// ready gates the first flush: Run waits for it to be closed before
-// starting the ticker, so the first (always-full) snapshot captures a
-// complete cluster view rather than the partial buffer that exists
+// ready gates the first flush: Run waits for it to be closed before taking
+// an immediate full snapshot and starting the ticker. That snapshot captures
+// a complete cluster view rather than the partial buffer that exists
 // before the informer caches finish their initial sync. Pass nil to
 // skip the gate (used by tests that drive Flush directly). If ctx is
 // cancelled while waiting, Run returns without ever flushing.
@@ -304,19 +303,9 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 			return ctx.Err()
 		}
 	}
-
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
-
-	// burstTicker drives the burst-detection poll. When burst flushing is
-	// disabled (threshold == 0) we still create the ticker but never act on
-	// it — the overhead is negligible and it simplifies the select.
-	burstInterval := s.burstPollInterval
-	if burstInterval <= 0 {
-		burstInterval = s.interval // fall back to normal interval, effectively a no-op
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	burstTicker := time.NewTicker(burstInterval)
-	defer burstTicker.Stop()
 
 	doFlush := func(reason string) {
 		s.buf.DrainChanges() // reset counter before flush so the next window starts clean
@@ -332,6 +321,24 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 		}
 		s.recordFlushOutcome(nil)
 	}
+
+	// Prove that storage is writable before readiness can become true. This
+	// also removes the up-to-one-interval gap between informer sync and the
+	// first persisted cluster state.
+	doFlush("initial")
+
+	ticker := time.NewTicker(s.interval)
+	defer ticker.Stop()
+
+	// burstTicker drives the burst-detection poll. When burst flushing is
+	// disabled (threshold == 0) we still create the ticker but never act on
+	// it — the overhead is negligible and it simplifies the select.
+	burstInterval := s.burstPollInterval
+	if burstInterval <= 0 {
+		burstInterval = s.interval // fall back to normal interval, effectively a no-op
+	}
+	burstTicker := time.NewTicker(burstInterval)
+	defer burstTicker.Stop()
 
 	for {
 		select {

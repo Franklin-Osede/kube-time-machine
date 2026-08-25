@@ -292,6 +292,9 @@ func TestSnapshotter_RunWaitsForReady(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if m, _ := store.List(context.Background()); len(m) > 0 {
+			if !s.FlushHealthy(3) {
+				t.Fatal("snapshotter should be healthy after its initial flush")
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -330,8 +333,8 @@ func TestSnapshotter_FlushHealthDegradesAndRecovers(t *testing.T) {
 	s := agent.NewSnapshotter(agent.NewBuffer(), store, 10*time.Millisecond, 1).
 		WithBurstFlush(0, time.Hour)
 
-	if !s.FlushHealthy(3) {
-		t.Fatal("snapshotter should be healthy before the first scheduled attempt")
+	if s.FlushHealthy(3) {
+		t.Fatal("snapshotter should not be ready before its first successful scheduled flush")
 	}
 
 	ready := make(chan struct{})

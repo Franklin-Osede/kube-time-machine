@@ -115,8 +115,8 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, s.metricsFn())
 }
 
-// handleReadyz is the readiness probe: the agent is ready once informer
-// caches have synced and it can take its first snapshot.
+// handleReadyz is the readiness probe. The caller decides the concrete
+// readiness contract; the agent requires synced caches and a successful flush.
 func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	if s.readyFn != nil && s.readyFn() {
 		w.WriteHeader(http.StatusOK)

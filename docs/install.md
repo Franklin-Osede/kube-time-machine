@@ -63,7 +63,7 @@ kubectl get clusterrole,clusterrolebinding | grep ktm
 kubectl -n ktm-system logs deploy/ktm-kube-time-machine
 ```
 
-The agent logs `informer caches synced` once it is ready to record. From that moment, every Add/Update/Delete on a watched Deployment or ConfigMap reaches the local buffer and is flushed to the PVC at the configured cadence (`snapshot.intervalSeconds`, default 300 s).
+The agent logs `informer caches synced`, immediately persists its first full snapshot, and then becomes Ready. From that moment, every Add/Update/Delete on a watched Deployment or ConfigMap reaches the local buffer and is flushed to the PVC at the configured cadence (`snapshot.intervalSeconds`, default 300 s).
 
 ### Querying history from Mode B (CLI ↔ PVC)
 
