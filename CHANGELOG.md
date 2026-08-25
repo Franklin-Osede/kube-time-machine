@@ -32,7 +32,10 @@ version to install.
 - `excludeNamespaces` to keep high-churn namespaces out of the history.
 - Optimistic-concurrency rollback and declarative-state history commands.
 - Formatting, race, vet, build, Helm lint, render, and health-toggle contract
-  checks in CI.
+  checks in CI, plus `go mod tidy` drift, `golangci-lint`, and `govulncheck`.
+- `values.schema.json`, so invalid chart values fail at `helm install` rather
+  than as a CrashLoopBackOff. It also rejects non-read-only verbs in
+  `rbac.extraRules`, which would otherwise silently widen a cluster-scoped role.
 
 ### Fixed
 
@@ -45,6 +48,24 @@ version to install.
   and its parent directory, and a missing or corrupt `index.json` is rebuilt
   from `snapshots/` instead of preventing startup.
 - `:latest` is no longer repointed by prerelease tags.
+- Invalid agent flags are rejected at startup instead of panicking.
+  `--interval=0` previously reached `time.NewTicker` and panicked, after the
+  Kubernetes clients were built, storage was opened, and the writer lock taken.
+- `--watch-resources` now requires an explicit version (`resource[.group]/version`).
+  The previously documented short forms never worked: the dynamic client performs
+  no discovery, so a version-less GVR left the pod Running with
+  `WaitForCacheSync` blocked forever.
+- Snapshot IDs are validated before being resolved to a path. A manipulated
+  `index.json` could previously have directed the retention pass's `RemoveAll`
+  outside the snapshots directory.
+- The health server sets read, read-header, write, and idle timeouts; it
+  previously had none while the NetworkPolicy admits kubelet to its port.
+- Released binaries are built with a pinned Go 1.26.6 toolchain. The release
+  workflow inferred its version from `go.mod`, whose `go 1.26.0` directive names
+  an exact patch, so published binaries would have shipped the vulnerable
+  standard library.
+- Bumped `golang.org/x/net` to v0.55.0 and `golang.org/x/text` to v0.39.0 for
+  advisories reachable from `ktm rollback`.
 - Removed the unused `resources.watch` chart value, which collided with the
   conventional Helm `resources` key and silently did nothing when set.
 - The NetworkPolicy now admits kubelet probe traffic, so liveness and readiness
@@ -53,6 +74,20 @@ version to install.
   follow-up tracked in `deploy/helm/templates/networkpolicy.yaml`.
 
 ### Security
+
+- Snapshot directories and files are now created `0700`/`0600` rather than
+  `0755`/`0644`.
+
+  **Migration:** existing data is not relabelled. `index.json` picks up the
+  tighter mode on its next write, but snapshot `meta.json` and payload files are
+  write-once and keep `0644`. To relabel an existing store in place:
+
+  ```bash
+  # In-cluster (Mode B), against the agent's PVC mount:
+  chmod -R go-rwx /var/lib/ktm
+  # Local (Mode A):
+  chmod -R go-rwx <your --storage-dir>
+  ```
 
 - Documented what the PVC holds: the agent persists full ConfigMap `data`
   cluster-wide as plaintext JSON. Secrets are deliberately not watched and the

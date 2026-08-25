@@ -49,7 +49,8 @@ agent:
     - kube-public
     - kube-node-lease
   # Additional resource kinds to watch via dynamic informers (experimental).
-  # Format: "resource.group/version". The typed informers cover Deployments
+  # Format: "resource[.group]/version" — the version is required, because the
+  # dynamic client does not perform discovery. The typed informers cover Deployments
   # and ConfigMaps. Keep this empty unless matching read-only rules are also
   # supplied through rbac.extraRules.
   watchResources: []

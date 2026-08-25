@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "kube-time-machine values",
+  "description": "Rejects at `helm install` time the values that the agent would otherwise only reject at startup, turning a CrashLoopBackOff into an install error.",
+  "type": "object",
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "name": { "type": "string", "minLength": 1 } },
+            "required": ["name"]
+          }
+        }
+      },
+      "required": ["repository"]
+    },
+
+    "snapshot": {
+      "type": "object",
+      "description": "Mirrors cmd/agent validateConfig. Keep the two in step.",
+      "properties": {
+        "intervalSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Flush cadence. Must be > 0: the agent builds a time.Ticker from it."
+        },
+        "fullEvery": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Every Nth flush is a full reference snapshot. Must be >= 1."
+        },
+        "burstThreshold": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 disables burst flushing. Negative is rejected."
+        },
+        "retainDays": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0 keeps everything forever. Negative is rejected."
+        }
+      }
+    },
+
+    "storage": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?(E|P|T|G|M|k|Ei|Pi|Ti|Gi|Mi|Ki)?$",
+          "description": "Kubernetes quantity, e.g. 10Gi."
+        },
+        "storageClassName": { "type": "string" }
+      }
+    },
+
+    "agent": {
+      "type": "object",
+      "properties": {
+        "health": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "addr": {
+              "type": "string",
+              "pattern": "^(|[^:]*:[0-9]{1,5})$",
+              "description": "Listen address such as \":8080\". Empty disables the server; the chart normally sets this from health.enabled."
+            },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "excludeNamespaces": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "watchResources": {
+          "type": "array",
+          "description": "Each entry must carry an explicit version: the dynamic client performs no discovery, so a version-less GVR never syncs and the pod hangs in WaitForCacheSync.",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?/[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          }
+        },
+        "resources": { "type": "object" }
+      }
+    },
+
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "annotations": { "type": "object" }
+      }
+    },
+
+    "rbac": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "extraRules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "apiGroups": { "type": "array", "items": { "type": "string" } },
+              "resources": { "type": "array", "items": { "type": "string" } },
+              "verbs": {
+                "type": "array",
+                "items": { "type": "string", "enum": ["get", "list", "watch"] },
+                "description": "Read-only only. The agent never writes, and a mutating verb here would silently widen a cluster-scoped role."
+              }
+            },
+            "required": ["apiGroups", "resources", "verbs"]
+          }
+        }
+      }
+    },
+
+    "networkPolicy": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" } }
+    }
+  }
+}
