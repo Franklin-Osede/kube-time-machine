@@ -30,6 +30,9 @@ storage:
   # REQUIRED: use a CSI StorageClass with encryption at rest, expansion, and
   # preferably VolumeSnapshot support.
   storageClassName: REPLACE_WITH_ENCRYPTED_STORAGE_CLASS
+  # Explicit in production: the history must outlive the release. Deleting the
+  # PVC then becomes a deliberate, separate act.
+  retain: true
 
 agent:
   health:

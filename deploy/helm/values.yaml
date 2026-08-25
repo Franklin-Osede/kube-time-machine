@@ -31,9 +31,19 @@ snapshot:
 
 # Local PVC storage. Cloud drivers are Phase 2 (see roadmap).
 storage:
-  create: true                 # set false to bring your own PVC and bind it via fullnameOverride
+  create: true
   size: 10Gi
   storageClassName: ""         # empty = use the cluster default
+  # Keep the PVC when the release is uninstalled. Defaults to true because the
+  # recorded history is the product: `helm uninstall` should not destroy the
+  # forensic record. Set false for ephemeral/CI installs where leftover PVCs
+  # are noise. A kept PVC must be deleted manually, and can be re-attached to a
+  # fresh install with existingClaim below.
+  retain: true
+  # Bind to a PVC that already exists (for example one kept from a previous
+  # release) instead of creating one. When set, the chart creates no PVC and
+  # storage.size / storageClassName / retain are ignored.
+  existingClaim: ""
 
 # Health endpoints for Kubernetes probes (/healthz liveness, /readyz readiness).
 agent:

@@ -1,4 +1,4 @@
-{{- if .Values.storage.create -}}
+{{- if and .Values.storage.create (not .Values.storage.existingClaim) -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -6,6 +6,15 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "ktm.labels" . | nindent 4 }}
+  {{- if .Values.storage.retain }}
+  annotations:
+    # Survive `helm uninstall`. KTM's product IS the recorded history, so the
+    # default is to keep it: an operator who uninstalls to troubleshoot should
+    # not destroy the forensic record they may be about to need. The PVC then
+    # has to be deleted by hand, and a later `helm install` will bind to it
+    # again via storage.existingClaim.
+    helm.sh/resource-policy: keep
+  {{- end }}
 spec:
   accessModes:
     - ReadWriteOnce

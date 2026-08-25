@@ -89,7 +89,7 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: {{ include "ktm.fullname" . }}-data
+            claimName: {{ .Values.storage.existingClaim | default (printf "%s-data" (include "ktm.fullname" .)) }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

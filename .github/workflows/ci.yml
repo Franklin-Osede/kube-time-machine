@@ -112,6 +112,24 @@ jobs:
       - name: Render chart
         run: helm template ktm deploy/helm --namespace ktm-system >/dev/null
 
+      - name: Verify storage retention contract
+        run: |
+          # Default: a PVC is created and survives helm uninstall.
+          default="$(helm template ktm deploy/helm --namespace ktm-system)"
+          grep -q 'kind: PersistentVolumeClaim' <<<"$default"
+          grep -q 'helm.sh/resource-policy: keep' <<<"$default"
+
+          # retain=false: PVC still created, but Helm owns its lifecycle.
+          ephemeral="$(helm template ktm deploy/helm --namespace ktm-system --set storage.retain=false)"
+          grep -q 'kind: PersistentVolumeClaim' <<<"$ephemeral"
+          ! grep -q 'helm.sh/resource-policy' <<<"$ephemeral"
+
+          # existingClaim: no PVC is created, and the Deployment mounts the
+          # named claim instead of the generated one.
+          existing="$(helm template ktm deploy/helm --namespace ktm-system --set storage.existingClaim=preserved-data)"
+          ! grep -q 'kind: PersistentVolumeClaim' <<<"$existing"
+          grep -q 'claimName: preserved-data' <<<"$existing"
+
       - name: Verify health toggle contract
         run: |
           enabled="$(helm template ktm deploy/helm --namespace ktm-system)"

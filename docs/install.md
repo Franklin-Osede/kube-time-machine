@@ -145,7 +145,24 @@ The PVC (Mode B) and the `--storage-dir` (Mode A) hold the full declarative stat
 helm uninstall ktm -n ktm-system
 ```
 
-`helm uninstall` also removes the cluster-scoped `ClusterRole` and `ClusterRoleBinding` that the chart created (their names are suffixed with the release namespace to avoid collisions between installs). The PVC is removed along with the namespace; **the snapshots stored on it are deleted**. To preserve them, extract them first using the recipe above, or set up a backup of the storage class.
+`helm uninstall` also removes the cluster-scoped `ClusterRole` and `ClusterRoleBinding` that the chart created (their names are suffixed with the release namespace to avoid collisions between installs).
+
+**The PVC survives by default.** `storage.retain` defaults to `true`, which annotates the claim with `helm.sh/resource-policy: keep`, so uninstalling to troubleshoot does not destroy the forensic record you may be about to need. Consequences:
+
+- The PVC is left behind and must be deleted deliberately:
+  ```bash
+  kubectl -n ktm-system delete pvc ktm-kube-time-machine-data
+  ```
+- Deleting the *namespace* still deletes the PVC. `resource-policy: keep` protects against Helm, not against namespace deletion.
+- To attach a kept PVC to a fresh install:
+  ```bash
+  helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
+    --version 0.1.1 -n ktm-system \
+    --set storage.existingClaim=ktm-kube-time-machine-data
+  ```
+- For ephemeral or CI installs where leftover PVCs are noise, set `--set storage.retain=false` to get the old behaviour.
+
+Retention is not a backup: a single ReadWriteOnce volume is one storage-class failure away from gone. For anything you would miss, extract with the recipe above or use a storage class with VolumeSnapshot support.
 
 ## Troubleshooting
 

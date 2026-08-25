@@ -33,6 +33,13 @@ version to install.
 - Optimistic-concurrency rollback and declarative-state history commands.
 - Formatting, race, vet, build, Helm lint, render, and health-toggle contract
   checks in CI, plus `go mod tidy` drift, `golangci-lint`, and `govulncheck`.
+- `ktm rollback` now prints the destination cluster — context, API server, and
+  kubeconfig user — before applying anything, including under `--yes`, and
+  accepts `--context` to select a kubeconfig context explicitly.
+- `storage.retain` (default `true`) annotates the PVC with
+  `helm.sh/resource-policy: keep` so `helm uninstall` no longer destroys the
+  recorded history, and `storage.existingClaim` binds a fresh install to a PVC
+  kept from a previous release.
 - `values.schema.json`, so invalid chart values fail at `helm install` rather
   than as a CrashLoopBackOff. It also rejects non-read-only verbs in
   `rbac.extraRules`, which would otherwise silently widen a cluster-scoped role.
@@ -58,6 +65,10 @@ version to install.
 - Snapshot IDs are validated before being resolved to a path. A manipulated
   `index.json` could previously have directed the retention pass's `RemoveAll`
   outside the snapshots directory.
+- `ktm rollback` no longer recreates a resource that has been deleted from the
+  cluster. A 404 previously fell through to Create, so rolling back could
+  silently resurrect a deliberate deletion; recreation is now opt-in behind
+  `--allow-create`.
 - The health server sets read, read-header, write, and idle timeouts; it
   previously had none while the NetworkPolicy admits kubelet to its port.
 - Released binaries are built with a pinned Go 1.26.6 toolchain. The release
