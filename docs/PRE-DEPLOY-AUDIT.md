@@ -139,52 +139,36 @@ this; it needs the packages deleted or deprecated in GHCR.
 
 ### Correctness — should fix before a wide launch
 
-1. **`Delete` can leave a permanently stale index entry, and the code comment says
-   otherwise.** `Local.Delete` removes the directory before rewriting the index, and
-   defends the order by claiming `rebuildIndex` "is called on next open" so "the store
-   self-heals on restart". It is not. `NewLocal` calls `loadIndex`, which rebuilds only
-   when `index.json` is **missing or corrupt** — and in this crash window `index.json` is
-   neither: it still holds valid pre-delete content. So a crash between `RemoveAll` and
-   `writeIndexLocked` yields an index advertising a snapshot whose directory is gone, and
-   it survives every subsequent restart. `Get` on that ID fails; `reconstruct` across it
-   fails. Fix by validating entries on load, or by making the index the commit point as
-   the write path already does.
-
-2. **Rollback shows no cluster identity before applying.** No context, API server, or
+1. **Rollback shows no cluster identity before applying.** No context, API server, or
    user is displayed, kubeconfig is resolved implicitly, and `--yes` removes the last
    prompt. Separately, a 404 silently recreates the resource from the snapshot, so a
    deliberate deletion becomes an accidental resurrection. Recreation should be opt-in
    behind `--allow-create`.
 
-3. **Readiness can be true before anything has been persisted.** Readiness is
-   `health.Ready(allReady) && snap.FlushHealthy(3)`, both of which pass immediately after
-   informer sync — while the first flush can be up to `intervalSeconds` away (300s by
-   default). The pod advertises Ready for five minutes without having proven it can write.
-
-4. **A failed flush loses the burst signal.** `DrainChanges()` runs before `Flush`
+2. **A failed flush loses the burst signal.** `DrainChanges()` runs before `Flush`
    (`snapshot.go:322`). The changes themselves survive — only the counter is reset — so a
    failed flush silently disarms burst detection until the next periodic tick.
 
 ### Operational
 
-5. **PVC is destroyed by `helm uninstall`** — no `helm.sh/resource-policy: keep`, no
+3. **PVC is destroyed by `helm uninstall`** — no `helm.sh/resource-policy: keep`, no
    `existingClaim`, no VolumeSnapshot support. For a tool whose product *is* the history,
    losing it on uninstall is the sharpest operational edge left.
-6. **NetworkPolicy egress is still `0.0.0.0/0`** (`networkpolicy.yaml:48`), deliberately,
+4. **NetworkPolicy egress is still `0.0.0.0/0`** (`networkpolicy.yaml:48`), deliberately,
    so the agent can always reach the API server. Cloud metadata at 169.254.169.254 stays
    reachable. Narrowing it is a Phase 2 item.
-7. **No cosign signing or SBOM.** Checksums ship.
-8. **No E2E test.** Nothing has ever verified install → record → change → reconstruct →
+5. **No cosign signing or SBOM.** Checksums ship.
+6. **No E2E test.** Nothing has ever verified install → record → change → reconstruct →
    blame → rollback against a real cluster. This is the largest untested surface.
-9. **`idFromTime` has millisecond precision and no collision guard.** Safe at the 300s
+7. **`idFromTime` has millisecond precision and no collision guard.** Safe at the 300s
    default, reachable at the 10s interval the demo docs suggest.
-10. **Chart has no `icon`** (the only `helm lint` finding) and no image digest pinning.
+8. **Chart has no `icon`** (the only `helm lint` finding) and no image digest pinning.
 
 ### Documentation
 
-11. `docs/roadmap.md:22` scope-locks to "No metrics", but `/metrics` exists and
+9. `docs/roadmap.md:22` scope-locks to "No metrics", but `/metrics` exists and
     `roadmap.md:43` lists it as a stage. The file contradicts itself.
-12. `docs/PROGRESS.md` and `docs/audit-preproduction-v0.1.1.md` are Spanish internal
+10. `docs/PROGRESS.md` and `docs/audit-preproduction-v0.1.1.md` are Spanish internal
     working logs in an otherwise English public repo.
 
 ---
@@ -195,11 +179,10 @@ this; it needs the packages deleted or deprecated in GHCR.
 2. Push — 29 commits are still local-only (18 from the merge, 11 from the hardening
    pass), and this is the first run of the new
    lint/vuln/tidy gates on CI.
-3. Fix the `Delete` index-consistency bug and the readiness gate.
-4. Add rollback guardrails and put create-on-404 behind `--allow-create`.
-5. `v0.1.1-rc.1` — first artefact rehearsal since the withdrawn 0.1.0.
-6. Build and scan the RC image; smoke-test against a real cluster.
-7. `v0.1.1`, then make the docs public.
+3. Add rollback guardrails and put create-on-404 behind `--allow-create`.
+4. `v0.1.1-rc.1` — first artefact rehearsal since the withdrawn 0.1.0.
+5. Build and scan the RC image; smoke-test against a real cluster.
+6. `v0.1.1`, then make the docs public.
 
-Steps 3 and 4 are the honest gate for a *wide* launch. Steps 1, 2, 5 and 6 are the gate
-for tagging at all.
+Step 3 is the remaining code gate for a *wide* launch. Steps 1, 2, 4 and 5 are the
+release-mechanics gate before the final tag.
