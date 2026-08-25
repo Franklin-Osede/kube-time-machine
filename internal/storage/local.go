@@ -131,7 +131,10 @@ func (l *Local) loadIndex() error {
 		// (ADR-0004). If it is missing we rebuild it from disk rather than
 		// starting blind — otherwise `list` and `blame` would report no
 		// history even though every snapshot is intact in snapshots/.
-		return l.rebuildIndex()
+		if err := l.rebuildIndex(); err != nil {
+			return err
+		}
+		return l.reconcileDeletions()
 	}
 	if err != nil {
 		return err
@@ -143,7 +146,51 @@ func (l *Local) loadIndex() error {
 		// store. rebuildIndex re-persists a clean index.json, healing it.
 		slog.Warn("storage: index.json is corrupt; rebuilding from snapshots", "err", err)
 		l.index = nil
-		return l.rebuildIndex()
+		if err := l.rebuildIndex(); err != nil {
+			return err
+		}
+		return l.reconcileDeletions()
+	}
+	return l.reconcileDeletions()
+}
+
+// reconcileDeletions completes or discards deletions that were staged under
+// .deleting/ but never committed, and is the reason Delete's staging step is
+// crash-safe. Called only from loadIndex, i.e. from NewLocal before the store
+// is published to any other goroutine — hence writeIndexLocked is safe here
+// despite l.mu not being held.
+func (l *Local) reconcileDeletions() error {
+	deletingDir := filepath.Join(l.root, ".deleting")
+	entries, err := os.ReadDir(deletingDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	deleting := make(map[types.SnapshotID]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			deleting[types.SnapshotID(entry.Name())] = struct{}{}
+		}
+	}
+	filtered := make([]types.SnapshotMeta, 0, len(l.index))
+	for _, meta := range l.index {
+		if _, ok := deleting[meta.ID]; !ok {
+			filtered = append(filtered, meta)
+		}
+	}
+	if len(filtered) != len(l.index) {
+		l.index = filtered
+		if err := l.writeIndexLocked(); err != nil {
+			return fmt.Errorf("storage: reconcile staged deletions: %w", err)
+		}
+	}
+	for id := range deleting {
+		if err := os.RemoveAll(filepath.Join(deletingDir, string(id))); err != nil {
+			return fmt.Errorf("storage: clean staged deletion %s: %w", id, err)
+		}
 	}
 	return nil
 }
@@ -174,6 +221,9 @@ func (l *Local) rebuildIndex() error {
 		var meta types.SnapshotMeta
 		if err := readJSON(filepath.Join(snapDir, metaFileName), &meta); err != nil {
 			continue // incomplete/unreadable snapshot dir — skip, keep the rest
+		}
+		if string(meta.ID) != e.Name() {
+			continue // directory name disagrees with meta.ID — not a trustworthy snapshot
 		}
 		if !snapshotPayloadPresent(snapDir, meta) {
 			continue // meta without a valid payload — incomplete write, skip
@@ -284,33 +334,53 @@ func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Remove the on-disk directory first (while holding the lock) so there
-	// is no window where a concurrent List sees a stale index entry pointing
-	// to a directory that has already been deleted. A crash after RemoveAll
-	// but before writeIndexLocked leaves the directory gone; rebuildIndex
-	// (called on next open) will not find it and will not include it in the
-	// rebuilt index, so the store self-heals on restart.
-	if err := os.RemoveAll(dir); err != nil {
-		return fmt.Errorf("storage: delete snapshot dir %s: %w", id, err)
-	}
-
-	// Filter the in-memory index.
-	filtered := l.index[:0]
+	filtered := make([]types.SnapshotMeta, 0, len(l.index))
 	for _, m := range l.index {
 		if m.ID != id {
 			filtered = append(filtered, m)
 		}
 	}
 	if len(filtered) == len(l.index) {
-		// id was not in the index — nothing more to do.
-		return nil
+		return os.RemoveAll(dir) // idempotent; also cleans an unindexed orphan
 	}
-	l.index = filtered
 
+	// Stage the deletion: rename the directory out of the authoritative
+	// snapshots namespace, then commit by writing the index, then discard the
+	// tombstone. The rename is the point of no return for readers, and the
+	// index write is the commit point for the record.
+	//
+	// A crash between the rename and the index write leaves index.json still
+	// listing the snapshot while its directory sits under .deleting/. That is
+	// exactly what reconcileDeletions repairs on the next open: it treats the
+	// presence of .deleting/<id> as proof the deletion was intended, drops the
+	// entry, and re-persists the index. rebuildIndex cannot resurrect the
+	// snapshot either, because it scans snapshots/ and the tombstone is no
+	// longer there.
+	deletingDir := filepath.Join(l.root, ".deleting")
+	if err := os.MkdirAll(deletingDir, 0o700); err != nil {
+		return fmt.Errorf("storage: create deletion staging directory: %w", err)
+	}
+	tombstone := filepath.Join(deletingDir, string(id))
+	if err := os.RemoveAll(tombstone); err != nil {
+		return fmt.Errorf("storage: remove stale deletion tombstone %s: %w", id, err)
+	}
+	if err := os.Rename(dir, tombstone); err != nil {
+		return fmt.Errorf("storage: stage snapshot deletion %s: %w", id, err)
+	}
+
+	old := l.index
+	l.index = filtered
 	if err := l.writeIndexLocked(); err != nil {
+		l.index = old
+		if restoreErr := os.Rename(tombstone, dir); restoreErr != nil {
+			return fmt.Errorf("storage: write index after delete: %w (restore snapshot: %v)", err, restoreErr)
+		}
 		return fmt.Errorf("storage: write index after delete: %w", err)
 	}
-	return nil
+	if err := os.RemoveAll(tombstone); err != nil {
+		return fmt.Errorf("storage: remove deleted snapshot %s: %w", id, err)
+	}
+	return syncDir(filepath.Join(l.root, snapshotsDirName))
 }
 
 // List returns a copy of the in-memory index, sorted by Timestamp.

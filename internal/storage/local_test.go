@@ -536,6 +536,70 @@ func TestDelete_IndexPersistedAfterDelete(t *testing.T) {
 	}
 }
 
+func TestDelete_IndexWriteFailureRestoresSnapshot(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	meta, err := s.PutFull(ctx, at(2026, 1, 1, 10, 0, 0, 0), delta.Snapshot{})
+	if err != nil {
+		t.Fatalf("PutFull: %v", err)
+	}
+
+	indexPath := filepath.Join(root, "index.json")
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatalf("remove index: %v", err)
+	}
+	if err := os.Mkdir(indexPath, 0o700); err != nil {
+		t.Fatalf("replace index with directory: %v", err)
+	}
+
+	if err := s.Delete(ctx, meta.ID); err == nil {
+		t.Fatal("Delete: expected index write error")
+	}
+	if _, err := s.Get(ctx, meta.ID); err != nil {
+		t.Fatalf("snapshot was not restored after failed delete: %v", err)
+	}
+	metas, _ := s.List(ctx)
+	if len(metas) != 1 || metas[0].ID != meta.ID {
+		t.Fatalf("in-memory index changed after failed delete: %v", metas)
+	}
+}
+
+func TestDelete_CrashAfterStagingReconcilesIndex(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	deleted, _ := s.PutFull(ctx, at(2026, 1, 1, 10, 0, 0, 0), delta.Snapshot{})
+	kept, _ := s.PutFull(ctx, at(2026, 1, 1, 11, 0, 0, 0), delta.Snapshot{})
+
+	dir := filepath.Join(root, "snapshots", string(deleted.ID))
+	deletingDir := filepath.Join(root, ".deleting")
+	if err := os.Mkdir(deletingDir, 0o700); err != nil {
+		t.Fatalf("create deletion staging directory: %v", err)
+	}
+	if err := os.Rename(dir, filepath.Join(deletingDir, string(deleted.ID))); err != nil {
+		t.Fatalf("simulate crash after staging delete: %v", err)
+	}
+
+	reopened, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal after staged delete: %v", err)
+	}
+	metas, err := reopened.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(metas) != 1 || metas[0].ID != kept.ID {
+		t.Fatalf("rebuilt index: want only %s, got %v", kept.ID, metas)
+	}
+}
+
 // ---- Kind index tests -----------------------------------------------------
 
 func TestKindsPopulatedOnPutFull(t *testing.T) {
