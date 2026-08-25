@@ -16,23 +16,12 @@ import (
 
 // -- ParseGVR --
 
-func TestParseGVR_ResourceOnly(t *testing.T) {
-	gvr, err := ParseGVR("statefulsets")
+func TestParseGVR_CoreResource(t *testing.T) {
+	gvr, err := ParseGVR("services/v1")
 	if err != nil {
 		t.Fatalf("ParseGVR: %v", err)
 	}
-	want := schema.GroupVersionResource{Resource: "statefulsets"}
-	if gvr != want {
-		t.Errorf("want %+v, got %+v", want, gvr)
-	}
-}
-
-func TestParseGVR_ResourceAndGroup(t *testing.T) {
-	gvr, err := ParseGVR("statefulsets.apps")
-	if err != nil {
-		t.Fatalf("ParseGVR: %v", err)
-	}
-	want := schema.GroupVersionResource{Group: "apps", Resource: "statefulsets"}
+	want := schema.GroupVersionResource{Version: "v1", Resource: "services"}
 	if gvr != want {
 		t.Errorf("want %+v, got %+v", want, gvr)
 	}
@@ -58,6 +47,14 @@ func TestParseGVR_EmptyStringErrors(t *testing.T) {
 func TestParseGVR_EmptyResourceErrors(t *testing.T) {
 	if _, err := ParseGVR(".group/v1"); err == nil {
 		t.Error("expected error when resource part is empty, got nil")
+	}
+}
+
+func TestParseGVR_RequiresVersion(t *testing.T) {
+	for _, input := range []string{"statefulsets", "statefulsets.apps", "statefulsets.apps/", "statefulsets.apps/v1/extra"} {
+		if _, err := ParseGVR(input); err == nil {
+			t.Errorf("ParseGVR(%q): expected error", input)
+		}
 	}
 }
 

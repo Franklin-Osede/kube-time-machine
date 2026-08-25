@@ -288,16 +288,14 @@ func isNoiseAnnotationKey(key string) bool {
 	return false
 }
 
-// ParseGVR parses a "resource[.group[/version]]" string into a
+// ParseGVR parses a "resource[.group]/version" string into a
 // GroupVersionResource. The format is:
 //
-//	"statefulsets"                          → {Group:"", Version:"", Resource:"statefulsets"}
-//	"statefulsets.apps"                     → {Group:"apps", Version:"", Resource:"statefulsets"}
+//	"services/v1"                           → {Group:"", Version:"v1", Resource:"services"}
 //	"statefulsets.apps/v1"                  → {Group:"apps", Version:"v1", Resource:"statefulsets"}
 //	"ingresses.networking.k8s.io/v1"        → {Group:"networking.k8s.io", Version:"v1", Resource:"ingresses"}
 //
-// Version is optional; when omitted, the client-go dynamic factory uses the
-// preferred version reported by the API server's discovery endpoint.
+// Version is required because the dynamic client does not perform discovery.
 // Returns an error if the string is empty or malformed.
 func ParseGVR(s string) (schema.GroupVersionResource, error) {
 	s = strings.TrimSpace(s)
@@ -305,14 +303,15 @@ func ParseGVR(s string) (schema.GroupVersionResource, error) {
 		return schema.GroupVersionResource{}, fmt.Errorf("agent: empty GVR string")
 	}
 
-	var version string
-	if idx := strings.Index(s, "/"); idx >= 0 {
-		version = s[idx+1:]
-		s = s[:idx]
+	if strings.Count(s, "/") != 1 {
+		return schema.GroupVersionResource{}, fmt.Errorf("agent: GVR %q must be resource[.group]/version", s)
+	}
+	resourceGroup, version, _ := strings.Cut(s, "/")
+	if version == "" {
+		return schema.GroupVersionResource{}, fmt.Errorf("agent: GVR %q has an empty version", s)
 	}
 
-	// s is now "resource[.group...]"
-	parts := strings.SplitN(s, ".", 2)
+	parts := strings.SplitN(resourceGroup, ".", 2)
 	resource := parts[0]
 	group := ""
 	if len(parts) == 2 {

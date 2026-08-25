@@ -53,7 +53,7 @@ func run() error {
 		excludeNamespaces = flag.String("exclude-namespaces", "kube-system,kube-public,kube-node-lease", "comma-separated list of namespaces to exclude from watching")
 		watchResources    = flag.String("watch-resources",
 			"",
-			"comma-separated list of resource[.group[/version]] to watch via dynamic informers (complements typed Deployment/ConfigMap watchers)")
+			"comma-separated list of resource[.group]/version to watch via dynamic informers (complements typed Deployment/ConfigMap watchers)")
 		burstThreshold = flag.Int("burst-threshold", 50,
 			"flush early when this many changes accumulate before the next periodic tick; 0 disables burst flushing")
 		retainDays  = flag.Int("retain-days", 30, "delete snapshots older than this many days after each full flush; 0 keeps all snapshots forever")
@@ -64,6 +64,9 @@ func run() error {
 	if *showVersion {
 		fmt.Println(version)
 		return nil
+	}
+	if err := validateConfig(*interval, *fullEvery, *burstThreshold, *retainDays); err != nil {
+		return err
 	}
 
 	client, err := kubeclient.NewClient(*kubeconfig)
@@ -162,6 +165,22 @@ func run() error {
 		return fmt.Errorf("agent stopped: %w", runErr)
 	}
 	slog.Info("ktm-agent: stopped cleanly")
+	return nil
+}
+
+func validateConfig(interval time.Duration, fullEvery, burstThreshold, retainDays int) error {
+	if interval <= 0 {
+		return fmt.Errorf("--interval must be greater than zero")
+	}
+	if fullEvery < 1 {
+		return fmt.Errorf("--full-every must be at least 1")
+	}
+	if burstThreshold < 0 {
+		return fmt.Errorf("--burst-threshold must be non-negative")
+	}
+	if retainDays < 0 {
+		return fmt.Errorf("--retain-days must be non-negative")
+	}
 	return nil
 }
 
