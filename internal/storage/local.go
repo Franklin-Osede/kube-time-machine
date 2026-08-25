@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,7 +62,7 @@ func (l *Local) Root() string { return l.root }
 // index.json exists it is loaded; otherwise the in-memory index starts
 // empty (and will be written on the next successful Put).
 func NewLocal(root string) (*Local, error) {
-	if err := os.MkdirAll(filepath.Join(root, snapshotsDirName), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, snapshotsDirName), 0o700); err != nil {
 		return nil, fmt.Errorf("storage: create root: %w", err)
 	}
 	l := &Local{root: root}
@@ -241,7 +242,10 @@ func (l *Local) PutDelta(_ context.Context, ts time.Time, prevID types.SnapshotI
 // Get loads the payload at id from disk. The index is not consulted —
 // per-snapshot meta.json is the source of truth.
 func (l *Local) Get(_ context.Context, id types.SnapshotID) (Loaded, error) {
-	dir := filepath.Join(l.root, snapshotsDirName, string(id))
+	dir, err := l.snapshotDir(id)
+	if err != nil {
+		return Loaded{}, err
+	}
 
 	var meta types.SnapshotMeta
 	if err := readJSON(filepath.Join(dir, metaFileName), &meta); err != nil {
@@ -272,7 +276,10 @@ func (l *Local) Get(_ context.Context, id types.SnapshotID) (Loaded, error) {
 // idempotent: if id does not exist the call returns nil. The caller is
 // responsible for ensuring no remaining delta references id as its PrevID.
 func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
-	dir := filepath.Join(l.root, snapshotsDirName, string(id))
+	dir, err := l.snapshotDir(id)
+	if err != nil {
+		return err
+	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -320,8 +327,11 @@ func (l *Local) List(_ context.Context) ([]types.SnapshotMeta, error) {
 // rebuildIndex would accept. Each file is written atomically (rename-based)
 // with fsync for durability across node crashes.
 func (l *Local) writeSnapshot(meta types.SnapshotMeta, payloadName string, payload any) error {
-	dir := filepath.Join(l.root, snapshotsDirName, string(meta.ID))
-	if err := os.Mkdir(dir, 0o755); errors.Is(err, os.ErrExist) {
+	dir, err := l.snapshotDir(meta.ID)
+	if err != nil {
+		return err
+	}
+	if err := os.Mkdir(dir, 0o700); errors.Is(err, os.ErrExist) {
 		return fmt.Errorf("storage: snapshot ID collision at %s", meta.ID)
 	} else if err != nil {
 		return fmt.Errorf("storage: mkdir %s: %w", meta.ID, err)
@@ -343,6 +353,14 @@ func (l *Local) writeSnapshot(meta types.SnapshotMeta, payloadName string, paylo
 	}
 	committed = true
 	return nil
+}
+
+func (l *Local) snapshotDir(id types.SnapshotID) (string, error) {
+	s := string(id)
+	if s == "" || s == "." || s == ".." || filepath.IsAbs(s) || strings.ContainsAny(s, `/\`) || filepath.Base(s) != s {
+		return "", fmt.Errorf("storage: invalid snapshot ID %q", id)
+	}
+	return filepath.Join(l.root, snapshotsDirName, s), nil
 }
 
 func (l *Local) appendIndex(meta types.SnapshotMeta) (types.SnapshotMeta, error) {
@@ -385,7 +403,7 @@ func atomicWriteJSON(path string, v any) error {
 		return err
 	}
 	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}

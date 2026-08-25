@@ -357,6 +357,44 @@ func TestGet_UnknownIDReturnsError(t *testing.T) {
 	}
 }
 
+func TestSnapshotIDRejectsPathTraversal(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	for _, id := range []types.SnapshotID{"", ".", "..", "../outside", `..\outside`, "/tmp/outside"} {
+		if _, err := s.Get(ctx, id); err == nil {
+			t.Errorf("Get(%q): expected invalid ID error", id)
+		}
+		if err := s.Delete(ctx, id); err == nil {
+			t.Errorf("Delete(%q): expected invalid ID error", id)
+		}
+	}
+}
+
+func TestSnapshotFilesArePrivate(t *testing.T) {
+	s := newStore(t)
+	meta, err := s.PutFull(context.Background(), at(2026, 1, 1, 0, 0, 0, 0), delta.Snapshot{})
+	if err != nil {
+		t.Fatalf("PutFull: %v", err)
+	}
+
+	checks := map[string]os.FileMode{
+		filepath.Join(s.Root(), "snapshots"):                               0o700,
+		filepath.Join(s.Root(), "snapshots", string(meta.ID)):              0o700,
+		filepath.Join(s.Root(), "snapshots", string(meta.ID), "meta.json"): 0o600,
+		filepath.Join(s.Root(), "snapshots", string(meta.ID), "full.json"): 0o600,
+		filepath.Join(s.Root(), "index.json"):                              0o600,
+	}
+	for path, want := range checks {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat %s: %v", path, err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("mode %s = %o, want %o", path, got, want)
+		}
+	}
+}
+
 // TestRebuildSkipsMetaWithoutPayload ensures a crash mid-write that left
 // meta.json but no payload does not pollute the rebuilt index.
 func TestRebuildSkipsMetaWithoutPayload(t *testing.T) {
