@@ -43,3 +43,9 @@ tidy:
 
 clean:
 	rm -rf $(BIN_DIR)
+
+.PHONY: e2e
+## e2e: full loop against a real kind cluster (install → record → mutate →
+## reconstruct → blame → rollback). Needs docker, kind, kubectl and helm.
+e2e:
+	test/e2e/e2e.sh

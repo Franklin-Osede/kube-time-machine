@@ -40,6 +40,10 @@ version to install.
   `helm.sh/resource-policy: keep` so `helm uninstall` no longer destroys the
   recorded history, and `storage.existingClaim` binds a fresh install to a PVC
   kept from a previous release.
+- An end-to-end test (`test/e2e/e2e.sh`, `make e2e`) that drives the full
+  product loop against a real kind cluster: install → record → mutate →
+  reconstruct → blame → rollback, plus the create-on-404 refusal and PVC
+  retention. Runs in CI on pull requests and pushes to main.
 - `values.schema.json`, so invalid chart values fail at `helm install` rather
   than as a CrashLoopBackOff. It also rejects non-read-only verbs in
   `rbac.extraRules`, which would otherwise silently widen a cluster-scoped role.
