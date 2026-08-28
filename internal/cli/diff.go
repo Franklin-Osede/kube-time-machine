@@ -42,7 +42,7 @@ func newDiffCmd(opts *Options) *cobra.Command {
 }
 
 func runDiff(out io.Writer, storageDir string, fromID, toID types.SnapshotID, ns string) error {
-	store, err := storage.NewLocal(storageDir)
+	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
 		return errf("open storage at %s: %w", storageDir, err)
 	}

@@ -77,7 +77,7 @@ func runRollback(
 	snapshotID types.SnapshotID,
 	autoYes, allowCreate bool,
 ) error {
-	store, err := storage.NewLocal(storageDir)
+	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
 		return errf("open storage at %s: %w", storageDir, err)
 	}

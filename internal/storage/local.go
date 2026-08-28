@@ -33,7 +33,7 @@ import (
 // index goes missing, the store remains semantically intact — every
 // snapshot is fully self-describing inside its own directory. A future
 // rebuild routine can walk snapshots/ and regenerate the index without
-// touching payloads. (The rebuild itself is not implemented yet; the
+// touching payloads. (See rebuildIndex, which implements exactly that; the
 // format is designed to support it.)
 type Local struct {
 	root string
@@ -43,6 +43,11 @@ type Local struct {
 
 	mu    sync.Mutex
 	index []types.SnapshotMeta // sorted by Timestamp ascending
+
+	// readOnly stores are opened by the CLI against a directory the agent may
+	// be writing concurrently. They must never touch the filesystem: see
+	// OpenForRead.
+	readOnly bool
 }
 
 const (
@@ -57,10 +62,14 @@ const (
 // need to inspect the on-disk layout without bypassing the Store interface.
 func (l *Local) Root() string { return l.root }
 
-// NewLocal opens (or initializes) a Local store rooted at the given path.
-// The root and its snapshots/ subdirectory are created if missing. If
-// index.json exists it is loaded; otherwise the in-memory index starts
-// empty (and will be written on the next successful Put).
+// NewLocal opens (or initializes) a Local store for WRITING, rooted at the
+// given path. The root and its snapshots/ subdirectory are created if missing,
+// index.json is loaded or rebuilt, and any deletion staged but not committed
+// before a crash is reconciled.
+//
+// Opening for write repairs the store, which means writing to it. Only the
+// agent may do that, and only while holding the writer lock — use OpenForRead
+// for anything that merely inspects history.
 func NewLocal(root string) (*Local, error) {
 	if err := os.MkdirAll(filepath.Join(root, snapshotsDirName), 0o700); err != nil {
 		return nil, fmt.Errorf("storage: create root: %w", err)
@@ -72,6 +81,36 @@ func NewLocal(root string) (*Local, error) {
 	return l, nil
 }
 
+// OpenForRead opens a store for inspection without writing to it.
+//
+// This exists because opening for write is a repair operation: loadIndex
+// rebuilds a missing or corrupt index.json and re-persists it, and
+// reconcileDeletions rewrites the index and removes staged tombstones. Those
+// are correct for the agent, which holds the writer lock. Running them from
+// `ktm list` against a live PVC is not: the CLI takes no lock, so it would
+// race the agent on index.json and could delete a tombstone for a deletion the
+// agent had staged but not yet committed -- destroying the very evidence that
+// makes the staged deletion recoverable.
+//
+// A read-only store therefore performs the same recovery IN MEMORY and touches
+// nothing. It sees exactly what a repaired store would, and leaves the repair
+// to the writer.
+func OpenForRead(root string) (*Local, error) {
+	if _, err := os.Stat(root); err != nil {
+		return nil, fmt.Errorf("storage: open %s for reading: %w", root, err)
+	}
+	l := &Local{root: root, readOnly: true}
+	if err := l.loadIndex(); err != nil {
+		return nil, fmt.Errorf("storage: load index: %w", err)
+	}
+	return l, nil
+}
+
+// ErrReadOnly is returned by any mutating operation on a store opened with
+// OpenForRead. It is a programming error rather than a runtime condition: the
+// CLI opens read-only precisely so a write cannot be reached by accident.
+var ErrReadOnly = errors.New("storage: store is open read-only")
+
 // AcquireWriterLock obtains a process-scoped exclusive lock for this store.
 //
 // NewLocal deliberately does not acquire the lock: CLI read commands must be
@@ -80,6 +119,9 @@ func NewLocal(root string) (*Local, error) {
 // at the same PVC fails fast instead of racing writes to index.json and the
 // snapshot directories.
 func (l *Local) AcquireWriterLock() error {
+	if l.readOnly {
+		return ErrReadOnly
+	}
 	l.lockMu.Lock()
 	defer l.lockMu.Unlock()
 
@@ -175,14 +217,22 @@ func (l *Local) reconcileDeletions() error {
 			deleting[types.SnapshotID(entry.Name())] = struct{}{}
 		}
 	}
+	before := l.index
 	filtered := make([]types.SnapshotMeta, 0, len(l.index))
 	for _, meta := range l.index {
 		if _, ok := deleting[meta.ID]; !ok {
 			filtered = append(filtered, meta)
 		}
 	}
-	if len(filtered) != len(l.index) {
-		l.index = filtered
+	l.index = filtered
+
+	// A read-only store stops here: it has the same view a repaired store
+	// would have, without having repaired anything. Persisting the filtered
+	// index or clearing the tombstones is the writer's job.
+	if l.readOnly {
+		return nil
+	}
+	if len(filtered) != len(before) {
 		if err := l.writeIndexLocked(); err != nil {
 			return fmt.Errorf("storage: reconcile staged deletions: %w", err)
 		}
@@ -239,7 +289,12 @@ func (l *Local) rebuildIndex() error {
 	// in-memory index is already correct for this process, and the next
 	// open will simply rebuild again.
 	if len(rebuilt) > 0 {
-		_ = l.writeIndexLocked()
+		if !l.readOnly {
+			// Best-effort: a rebuilt index makes the next open a cheap read. A
+			// read-only store skips it -- it has no lock, and the writer will
+			// persist its own rebuild.
+			_ = l.writeIndexLocked()
+		}
 	}
 	return nil
 }
@@ -250,6 +305,9 @@ func (l *Local) writeIndexLocked() error {
 
 // PutFull persists a full reference snapshot.
 func (l *Local) PutFull(_ context.Context, ts time.Time, snap delta.Snapshot) (types.SnapshotMeta, error) {
+	if l.readOnly {
+		return types.SnapshotMeta{}, ErrReadOnly
+	}
 	meta := types.SnapshotMeta{
 		ID:        idFromTime(ts),
 		Kind:      types.KindFull,
@@ -271,6 +329,9 @@ func (l *Local) PutFull(_ context.Context, ts time.Time, snap delta.Snapshot) (t
 
 // PutDelta persists an incremental delta from prevID.
 func (l *Local) PutDelta(_ context.Context, ts time.Time, prevID types.SnapshotID, d delta.Delta) (types.SnapshotMeta, error) {
+	if l.readOnly {
+		return types.SnapshotMeta{}, ErrReadOnly
+	}
 	meta := types.SnapshotMeta{
 		ID:        idFromTime(ts),
 		Kind:      types.KindDelta,
@@ -326,6 +387,9 @@ func (l *Local) Get(_ context.Context, id types.SnapshotID) (Loaded, error) {
 // idempotent: if id does not exist the call returns nil. The caller is
 // responsible for ensuring no remaining delta references id as its PrevID.
 func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
+	if l.readOnly {
+		return ErrReadOnly
+	}
 	dir, err := l.snapshotDir(id)
 	if err != nil {
 		return err

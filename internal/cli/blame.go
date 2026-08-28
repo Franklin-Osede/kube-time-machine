@@ -68,7 +68,7 @@ func newBlameCmd(opts *Options) *cobra.Command {
 }
 
 func runBlame(out io.Writer, storageDir string, target delta.Key, namespace string) error {
-	store, err := storage.NewLocal(storageDir)
+	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
 		return errf("open storage at %s: %w", storageDir, err)
 	}

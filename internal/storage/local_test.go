@@ -3,6 +3,8 @@ package storage_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -718,5 +720,133 @@ func TestSerializationIsDeterministic(t *testing.T) {
 	bytesB, _ := os.ReadFile(filepath.Join(rootB, "snapshots", string(metaB.ID), "full.json"))
 	if string(bytesA) != string(bytesB) {
 		t.Errorf("payload bytes differ for equal snapshots:\nA:\n%s\nB:\n%s", bytesA, bytesB)
+	}
+}
+
+// snapshotTree fingerprints every path and file mtime/size under root, so a
+// test can assert that opening a store changed nothing on disk.
+func snapshotTree(t *testing.T, root string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	err := filepath.Walk(root, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(root, p)
+		out[rel] = fmt.Sprintf("dir=%t size=%d mtime=%d", fi.IsDir(), fi.Size(), fi.ModTime().UnixNano())
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	return out
+}
+
+// TestOpenForReadNeverWrites is the regression guard for a real defect: the CLI
+// opened stores with NewLocal, whose loadIndex REPAIRS the store -- rebuilding
+// and re-persisting index.json, rewriting the index to drop reconciled
+// deletions, and removing staged tombstones. The CLI takes no writer lock, so
+// running `ktm list` against a live PVC raced the agent on index.json and could
+// delete a tombstone for a deletion the agent had staged but not committed,
+// destroying the evidence that makes that deletion recoverable.
+func TestOpenForReadNeverWrites(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("with a staged tombstone present", func(t *testing.T) {
+		root := t.TempDir()
+		w, err := storage.NewLocal(root)
+		if err != nil {
+			t.Fatalf("NewLocal: %v", err)
+		}
+		m, err := w.PutFull(ctx, at(2026, 5, 20, 10, 0, 0, 0), delta.Snapshot{})
+		if err != nil {
+			t.Fatalf("PutFull: %v", err)
+		}
+		// Simulate a crash mid-Delete: the directory has been staged under
+		// .deleting/ but the index still lists it.
+		deleting := filepath.Join(root, ".deleting")
+		if err := os.MkdirAll(deleting, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(filepath.Join(root, "snapshots", string(m.ID)), filepath.Join(deleting, string(m.ID))); err != nil {
+			t.Fatal(err)
+		}
+
+		before := snapshotTree(t, root)
+		r, err := storage.OpenForRead(root)
+		if err != nil {
+			t.Fatalf("OpenForRead: %v", err)
+		}
+		if got := snapshotTree(t, root); !reflect.DeepEqual(before, got) {
+			t.Errorf("OpenForRead mutated the store.\nbefore: %v\nafter:  %v", before, got)
+		}
+		// It must still SEE the reconciled view, just not persist it.
+		list, err := r.List(ctx)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(list) != 0 {
+			t.Errorf("staged deletion should be filtered from the read view, got %d entries", len(list))
+		}
+		// The tombstone must survive, so the writer can still recover.
+		if _, err := os.Stat(filepath.Join(deleting, string(m.ID))); err != nil {
+			t.Errorf("OpenForRead removed the staged tombstone: %v", err)
+		}
+	})
+
+	t.Run("with a missing index", func(t *testing.T) {
+		root := t.TempDir()
+		w, err := storage.NewLocal(root)
+		if err != nil {
+			t.Fatalf("NewLocal: %v", err)
+		}
+		if _, err := w.PutFull(ctx, at(2026, 5, 20, 10, 0, 0, 0), delta.Snapshot{}); err != nil {
+			t.Fatalf("PutFull: %v", err)
+		}
+		if err := os.Remove(filepath.Join(root, "index.json")); err != nil {
+			t.Fatal(err)
+		}
+
+		before := snapshotTree(t, root)
+		r, err := storage.OpenForRead(root)
+		if err != nil {
+			t.Fatalf("OpenForRead: %v", err)
+		}
+		if got := snapshotTree(t, root); !reflect.DeepEqual(before, got) {
+			t.Error("OpenForRead re-persisted a rebuilt index instead of rebuilding in memory")
+		}
+		list, err := r.List(ctx)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		if len(list) != 1 {
+			t.Errorf("rebuilt read view should list 1 snapshot, got %d", len(list))
+		}
+	})
+}
+
+// TestReadOnlyStoreRefusesWrites: opening read-only must make a write
+// unreachable, not merely unlikely.
+func TestReadOnlyStoreRefusesWrites(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	if _, err := storage.NewLocal(root); err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	r, err := storage.OpenForRead(root)
+	if err != nil {
+		t.Fatalf("OpenForRead: %v", err)
+	}
+	if _, err := r.PutFull(ctx, at(2026, 5, 20, 10, 0, 0, 0), delta.Snapshot{}); !errors.Is(err, storage.ErrReadOnly) {
+		t.Errorf("PutFull on a read-only store: got %v, want storage.ErrReadOnly", err)
+	}
+	if _, err := r.PutDelta(ctx, at(2026, 5, 20, 10, 0, 1, 0), "x", delta.Delta{}); !errors.Is(err, storage.ErrReadOnly) {
+		t.Errorf("PutDelta on a read-only store: got %v, want storage.ErrReadOnly", err)
+	}
+	if err := r.Delete(ctx, "20260520T100000000Z"); !errors.Is(err, storage.ErrReadOnly) {
+		t.Errorf("Delete on a read-only store: got %v, want storage.ErrReadOnly", err)
+	}
+	if err := r.AcquireWriterLock(); !errors.Is(err, storage.ErrReadOnly) {
+		t.Errorf("AcquireWriterLock on a read-only store: got %v, want storage.ErrReadOnly", err)
 	}
 }
