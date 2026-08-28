@@ -317,7 +317,7 @@ Seguimiento de production-readiness (2026-06-10): resueltos los tres fixes de ma
 | Sin tags ni GitHub Releases públicos | **Abierto** | `git ls-remote --tags origin` vacío y Releases API `[]`. Relanzar limpio con `v0.1.1` (RC primero ~2026-06-09, final ~2026-06-16). |
 | Curva de aprendizaje de client-go | **Activo** | Planificar 3 decisiones de diseño antes de tirar código en próxima sesión |
 | Rollback puede romper clusters | Pendiente (Etapa 5) | Probar primero en kind/minikube, nunca cluster real hasta pulir |
-| Storage local se llena sin retención automática | Pendiente (Phase 2 P7) | Warning logs cuando >80% — todavía no implementado |
+| Storage local se llena sin retención automática | **Resuelto (v0.1.1)** | `--retain-days` (default 30) con GC que conserva el último full anterior al corte como ancla, de modo que todo delta dentro de la ventana sigue siendo reconstruible. Los warnings de ocupación >80% siguen pendientes. |
 | Status noise en diff durante rollouts | ✅ **Resuelto (Etapa 7, 2026-05-23)** | Cerrado vía decisión de producto: KTM es declarative-state recorder, `.status` se stripea en `marshal.go` (ADR-0005). El diff post-`kubectl set image` ahora muestra solo el hunk relevante (image change), sin ruido derivado de `observedGeneration`/`lastUpdateTime`/ReplicaSet hash. |
 | Smoke test real contra un cluster | ✅ **Hecho 2026-05-20** | Add/Update (Deployment image + ConfigMap patch) y Delete (en delta y en full) validados end-to-end contra OrbStack K8s 1.33 |
 | Smoke test del chart Helm | ✅ **Hecho 2026-05-20 (Etapa 6)** | Install/uninstall completo en OrbStack K8s 1.33: pod nonroot, RBAC cluster-scoped, PVC, NetworkPolicy, snapshots persisten al PVC con cadencia esperada |

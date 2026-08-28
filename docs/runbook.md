@@ -139,11 +139,24 @@ If you're in an automated rollback scenario with frequent conflicts, the resourc
 ## Scenario 5: `ktm rollback` returns 404 — resource no longer exists
 
 ```
-Resource Deployment/default/api not found — it was deleted.
-Create it from snapshot <id>? [y/N]
+Deployment/default/api no longer exists in the cluster. Rollback will not
+recreate it, because a deliberate deletion must not be silently undone.
+Re-run with --allow-create to recreate it from snapshot.
 ```
 
-This is not an error. The CLI offers to POST the resource. Review the preview diff carefully: the resource will be created without `resourceVersion`, `uid`, or `creationTimestamp` (stripped by `stripServerOwned`). If the namespace no longer exists, create it first.
+Rollback stops rather than recreating. Deleting something is usually deliberate,
+and undoing a deletion is a different operation from rolling a resource back —
+so recreation is opt-in:
+
+```bash
+ktm rollback Deployment/default/api --to <snapshot-id> --allow-create
+```
+
+Review the preview carefully: the resource is created without `resourceVersion`,
+`uid` or `creationTimestamp` (stripped by `stripServerOwned`), so it is a new
+object that merely looks like the old one — anything referencing the previous
+UID, such as an ownerReference, will not reattach. If the namespace no longer
+exists, create it first.
 
 ---
 
@@ -181,7 +194,21 @@ ls /var/lib/ktm/snapshots/
 ktm --storage-dir=/var/lib/ktm snapshot list | tail -20
 ```
 
-Delete the corrupt snapshot directory manually and re-run `ktm snapshot list` to trigger index rebuild. The agent will generate a new full snapshot on the next flush that bridges the gap.
+Deleting an *interior* snapshot directory does not heal the chain — it strands
+every delta that follows it, because each delta reconstructs from its `PrevID`
+and that link is now dangling. The next full snapshot starts a new chain rather
+than bridging the gap, so history before the corruption stays readable and the
+deltas between the deleted snapshot and the next full one do not.
+
+Prefer, in order:
+
+1. Reconstruct from the newest full snapshot *after* the corruption — use
+   `ktm snapshot list` to find one with `KIND=full`.
+2. If you must remove the corrupt directory, expect to lose the deltas between
+   it and the next full snapshot, and copy the store first.
+
+Note that `ktm` opens storage read-only and will not rewrite `index.json`; the
+agent repairs the index on its next start.
 
 ---
 

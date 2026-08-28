@@ -19,7 +19,7 @@ Closed. v0.1.0 was a silent pre-launch target with two confirmed bugs (case-sens
 
 `docs/PROGRESS.md` is the source of truth for per-stage state and carries the running history.
 
-**Strict scope-lock:** Deployments and ConfigMaps only. Local PVC storage only. No web UI. No metrics. No multi-cluster. Anything else goes into [TODO.md](../TODO.md) (created when needed) and is reconsidered post-launch.
+**Strict scope-lock:** Deployments and ConfigMaps only. Local PVC storage only. No web UI. No multi-cluster. (A minimal `/metrics` endpoint was added with the health server in v0.1.1; it was not part of the original scope-lock.) Anything else goes into [TODO.md](../TODO.md) (created when needed) and is reconsidered post-launch.
 
 ## Phase 2 gate
 

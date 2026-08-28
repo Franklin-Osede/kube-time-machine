@@ -69,6 +69,12 @@ version to install.
 - Snapshot IDs are validated before being resolved to a path. A manipulated
   `index.json` could previously have directed the retention pass's `RemoveAll`
   outside the snapshots directory.
+- `ktm` opens the snapshot store read-only. Every CLI command previously opened
+  it for writing, and opening for write repairs the store — rebuilding
+  `index.json`, and removing tombstones for deletions the agent had staged but
+  not yet committed. Since the snapshot directory is already renamed out of
+  `snapshots/` at that point, that destroyed the evidence making the deletion
+  recoverable. Querying a live store is now safe.
 - `ktm rollback` no longer recreates a resource that has been deleted from the
   cluster. A 404 previously fell through to Create, so rolling back could
   silently resurrect a deliberate deletion; recreation is now opt-in behind

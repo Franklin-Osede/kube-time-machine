@@ -88,7 +88,7 @@ Step 5 deliberately does not re-fetch after the prompt: a re-fetch would silentl
 - Multi-cluster aggregation.
 - Cloud-blob storage drivers (S3 / GCS / Azure Blob).
 - Web visor.
-- Resource types beyond Deployments and ConfigMaps. The marshal boundary is designed so adding kinds is a localised change (one new typed informer + one new `Marshal*` function), but doing it is Phase 2 work.
+- Resource types beyond Deployments and ConfigMaps *as first-class, rollback-capable kinds*. The marshal boundary is designed so adding one is a localised change (one new typed informer + one new `Marshal*` function), but doing it is Phase 2 work. Since v0.1.1 an opt-in dynamic informer (`--watch-resources`) can record arbitrary GVRs for `diff` and `blame`; those kinds are **not** rollback-capable, which still requires a typed path. See [ADR-0003](adr/0003-typed-informers.md).
 - Observability of rollout health (Pod conditions, `.status` fields, ReplicaSet hashes). KTM is complementary to Prometheus / kube-state-metrics, not a replacement — see [ADR-0005](adr/0005-declarative-state-recorder.md).
 
 See [docs/roadmap.md](roadmap.md) for the full Phase 2 backlog.
