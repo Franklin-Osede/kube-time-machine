@@ -67,7 +67,7 @@ jobs:
       # Action major and linter major are coupled: golangci-lint-action v6
       # rejects any v2.x linter outright. Bump them together.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
           args: --timeout=5m
