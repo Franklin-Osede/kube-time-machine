@@ -20,23 +20,51 @@ image:
 snapshot:
   intervalSeconds: 300
   fullEvery: 12
+  # Flush early when this many changes accumulate before the next periodic tick.
+  # Useful during deploy storms to capture fine-grained history. 0 = disabled.
+  burstThreshold: 50
+  # Delete snapshots older than this many days after each full-snapshot flush.
+  # The GC algorithm keeps the most-recent full snapshot before the cutoff as
+  # an anchor so every delta in the retention window remains reconstructable.
+  # 0 = keep all snapshots forever (useful for development / small clusters).
+  retainDays: 30
 
 # Local PVC storage. Cloud drivers are Phase 2 (see roadmap).
 storage:
-  create: true                 # set false to bring your own PVC and bind it via fullnameOverride
+  create: true
   size: 10Gi
   storageClassName: ""         # empty = use the cluster default
+  # Keep the PVC when the release is uninstalled. Defaults to true because the
+  # recorded history is the product: `helm uninstall` should not destroy the
+  # forensic record. Set false for ephemeral/CI installs where leftover PVCs
+  # are noise. A kept PVC must be deleted manually, and can be re-attached to a
+  # fresh install with existingClaim below.
+  retain: true
+  # Bind to a PVC that already exists (for example one kept from a previous
+  # release) instead of creating one. When set, the chart creates no PVC and
+  # storage.size / storageClassName / retain are ignored.
+  existingClaim: ""
 
-# Resources the agent watches. MVP supports Deployments and ConfigMaps
-# only; extending this list is Phase 2 P0 work and also needs the
-# ClusterRole rules to be widened.
-resources:
-  watch:
-    - deployments
-    - configmaps
-
-# Pod resource requests/limits. Conservative defaults for a small cluster.
+# Health endpoints for Kubernetes probes (/healthz liveness, /readyz readiness).
 agent:
+  health:
+    enabled: true
+    addr: ":8080"
+    port: 8080
+  # Namespaces to exclude from watching. Events from these namespaces are
+  # dropped before reaching the buffer, preventing system controller churn
+  # (e.g. kube-root-ca.crt rotations) from polluting snapshots and blame output.
+  excludeNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+  # Additional resource kinds to watch via dynamic informers (experimental).
+  # Format: "resource[.group]/version" — the version is required, because the
+  # dynamic client does not perform discovery. The typed informers cover Deployments
+  # and ConfigMaps. Keep this empty unless matching read-only rules are also
+  # supplied through rbac.extraRules.
+  watchResources: []
+  # Pod resource requests/limits. Conservative defaults for a small cluster.
   resources:
     requests:
       cpu: 50m
@@ -58,10 +86,33 @@ serviceAccount:
 # Cluster-scoped read-only RBAC. See ADR-0007.
 rbac:
   create: true
+  # Additional read-only rules for agent.watchResources. Example:
+  # extraRules:
+  #   - apiGroups: ["apps"]
+  #     resources: ["statefulsets"]
+  #     verbs: ["get", "list", "watch"]
+  extraRules: []
 
-# NetworkPolicy: ingress deny-all, egress allows DNS + everything else
-# (a stricter "only kube-apiserver" rule is brittle across cluster
-# providers — see ADR-0007). Disable on clusters whose CNI does not
-# enforce NetworkPolicy (vanilla kindnet, flannel without the addon).
+# NetworkPolicy.
+#
+# Ingress: deny-all except the health port, and that rule deliberately has no
+# `from:` selector. Liveness and readiness probes originate from the kubelet on
+# the node, and node-originated traffic is not attributable to a pod, so a
+# podSelector or namespaceSelector can block probes outright on CNIs that
+# subject node->pod traffic to policy (Cilium, for instance). The consequence to
+# be aware of: where the CNI enforces this policy, /healthz, /readyz and
+# /metrics are reachable from anywhere in the cluster. None of them serve
+# snapshot data.
+#
+# Restricting that source is a values knob worth adding later
+# (networkPolicy.healthIngressFrom), once it has been tested against the CNIs
+# we intend to support. Imposing a selector untested would trade a small
+# exposure for probe failures that look like a crash-looping agent.
+#
+# Egress: DNS is called out explicitly and everything else is allowed; a
+# stricter "only kube-apiserver" rule is brittle across providers (ADR-0007).
+#
+# Disable entirely on clusters whose CNI does not enforce NetworkPolicy
+# (vanilla kindnet, flannel without the addon).
 networkPolicy:
   enabled: true

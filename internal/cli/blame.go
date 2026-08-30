@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"text/tabwriter"
@@ -29,35 +30,67 @@ const (
 
 // blameEntry is one row of the blame timeline.
 type blameEntry struct {
-	Time       time.Time
-	Op         blameOp
+	Time time.Time
+	Op   blameOp
+	// Managers is the comma-separated set of Server-Side Apply field managers
+	// observed on the resource at this point, from ktm.io/managers.
+	//
+	// Deliberately NOT called "actors". managedFields lists every manager that
+	// owns any field on the object, which is cumulative — it does not identify
+	// which one caused the transition on this row. Calling it an actor would
+	// assert causation the data cannot support.
+	Managers   string
 	SnapshotID types.SnapshotID
 }
 
 func newBlameCmd(opts *Options) *cobra.Command {
-	return &cobra.Command{
+	var namespace string
+
+	cmd := &cobra.Command{
 		Use:   "blame <kind>/<namespace>/<name>",
 		Short: "Show the timeline of changes for one resource",
 		Long: "blame walks the snapshot history forward and reports every point in time at\n" +
 			"which the target resource was created, modified, or removed. Unlike a naive\n" +
 			"scan of delta `removed` entries, this algorithm reconstructs the full snapshot\n" +
 			"state at each step and compares against the previous step — which is the only\n" +
-			"way to detect deletes that happen to land on a full-snapshot tick.",
+			"way to detect deletes that happen to land on a full-snapshot tick.\n\n" +
+			"Use --namespace to restrict the blame scan to a single namespace. When\n" +
+			"provided, only events for resources in that namespace are considered,\n" +
+			"mirroring the --namespace behaviour of `ktm diff`.\n\n" +
+			"The MANAGERS column lists the Kubernetes field managers observed on the\n" +
+			"resource at that point — every manager owning any field, taken from\n" +
+			"managedFields. It is a set of candidates, NOT proof that one of them made\n" +
+			"the change on that row.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := parseKeyFilter(args[0])
 			if err != nil {
 				return err
 			}
-			return runBlame(cmd.OutOrStdout(), opts.StorageDir, target)
+			// If --namespace is set and conflicts with the namespace encoded in
+			// the positional arg, the positional arg wins (it's more specific).
+			// --namespace is most useful when the positional arg uses a wildcard
+			// or a bare kind/name form in future CLI extensions.
+			return runBlame(cmd.OutOrStdout(), opts.StorageDir, target, namespace)
 		},
 	}
+	cmd.Flags().StringVar(&namespace, "namespace", "", "limit blame to resources in this namespace (overridden by namespace in positional arg)")
+	return cmd
 }
 
-func runBlame(out io.Writer, storageDir string, target delta.Key) error {
-	store, err := storage.NewLocal(storageDir)
+func runBlame(out io.Writer, storageDir string, target delta.Key, namespace string) error {
+	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
 		return errf("open storage at %s: %w", storageDir, err)
+	}
+
+	// If --namespace was given and the target key has no namespace of its
+	// own (empty string), apply the flag value. This is a forward-compat
+	// hook for future wildcard / bare-name positional args; with the
+	// current strict kind/namespace/name format the positional arg always
+	// sets the namespace explicitly.
+	if namespace != "" && target.Namespace == "" {
+		target.Namespace = namespace
 	}
 
 	entries, err := computeBlame(context.Background(), store, target)
@@ -71,9 +104,13 @@ func runBlame(out io.Writer, storageDir string, target delta.Key) error {
 	}
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TIME\tOP\tSNAPSHOT")
+	fmt.Fprintln(w, "TIME\tOP\tMANAGERS\tSNAPSHOT")
 	for _, e := range entries {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", e.Time.Format(time.RFC3339), e.Op, e.SnapshotID)
+		managers := e.Managers
+		if managers == "" {
+			managers = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Time.Format(time.RFC3339), e.Op, managers, e.SnapshotID)
 	}
 	return w.Flush()
 }
@@ -108,6 +145,22 @@ func computeBlame(ctx context.Context, store storage.Store, target delta.Key) ([
 	)
 
 	for _, meta := range metas {
+		// Optimisation: delta snapshots whose Kinds list is populated and
+		// does not include the target kind cannot contain any change to the
+		// target resource. We can skip the store.Get() and carry the current
+		// running state forward unchanged.
+		//
+		// Full snapshots must always be loaded because they replace the
+		// entire running state — skipping one would leave `running` based
+		// on a stale full that predates the skipped one.
+		//
+		// When Kinds is empty (snapshots written before Phase 3.3 or empty
+		// payloads) we conservatively load to avoid false negatives.
+		if meta.Kind == types.KindDelta && len(meta.Kinds) > 0 && !kindsContain(meta.Kinds, target.Kind) {
+			// The delta is guaranteed not to touch target — no state change.
+			continue
+		}
+
 		loaded, err := store.Get(ctx, meta.ID)
 		if err != nil {
 			return nil, errf("load snapshot %s: %w", meta.ID, err)
@@ -125,15 +178,54 @@ func computeBlame(ctx context.Context, store storage.Store, target delta.Key) ([
 
 		switch {
 		case !prevPres && curPres:
-			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opCreated, SnapshotID: meta.ID})
+			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opCreated, Managers: managersFromState(curSt), SnapshotID: meta.ID})
 		case prevPres && !curPres:
-			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opRemoved, SnapshotID: meta.ID})
+			// Resource was deleted; use prevSt to recover the last-known managers.
+			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opRemoved, Managers: managersFromState(prevSt), SnapshotID: meta.ID})
 		case prevPres && curPres && !bytes.Equal(prevSt, curSt):
-			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opModified, SnapshotID: meta.ID})
+			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opModified, Managers: managersFromState(curSt), SnapshotID: meta.ID})
 		}
 
 		prevPres = curPres
 		prevSt = curSt
 	}
 	return entries, nil
+}
+
+// kindsContain reports whether the sorted kinds slice contains kind.
+// Kinds is always sorted (populated by sortedStringSet in storage/local.go),
+// so a linear scan is fine at the cardinalities involved (typically < 20
+// distinct kinds per snapshot).
+func kindsContain(kinds []string, kind string) bool {
+	for _, k := range kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// managersFromState decodes the synthetic "ktm.io/managers" annotation that
+// the marshal layer injects into every stored state. Returns an empty string
+// when the annotation is absent or the state cannot be parsed (e.g. for
+// older snapshots written before Phase 3.1).
+//
+// What this returns is the set of field managers that owned SOME field on the
+// object when the snapshot was taken. It is not proof that any of them made the
+// change shown on that row — narrowing it to the managers of the fields that
+// actually changed would require per-field ownership comparison, which is a
+// larger change than v0.1.1 takes on.
+func managersFromState(s delta.State) string {
+	if s == nil {
+		return ""
+	}
+	var obj struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(s, &obj); err != nil {
+		return ""
+	}
+	return obj.Metadata.Annotations["ktm.io/managers"]
 }

@@ -2,14 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
-    branches: [main]
+    branches: ["**"]
 
 jobs:
-  test:
-    name: Lint, vet, test, build
+  build-and-test:
+    name: Format, vet, test, build
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -17,35 +18,87 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # Keep this in sync with go.mod. The toolchain directive in
-          # go.mod will pull the exact patch version automatically.
-          go-version: '1.26.x'
+          go-version-file: go.mod
           cache: true
 
       - name: Verify formatting
         run: |
-          unformatted=$(gofmt -l .)
+          unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then
             echo "::error::gofmt found unformatted files:"
             echo "$unformatted"
             exit 1
           fi
 
-      - name: go vet
+      - name: Test (race detector)
+        run: go test -race -count=1 -timeout 5m ./...
+
+      - name: Vet
         run: go vet ./...
-
-      - name: Unit tests
-        run: go test ./...
-
-      - name: Race detector
-        run: go test -race -count=1 ./...
 
       - name: Build both binaries
         run: make build
 
-  helm:
-    name: Helm lint + template
+      - name: Verify go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo "::error::go.mod/go.sum are not tidy — run 'go mod tidy' and commit."
+            exit 1
+          fi
+
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Pinned, not 'latest': .golangci.yml uses the v2 config schema, and a
+      # major-version jump would fail the job on config parsing rather than on
+      # anything in the code. Dependabot proposes bumps.
+      # Action major and linter major are coupled: golangci-lint-action v6
+      # rejects any v2.x linter outright. Bump them together.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          args: --timeout=5m
+
+  vuln:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 'stable' rather than go-version-file: stdlib advisories are fixed by
+      # toolchain patch releases, and go.mod pins only the 1.26.0 floor that
+      # client-go requires. Scanning with the newest patched toolchain keeps
+      # this job reporting module problems we can actually act on.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  helm:
+    name: Helm lint and render contracts
+    runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,8 +108,40 @@ jobs:
         with:
           version: v3.14.0
 
-      - name: helm lint
+      - name: Lint chart
         run: helm lint deploy/helm
 
-      - name: helm template (render must succeed)
+      - name: Render chart
         run: helm template ktm deploy/helm --namespace ktm-system >/dev/null
+
+      - name: Verify storage retention contract
+        run: |
+          # Default: a PVC is created and survives helm uninstall.
+          default="$(helm template ktm deploy/helm --namespace ktm-system)"
+          grep -q 'kind: PersistentVolumeClaim' <<<"$default"
+          grep -q 'helm.sh/resource-policy: keep' <<<"$default"
+
+          # retain=false: PVC still created, but Helm owns its lifecycle.
+          ephemeral="$(helm template ktm deploy/helm --namespace ktm-system --set storage.retain=false)"
+          grep -q 'kind: PersistentVolumeClaim' <<<"$ephemeral"
+          ! grep -q 'helm.sh/resource-policy' <<<"$ephemeral"
+
+          # existingClaim: no PVC is created, and the Deployment mounts the
+          # named claim instead of the generated one.
+          existing="$(helm template ktm deploy/helm --namespace ktm-system --set storage.existingClaim=preserved-data)"
+          ! grep -q 'kind: PersistentVolumeClaim' <<<"$existing"
+          grep -q 'claimName: preserved-data' <<<"$existing"
+
+      - name: Verify health toggle contract
+        run: |
+          enabled="$(helm template ktm deploy/helm --namespace ktm-system)"
+          grep -q -- '- --health-addr=:8080' <<<"$enabled"
+          grep -q 'containerPort: 8080' <<<"$enabled"
+          grep -q 'livenessProbe:' <<<"$enabled"
+          grep -q 'readinessProbe:' <<<"$enabled"
+
+          disabled="$(helm template ktm deploy/helm --namespace ktm-system --set agent.health.enabled=false)"
+          grep -q -- '- --health-addr=$' <<<"$disabled"
+          ! grep -q 'containerPort: 8080' <<<"$disabled"
+          ! grep -q 'livenessProbe:' <<<"$disabled"
+          ! grep -q 'readinessProbe:' <<<"$disabled"

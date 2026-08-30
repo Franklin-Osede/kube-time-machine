@@ -2,7 +2,11 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,5 +118,67 @@ func TestReconstruct_EmptyIDErrors(t *testing.T) {
 func TestReconstruct_UnknownIDErrors(t *testing.T) {
 	if _, err := reconstruct(context.Background(), newStore(t), types.SnapshotID("does-not-exist")); err == nil {
 		t.Error("expected error for unknown id, got nil")
+	}
+}
+
+// TestReconstruct_CyclicChainReturnsError verifies that a corrupt delta chain
+// where PrevID forms a cycle (A→B→A) is detected quickly instead of looping
+// indefinitely. The store is seeded by writing meta.json and delta.json
+// directly to disk, bypassing the PutDelta API which cannot create cycles.
+func TestReconstruct_CyclicChainReturnsError(t *testing.T) {
+	root := t.TempDir()
+
+	var (
+		idA = types.SnapshotID("20260101T000000000Z")
+		idB = types.SnapshotID("20260101T000000001Z")
+	)
+	// Write two delta snapshots whose PrevID fields form a cycle.
+	for _, pair := range [][2]types.SnapshotID{{idA, idB}, {idB, idA}} {
+		id, prev := pair[0], pair[1]
+		dir := filepath.Join(root, "snapshots", string(id))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		meta := types.SnapshotMeta{
+			ID:        id,
+			Kind:      types.KindDelta,
+			PrevID:    prev,
+			Timestamp: at(2026, 1, 1, 0, 0),
+		}
+		b, _ := json.Marshal(meta)
+		if err := os.WriteFile(filepath.Join(dir, "meta.json"), b, 0o600); err != nil {
+			t.Fatalf("write meta: %v", err)
+		}
+		// wireDelta with omitempty: all-empty fields marshal to {}
+		if err := os.WriteFile(filepath.Join(dir, "delta.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatalf("write delta: %v", err)
+		}
+	}
+
+	store, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+
+	// Run reconstruct in a goroutine; 2-second outer timer catches any hang.
+	timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := reconstruct(context.Background(), store, idA)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected error for cyclic chain, got nil")
+		}
+		if !strings.Contains(err.Error(), "cycle") {
+			t.Errorf("expected 'cycle' in error, got: %v", err)
+		}
+	case <-timeout.Done():
+		t.Error("reconstruct hung indefinitely on a cyclic chain — cycle guard missing?")
 	}
 }

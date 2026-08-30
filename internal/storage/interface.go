@@ -46,4 +46,11 @@ type Store interface {
 	// List returns all known snapshots, ordered by Timestamp ascending.
 	// The returned slice is owned by the caller and safe to mutate.
 	List(ctx context.Context) ([]types.SnapshotMeta, error)
+
+	// Delete removes the snapshot with the given id from the store,
+	// including its on-disk payload and its entry in the index. Callers
+	// must ensure that no remaining snapshot depends on id (i.e. no delta
+	// has PrevID == id) — backends are not required to enforce this.
+	// Returns nil if id does not exist (idempotent).
+	Delete(ctx context.Context, id types.SnapshotID) error
 }

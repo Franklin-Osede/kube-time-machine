@@ -1,0 +1,53 @@
+# golangci-lint configuration (schema v2).
+#
+# The intent is a quiet, high-signal lint gate: it should fail only on things
+# worth changing. Two categories are excluded deliberately, with reasons.
+version: "2"
+
+linters:
+  default: standard
+
+  settings:
+    errcheck:
+      # Deferred Close on a read handle and writes to an already-committed
+      # output writer have no recovery path — checking them adds noise, not
+      # safety. Errors that matter (fsync, rename, encode) stay checked.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (io.ReadCloser).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+  exclusions:
+    presets:
+      - common-false-positives
+    rules:
+      # stripServerOwned must zero SelfLink precisely because the field is
+      # deprecated and server-owned: it can appear on objects read back from
+      # older API servers, and leaving it in a rollback payload would send a
+      # server-owned value back to the API. Flagging the strip as deprecated
+      # usage inverts the point.
+      - path: internal/cli/rollback(_test)?\.go
+        linters:
+          - staticcheck
+        text: "SA1019.*SelfLink"
+
+      # Test files may reach through embedded fields for clarity.
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: "QF1008"
+
+      # Unchecked errors in test *setup* (seeding a store, closing a handle).
+      # A genuine failure there surfaces immediately as a failed assertion, so
+      # the check would add ceremony without adding coverage. Production code
+      # is still held to errcheck.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt

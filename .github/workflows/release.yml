@@ -5,8 +5,9 @@
 #   1. Multi-arch ktm-agent image (linux/amd64 + linux/arm64) pushed to
 #      GHCR. Multi-arch is on by default because ARM nodes (Apple Silicon,
 #      Graviton, Ampere) are routine in 2026; see ADR-0007.
-#   2. ktm CLI binaries for linux/macOS/Windows × amd64/arm64, attached
-#      as assets to the GitHub Release.
+#   2. ktm AND ktm-agent binaries for linux/macOS/Windows × amd64/arm64,
+#      attached as assets to the GitHub Release. Both are needed for Mode A
+#      (local-first): ktm-agent records, ktm queries.
 #   3. Helm chart pushed to GHCR as an OCI artefact, with chart.version
 #      and app.version pinned to the tag (kept coupled pre-v1.0; see
 #      ADR-0007).
@@ -51,14 +52,29 @@ jobs:
       # OCI repository names MUST be lowercase (distribution spec). The
       # GitHub-supplied ${{ github.repository_owner }} preserves case, so
       # we lowercase it here before composing any GHCR reference.
-      - name: Derive version and lowercase owner
+      - name: Derive version, lowercase owner, compute image tags
         id: meta
         env:
           OWNER: ${{ github.repository_owner }}
         run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          REPO="${{ env.REGISTRY }}/${OWNER,,}/ktm-agent"
           {
-            echo "version=${GITHUB_REF#refs/tags/v}"
+            echo "version=${VERSION}"
             echo "owner=${OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Always publish the version tag. Only move :latest for stable
+          # releases — a prerelease tag (anything with a hyphen, e.g.
+          # v0.1.1-rc.1) must NOT repoint :latest at an RC build.
+          TAGS="${REPO}:${VERSION}"
+          if [[ "$VERSION" != *-* ]]; then
+            TAGS="${TAGS}"$'\n'"${REPO}:latest"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "${TAGS}"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push (linux/amd64 + linux/arm64)
@@ -67,12 +83,16 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/ktm-agent:${{ steps.meta.outputs.version }}
-            ${{ env.REGISTRY }}/${{ steps.meta.outputs.owner }}/ktm-agent:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
   cli:
-    name: CLI binaries (5 platforms)
+    name: ktm + ktm-agent binaries (5 platforms)
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -89,26 +109,39 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
+          # Pinned explicitly rather than inferred from go.mod: released
+          # binaries must be built by a toolchain with the stdlib advisories
+          # fixed. go.mod's 'go' directive is the 1.26.0 floor client-go
+          # requires, and building with exactly 1.26.0 would ship the
+          # vulnerable net/http, crypto/tls, net/url and encoding/asn1.
+          go-version: '1.26.6'
           cache: true
 
       - name: Derive version from tag
         id: meta
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build ktm
+      # Mode A (local-first, the recommended/demo path) runs BOTH binaries
+      # on the user's machine: ktm-agent records, ktm queries. Publishing
+      # only ktm would leave that path uninstallable from a release, so we
+      # build and attach both for every platform.
+      - name: Build ktm and ktm-agent
         run: |
           ext=""
           if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
           mkdir -p dist
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
-            go build -trimpath -ldflags="-s -w -X main.version=${{ steps.meta.outputs.version }}" \
-            -o "dist/ktm-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" ./cmd/ktm
+          for pkg in ktm agent; do
+            out="$pkg"
+            [ "$pkg" = "agent" ] && out="ktm-agent"
+            GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w -X main.version=${{ steps.meta.outputs.version }}" \
+              -o "dist/${out}-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" "./cmd/${pkg}"
+          done
 
       - name: Upload artefact
         uses: actions/upload-artifact@v4
         with:
-          name: ktm-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
 
   chart:
@@ -167,8 +200,16 @@ jobs:
           find artefacts -type f -exec cp {} release/ \;
           ls -la release/
 
-      - name: Create release with binaries attached
+      - name: Generate SHA-256 checksums
+        working-directory: release
+        run: sha256sum ./* > checksums.txt
+
+      - name: Create release with binaries and checksums attached
         uses: softprops/action-gh-release@v2
         with:
           files: release/*
           generate_release_notes: true
+          # Mark hyphenated tags (e.g. v0.1.1-rc.1) as prereleases so they
+          # don't become the repo's "Latest release", matching the :latest
+          # image-tag guard above.
+          prerelease: ${{ contains(github.ref_name, '-') }}

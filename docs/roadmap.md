@@ -4,7 +4,7 @@ Two phases. Phase 2 is gated on real-world traction — see the gate at the bott
 
 ## Phase 1 — MVP
 
-Closed. v0.1.0 was a silent pre-launch with two confirmed bugs (case-sensitive Kind matching in the CLI, server-owned metadata leaking onto the rollback Update path); both are fixed and v0.1.1 is the first release used by the launch demo and post.
+Closed. v0.1.0 was a silent pre-launch target with two confirmed bugs (case-sensitive Kind matching in the CLI, server-owned metadata leaking onto the rollback Update path); both are fixed and v0.1.1 is the planned first public release for the launch demo and post.
 
 | Etapa | Outcome | Status |
 |------:|---------|--------|
@@ -14,12 +14,12 @@ Closed. v0.1.0 was a silent pre-launch with two confirmed bugs (case-sensitive K
 | 4 | CLI scaffolding (cobra) with `snapshot list`, `snapshot show`, `diff` | ✅ done |
 | 5 | `blame` and `rollback` (single resource, optimistic-locking) | ✅ done |
 | 6 | RBAC + ServiceAccount + NetworkPolicy + Helm chart + Dockerfile + minimal CI | ✅ done |
-| 7 | README polish, Mermaid diagram, ADRs, demo recording, launch post draft | ✅ done |
+| 7 | README polish, Mermaid diagram, ADRs, demo recording, launch post draft | 🚧 in progress |
 | 8 | Public launch (repo public, image + chart + binaries published, video, post live) | 🚧 in progress |
 
 `docs/PROGRESS.md` is the source of truth for per-stage state and carries the running history.
 
-**Strict scope-lock:** Deployments and ConfigMaps only. Local PVC storage only. No web UI. No metrics. No multi-cluster. Anything else goes into [TODO.md](../TODO.md) (created when needed) and is reconsidered post-launch.
+**Strict scope-lock:** Deployments and ConfigMaps only. Local PVC storage only. No web UI. No multi-cluster. (A minimal `/metrics` endpoint was added with the health server in v0.1.1; it was not part of the original scope-lock.) Anything else goes into [TODO.md](../TODO.md) (created when needed) and is reconsidered post-launch.
 
 ## Phase 2 gate
 

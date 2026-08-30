@@ -38,7 +38,7 @@ func newSnapshotListCmd(opts *Options) *cobra.Command {
 }
 
 func runSnapshotList(out io.Writer, storageDir string) error {
-	store, err := storage.NewLocal(storageDir)
+	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
 		return errf("open storage at %s: %w", storageDir, err)
 	}
@@ -81,7 +81,7 @@ func newSnapshotShowCmd(opts *Options) *cobra.Command {
 }
 
 func runSnapshotShow(out io.Writer, storageDir string, id types.SnapshotID, keyFilter string) error {
-	store, err := storage.NewLocal(storageDir)
+	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
 		return errf("open storage at %s: %w", storageDir, err)
 	}

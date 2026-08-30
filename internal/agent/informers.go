@@ -25,6 +25,8 @@ type Informers struct {
 	deployInf cache.SharedIndexInformer
 	cmInf     cache.SharedIndexInformer
 	buf       *Buffer
+	excludeNS map[string]struct{} // namespaces whose events are silently dropped
+	ready     chan struct{}       // closed once the initial cache sync completes
 }
 
 // NewInformers constructs Informers wired to buf.
@@ -33,13 +35,25 @@ type Informers struct {
 // disable resync — the K8s API guarantees the informer cache stays
 // coherent via watch, so resync is paranoia, not correctness. Enable
 // only if real-world drift appears.
-func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration) *Informers {
+//
+// excludeNamespaces is the list of namespaces whose events are silently
+// dropped before reaching the buffer. Typical values: "kube-system",
+// "kube-public", "kube-node-lease". Pass nil to watch all namespaces.
+func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration, excludeNamespaces []string) *Informers {
 	factory := informers.NewSharedInformerFactory(client, resync)
+	excludeNS := make(map[string]struct{}, len(excludeNamespaces))
+	for _, ns := range excludeNamespaces {
+		if ns != "" {
+			excludeNS[ns] = struct{}{}
+		}
+	}
 	in := &Informers{
 		factory:   factory,
 		deployInf: factory.Apps().V1().Deployments().Informer(),
 		cmInf:     factory.Core().V1().ConfigMaps().Informer(),
 		buf:       buf,
+		excludeNS: excludeNS,
+		ready:     make(chan struct{}),
 	}
 	// AddEventHandler can fail (e.g. if the informer was already
 	// started). At construction time the informers are fresh, so the
@@ -72,9 +86,33 @@ func (i *Informers) Start(ctx context.Context) error {
 		}
 		return fmt.Errorf("agent: informer cache sync failed")
 	}
+	// Signal readiness so the Snapshotter can take its first flush against
+	// a complete buffer. Closed exactly once, only on a successful sync —
+	// callers waiting on Ready() will keep waiting if sync fails or the
+	// context is cancelled first, which is the correct behaviour (no
+	// partial snapshot is ever taken).
+	close(i.ready)
 	slog.Info("agent: informer caches synced")
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// Ready returns a channel that is closed once the initial informer cache
+// sync has completed successfully. It is the synchronisation point the
+// Snapshotter waits on before its first flush; see the contract note on
+// Start. The channel is never closed if Start exits due to a sync failure
+// or a cancelled context.
+func (i *Informers) Ready() <-chan struct{} {
+	return i.ready
+}
+
+// isExcluded reports whether ns is in the exclude list. Events from
+// excluded namespaces are dropped before reaching the buffer, preventing
+// kube-system / kube-public / kube-node-lease churn from appearing in
+// snapshots and blame output.
+func (i *Informers) isExcluded(ns string) bool {
+	_, ok := i.excludeNS[ns]
+	return ok
 }
 
 func (i *Informers) deploymentHandler() cache.ResourceEventHandlerFuncs {
@@ -92,6 +130,9 @@ func (i *Informers) deploymentHandler() cache.ResourceEventHandlerFuncs {
 					"type", fmt.Sprintf("%T", obj))
 				return
 			}
+			if i.isExcluded(d.Namespace) {
+				return
+			}
 			i.buf.Delete(KeyForDeployment(d))
 		},
 	}
@@ -102,6 +143,9 @@ func (i *Informers) handleDeploymentUpsert(obj any, op string) {
 	if !ok {
 		slog.Warn("agent: Deployment "+op+" handler got unexpected type",
 			"type", fmt.Sprintf("%T", obj))
+		return
+	}
+	if i.isExcluded(d.Namespace) {
 		return
 	}
 	key, state, err := MarshalDeployment(d)
@@ -128,6 +172,9 @@ func (i *Informers) configMapHandler() cache.ResourceEventHandlerFuncs {
 					"type", fmt.Sprintf("%T", obj))
 				return
 			}
+			if i.isExcluded(cm.Namespace) {
+				return
+			}
 			i.buf.Delete(KeyForConfigMap(cm))
 		},
 	}
@@ -138,6 +185,9 @@ func (i *Informers) handleConfigMapUpsert(obj any, op string) {
 	if !ok {
 		slog.Warn("agent: ConfigMap "+op+" handler got unexpected type",
 			"type", fmt.Sprintf("%T", obj))
+		return
+	}
+	if i.isExcluded(cm.Namespace) {
 		return
 	}
 	key, state, err := MarshalConfigMap(cm)

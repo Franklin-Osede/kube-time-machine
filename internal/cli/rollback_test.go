@@ -16,6 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
+
+	"github.com/Franklin-Osede/kube-time-machine/internal/agent"
 )
 
 // makeDeployment is a small helper used by rollback tests to build a
@@ -63,7 +65,7 @@ func TestRollbackDeployment_HappyPath_UsesPreviewRV(t *testing.T) {
 	var out bytes.Buffer
 	if err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader("y\n"),
-		client, target, payload, false,
+		client, target, payload, false, false,
 	); err != nil {
 		t.Fatalf("rollbackDeployment: %v", err)
 	}
@@ -89,7 +91,7 @@ func TestRollbackDeployment_AutoYesBypassesPrompt(t *testing.T) {
 	// Empty stdin — would block on prompt without --yes.
 	if err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader(""),
-		client, key("Deployment", "default", "api"), payload, true,
+		client, key("Deployment", "default", "api"), payload, true, false,
 	); err != nil {
 		t.Fatalf("rollbackDeployment: %v", err)
 	}
@@ -105,7 +107,7 @@ func TestRollbackDeployment_AbortedAtPrompt(t *testing.T) {
 	var out bytes.Buffer
 	if err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader("n\n"),
-		client, key("Deployment", "default", "api"), payload, false,
+		client, key("Deployment", "default", "api"), payload, false, false,
 	); err != nil {
 		t.Fatalf("rollbackDeployment: %v", err)
 	}
@@ -142,7 +144,7 @@ func TestRollbackDeployment_ConflictReturnsActionableError(t *testing.T) {
 	var out bytes.Buffer
 	err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader("y\n"),
-		client, key("Deployment", "default", "api"), payload, false,
+		client, key("Deployment", "default", "api"), payload, false, false,
 	)
 	if err == nil {
 		t.Fatal("expected an error on 409 Conflict, got nil")
@@ -206,7 +208,7 @@ func TestRollbackDeployment_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
 	var out bytes.Buffer
 	if err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader("y\n"),
-		client, key("Deployment", "default", "api"), payload, false,
+		client, key("Deployment", "default", "api"), payload, false, false,
 	); err != nil {
 		t.Fatalf("rollbackDeployment: %v", err)
 	}
@@ -261,7 +263,7 @@ func TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
 	var out bytes.Buffer
 	if err := rollbackConfigMap(
 		context.Background(), &out, strings.NewReader("y\n"),
-		client, key("ConfigMap", "default", "cfg"), payload, false,
+		client, key("ConfigMap", "default", "cfg"), payload, false, false,
 	); err != nil {
 		t.Fatalf("rollbackConfigMap: %v", err)
 	}
@@ -277,6 +279,46 @@ func TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
 	}
 }
 
+// TestRollbackDeployment_PreviewIsSanitised pins the C3 fix: the rollback
+// preview must diff a SANITISED view of the live object against the
+// snapshot payload, so server-owned churn (resourceVersion, managedFields,
+// status) never appears in the diff the user confirms. Before the fix the
+// preview marshalled the raw live object and drowned the one meaningful
+// hunk in noise.
+func TestRollbackDeployment_PreviewIsSanitised(t *testing.T) {
+	live := makeDeployment("api", "nginx:1.27", "100")
+	live.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl"}}
+	live.Status = appsv1.DeploymentStatus{ObservedGeneration: 7, Replicas: 3}
+	client := fake.NewSimpleClientset(live)
+
+	// Build the snapshot payload exactly as the agent's recorder would,
+	// so before/after are sanitised the same way.
+	_, payload, err := agent.MarshalDeployment(makeDeployment("api", "nginx:1.25", ""))
+	if err != nil {
+		t.Fatalf("MarshalDeployment: %v", err)
+	}
+
+	var out bytes.Buffer
+	// Decline at the prompt: we only want to inspect the rendered preview,
+	// not mutate the cluster.
+	if err := rollbackDeployment(
+		context.Background(), &out, strings.NewReader("n\n"),
+		client, key("Deployment", "default", "api"), []byte(payload), false, false,
+	); err != nil {
+		t.Fatalf("rollbackDeployment: %v", err)
+	}
+
+	preview := out.String()
+	if !strings.Contains(preview, "nginx:1.25") {
+		t.Errorf("preview should show the rollback target image; got:\n%s", preview)
+	}
+	for _, noise := range []string{"resourceVersion", "managedFields", "observedGeneration"} {
+		if strings.Contains(preview, noise) {
+			t.Errorf("preview leaked server-owned field %q (C3 regression):\n%s", noise, preview)
+		}
+	}
+}
+
 func TestRollbackDeployment_404PathCreates(t *testing.T) {
 	client := fake.NewSimpleClientset() // empty cluster
 	payload := deploymentSnapshotPayload(t, "api", "nginx:1.25")
@@ -284,7 +326,7 @@ func TestRollbackDeployment_404PathCreates(t *testing.T) {
 	var out bytes.Buffer
 	if err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader("y\n"),
-		client, key("Deployment", "default", "api"), payload, false,
+		client, key("Deployment", "default", "api"), payload, false, true,
 	); err != nil {
 		t.Fatalf("rollbackDeployment: %v", err)
 	}
@@ -321,7 +363,7 @@ func TestRollbackConfigMap_HappyPath(t *testing.T) {
 	var out bytes.Buffer
 	if err := rollbackConfigMap(
 		context.Background(), &out, strings.NewReader("y\n"),
-		client, key("ConfigMap", "default", "cfg"), payload, false,
+		client, key("ConfigMap", "default", "cfg"), payload, false, false,
 	); err != nil {
 		t.Fatalf("rollbackConfigMap: %v", err)
 	}
@@ -394,4 +436,45 @@ func boolStr(b bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// A resource that no longer exists must not be silently recreated: deleting
+// something deliberately and then rolling back an unrelated snapshot should
+// not resurrect it. Recreation is opt-in.
+func TestRollbackDeployment_404WithoutAllowCreateRefuses(t *testing.T) {
+	client := fake.NewSimpleClientset() // empty cluster — every Get is a 404
+	payload := []byte(`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"default"},"spec":{"replicas":3}}`)
+
+	var out bytes.Buffer
+	err := rollbackDeployment(
+		context.Background(), &out, strings.NewReader("y\n"),
+		client, key("Deployment", "default", "api"), payload, true, false,
+	)
+	if err == nil {
+		t.Fatal("expected refusal when the resource is absent and --allow-create is not set")
+	}
+	if !strings.Contains(err.Error(), "--allow-create") {
+		t.Errorf("error should point at the opt-in flag, got: %v", err)
+	}
+	// Refusing must not be a partial apply.
+	if acts := client.Actions(); len(acts) != 1 || acts[0].GetVerb() != "get" {
+		t.Errorf("expected a single get and no create, got %v", acts)
+	}
+}
+
+func TestRollbackConfigMap_404WithoutAllowCreateRefuses(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	payload := []byte(`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cfg","namespace":"default"},"data":{"k":"v"}}`)
+
+	var out bytes.Buffer
+	err := rollbackConfigMap(
+		context.Background(), &out, strings.NewReader("y\n"),
+		client, key("ConfigMap", "default", "cfg"), payload, true, false,
+	)
+	if err == nil {
+		t.Fatal("expected refusal when the resource is absent and --allow-create is not set")
+	}
+	if !strings.Contains(err.Error(), "--allow-create") {
+		t.Errorf("error should point at the opt-in flag, got: %v", err)
+	}
 }

@@ -33,9 +33,18 @@ const (
 // predecessor for deltas. Reconstruction of any historical state walks
 // PrevID backwards until reaching a full snapshot, then applies the
 // deltas forward.
+//
+// Kinds is a sorted list of the Kubernetes resource kinds (e.g.
+// "Deployment", "ConfigMap") that appear in this snapshot's payload.
+// For full snapshots it covers every kind in the full state; for deltas
+// it covers only the kinds that changed. An empty slice means the
+// payload has no entries (or the snapshot predates this field — treat
+// as unknown). CLI tools and future indexing layers can use Kinds to
+// skip loading snapshots that cannot possibly contain the target kind.
 type SnapshotMeta struct {
 	ID        SnapshotID   `json:"id"`
 	Kind      SnapshotKind `json:"kind"`
 	Timestamp time.Time    `json:"ts"`
 	PrevID    SnapshotID   `json:"prevId,omitempty"`
+	Kinds     []string     `json:"kinds,omitempty"`
 }

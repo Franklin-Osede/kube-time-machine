@@ -2,11 +2,19 @@ module github.com/Franklin-Osede/kube-time-machine
 
 go 1.26.0
 
+// Build toolchain pin, separate from the 'go' directive above. The floor of
+// 1.26.0 is inherited from k8s.io/client-go v0.36.1 and must stay there so
+// source builds work; 1.26.6 is the first patch fixing the reachable stdlib
+// advisories GO-2026-6218, GO-2026-6090, GO-2026-6089, GO-2026-5972 and
+// GO-2026-5026. Raise this, not the 'go' line, for future stdlib CVEs.
+toolchain go1.26.6
+
 require (
 	github.com/fatih/color v1.19.0
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/sync v0.20.0
+	golang.org/x/sync v0.21.0
+	golang.org/x/sys v0.45.0
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1
@@ -35,11 +43,10 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/net v0.49.0 // indirect
+	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/term v0.39.0 // indirect
-	golang.org/x/text v0.33.0 // indirect
+	golang.org/x/term v0.43.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect

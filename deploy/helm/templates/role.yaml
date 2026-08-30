@@ -12,10 +12,15 @@ metadata:
   labels:
     {{- include "ktm.labels" . | nindent 4 }}
 rules:
+  # Typed informers (Phase 1)
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch"]
+  {{- with .Values.rbac.extraRules }}
+  # Explicit opt-in permissions for experimental dynamic informers.
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
 {{- end }}

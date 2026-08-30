@@ -1,8 +1,14 @@
 # syntax=docker/dockerfile:1.7
 # Multi-stage build for the in-cluster agent.
-# Result: ~2 MB distroless image, runs as UID 65532, no shell, no apt.
+# Result: ~41 MB distroless image (static client-go binary), runs as UID
+# 65532, no shell, no apt.
 
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.6-alpine AS builder
+
+# VERSION is injected by the release workflow via --build-arg so that
+# `ktm-agent --version` reports the real tag inside the container image.
+# Defaults to "dev" for local `docker build` runs without the arg.
+ARG VERSION=dev
 
 WORKDIR /src
 
@@ -19,7 +25,7 @@ COPY pkg ./pkg
 # static. -trimpath gives reproducible paths in stack traces.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
-    go build -trimpath -ldflags="-s -w" \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/ktm-agent ./cmd/agent
 
 FROM gcr.io/distroless/static-debian12:nonroot

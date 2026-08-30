@@ -1,13 +1,13 @@
 # Estado del proyecto — kube-time-machine
 
 > **Living document.** Snapshot del estado del repo entre sesiones. Se actualiza al cerrar cada sesión.
-> **Última actualización:** 2026-05-23 (Etapa 7 cerrada — doc honesty + release pipeline + declarative-state framing)
+> **Última actualización:** 2026-06-06 (pase de endurecimiento pre-RC en rama `fix/prelaunch-correctness` + auditoría independiente — P0 de release abierto)
 
 ---
 
 ## TL;DR
 
-`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–7 cerradas — listo para lanzar (Etapa 8).**
+`kube-time-machine` es "git blame para clusters de Kubernetes". **Etapas 1–7 cerradas; Etapa 8 (lanzamiento) en progreso.** Tras un pase de endurecimiento pre-RC (ver sección dedicada) el código está listo para un RC técnico: el P0 de release (`release.yml` no publicaba `ktm-agent`) está **resuelto**, igual que el residual del flush final. Lo que queda es mecánica de lanzamiento: tag RC, verificar artefactos, demo y post.
 
 - ✅ Motor de deltas (100% cobertura + fuzz test)
 - ✅ Storage local en filesystem (con index reconstruible)
@@ -20,9 +20,9 @@
 - ✅ Declarative-state recorder: `.status` stripped en marshal.go (ADR-0005) — KTM ya no compite con Velero/observabilidad
 - ✅ Doc completa: architecture.md con Mermaid, comparison.md vs Velero/ArgoCD-Flux/events/observabilidad, install.md operacional
 - ✅ ADRs 0003 (typed informers), 0004 (rebuildable index), 0005 (declarative-state), 0007 (packaging) documentados
-- ✅ release.yml: multi-arch (amd64+arm64) image + chart OCI + CLI binaries en GHCR on tag `v*`
+- ✅ release.yml: multi-arch (amd64+arm64) image + chart OCI + binarios `ktm` **y** `ktm-agent` (5 plataformas) en GHCR on tag `v*`; `:latest` solo en tags estables
 
-Lo siguiente es **Etapa 8: lanzamiento público** — repo público + demo recording + launch post.
+Lo siguiente es **Etapa 8: lanzamiento público** — cerrar el P0 de release, RC `v0.1.1-rc.1`, demo recording, launch post.
 
 ---
 
@@ -182,19 +182,22 @@ Validado contra **OrbStack K8s 1.33** con el agente corriendo `--interval 10s --
 
 El código está. La doc está. El release pipeline está. Etapa 8 es la mecánica del lanzamiento.
 
+> **Estado real de los artefactos (2026-06):** `release.yml` ya corrió en su día para `v0.0.1-test` y `v0.1.0`, así que **existen paquetes en GHCR** (imagen `ktm-agent` y chart OCI). Sin embargo **hoy no hay tags ni GitHub Releases visibles** (`git ls-remote --tags` y la API de releases devuelven vacío) — el tag/release fue retirado después de publicarse, dejando paquetes huérfanos. Decisión: **relanzar limpio con `v0.1.1`** (rc primero) en lugar de depender de artefactos sin tag asociado. Mientras tanto, README e install.md dirigen a *build from source*, que es lo único reproducible para un visitante hoy.
+
 **Trabajo a hacer:**
 
 | Item | Razón |
 |---|---|
-| Hacer el repo público | Hoy está privado en `github.com/Franklin-Osede/kube-time-machine` |
-| Push del primer tag `v0.1.0` | Dispara `release.yml`: empuja imagen multi-arch a GHCR, sube binarios CLI, pushea chart OCI. Verificar que el workflow corre limpio en el primer intento. |
+| Verificar el repo público | El repo ya es público en `github.com/Franklin-Osede/kube-time-machine`; revisar que README e instalación sean honestos antes de dirigir tráfico. |
+| Push del tag de prueba `v0.1.1-rc.1` | Dispara `release.yml`: empuja imagen multi-arch a GHCR, sube binarios CLI, pushea chart OCI. Verificar los artefactos antes del tag final. |
+| Push del tag final `v0.1.1` | Solo después de validar el release candidate y el install real desde los artefactos publicados. |
 | Grabación del demo (5 min) | Install → modificar un Deployment → `ktm diff` → `ktm blame` → `ktm rollback` → app recovers |
-| Launch post draft | Borrador en `docs/launch.md` (no commitear final hasta tener el demo). Hooks: el problema de las 3 AM + framing declarative-state recorder + comparación con Velero/ArgoCD/observabilidad. |
+| Launch post draft | Mantener `docs/launch.md` como borrador hasta tener el demo. Hooks: el problema de las 3 AM + framing declarative-state recorder + comparación con Velero/ArgoCD/observabilidad. |
 | Habilitar GitHub Discussions | Canal de feedback antes que Issues — la barra de entrada para "tengo una idea vaga" es más baja. |
 
 **Decisiones abiertas para esta etapa:**
 
-1. **Versión inicial.** `v0.1.0` es lo natural. Chart version + appVersion están acoplados (ADR-0007); ambos se pinean al tag desde `release.yml`. Confirmar que el primer push de tag no rompe nada — particularmente, que GHCR acepta el push de OCI chart sin permisos extra más allá de `packages: write`.
+1. **Versión inicial pública.** `v0.1.1` es la versión del lanzamiento. Chart version + appVersion están acoplados (ADR-0007); ambos se pinean al tag desde `release.yml`. Confirmar con `v0.1.1-rc.1` que GHCR acepta el push del chart OCI sin permisos extra más allá de `packages: write`.
 2. **Plataformas del launch post.** LinkedIn (audiencia de Platform Engineering), HackerNews "Show HN" (técnica), Reddit r/kubernetes (técnica). Priorizar el orden — un post fallido en HN quema el carril.
 3. **Phase 2 gate.** PROGRESS.md y roadmap mencionan el gate (50+ stars / 500+ likes / feature requests reales). Ya está documentado — no hace falta tocarlo hasta tener señal real.
 
@@ -281,13 +284,40 @@ kube-time-machine/
 
 ---
 
+## Endurecimiento pre-RC (2026-06-06, rama `fix/prelaunch-correctness` → PR #1)
+
+Una segunda revisión profunda (más una auditoría independiente que la confirmó) encontró bugs de correctness que `go test ./...` en verde no revelaba. Arreglados, con tests de regresión, en 4 commits (código y docs separados):
+
+| ID | Hallazgo | Fix |
+|---|---|---|
+| **C1** | El snapshotter arrancaba su ticker en paralelo al sync de informers → el primer full (siempre full) podía capturar una vista parcial del cluster. | `Informers.Ready()` (cerrado tras `WaitForCacheSync`); `Snapshotter.Run(ctx, ready)` espera esa compuerta antes del primer flush. |
+| **C2** | `flushNum`/`prevID` avanzaban antes de la escritura → un full fallido dejaba el siguiente flush emitiendo un delta con `PrevID=""` (cadena no reconstruible). | El estado interno avanza **solo tras un `Put` exitoso**; un fallo reintenta el mismo slot de cadencia. |
+| **C3** | El preview de rollback diffeaba el objeto live crudo contra el payload sanitizado → fugaba `status`/`managedFields`/`resourceVersion` justo en el momento de consentimiento. | El live se sanitiza con el mismo marshaller del agente (ADR-0005) antes de diffear. |
+| **I1** | `release.yml` movía `:latest` para cualquier tag `v*`, incluido un RC. | `:latest` solo en tags estables; tags con guion se marcan prerelease. |
+| **I5** | Perder `index.json` dejaba `list`/`blame` ciegos (el rebuild de ADR-0004 no estaba implementado). | `NewLocal` reconstruye el índice escaneando `snapshots/` cuando falta el cache, y lo re-persiste. |
+| **I2** | `resources.watch` en `values.yaml` era config fantasma (informers y ClusterRole hardcodean el set). | Eliminado, con comentario de dónde vive de verdad el set vigilado. |
+| **P0** | `release.yml` publicaba solo `ktm`, no `ktm-agent` — Modo A necesita ambos. | El job compila y adjunta ambos binarios para las 5 plataformas; `ktm-agent` gana `--version`. Verificado cross-compile. |
+| **Flush final** | Residual de C1: el flush de shutdown corría incondicional aunque el sync no hubiera ocurrido. | Condicionado a un receive no-bloqueante de `inf.Ready()`. |
+
+Verificado: `go build`, `go vet`, `gofmt -l` limpio, `go test -race -count=2 ./...` verde, y `ktm-agent` cross-compila en las 5 plataformas del release. No tocado deliberadamente: I4 (colisión de IDs a ms, baja) y `sync.Once` en `Start()` (blindaje opcional).
+
+Seguimiento de production-readiness (2026-06-10): resueltos los tres fixes de mayor ratio impacto/esfuerzo detectados en la auditoría: health endpoints + probes (`/healthz`, `/readyz`), escrituras durables con fsync, y orden payload-before-meta con validación de payload durante rebuild. El chart abre NetworkPolicy ingress solo al puerto de salud cuando `agent.health.enabled=true`, y pasa `--health-addr=` cuando está desactivado para que el binario no levante el servidor por su default local `:8080`.
+
+---
+
 ## Riesgos abiertos
 
 | Riesgo | Estado | Plan |
 |---|---|---|
+| Release no publica `ktm-agent` | ✅ **Resuelto (2026-06-06)** | El job de `release.yml` ahora compila y adjunta `ktm` **y** `ktm-agent` para las 5 plataformas. Verificado: `ktm-agent` cross-compila en linux/darwin/windows (amd64+arm64). |
+| Flush final puede persistir un full parcial | ✅ **Resuelto (2026-06-06)** | El flush de shutdown en `cmd/agent/main.go` está ahora condicionado a un receive no-bloqueante de `inf.Ready()`; si el agente se cancela antes del sync, se omite el flush en vez de persistir una vista parcial. |
+| `index.json` corrupto no tiene fallback | ✅ **Resuelto (2026-06-07)** | Un Unmarshal fallido ahora cae al rebuild desde `snapshots/` con un warning y re-persiste un índice limpio; `NewLocal` ya no falla por un cache corrupto. |
+| **Snapshot incompleto puede entrar al índice reconstruido** | ✅ **Resuelto (2026-06-10)** | `writeSnapshot` escribe payload antes de `meta.json`; `rebuildIndex` valida que el payload declarado exista y sea JSON del wire format esperado antes de aceptar el snapshot. |
+| Sin liveness/readiness probes en el agente | ✅ **Resuelto (2026-06-10)** | `ktm-agent` expone `/healthz` y `/readyz`; el chart añade probes y NetworkPolicy ingress al puerto de salud, con `agent.health.enabled=false` deshabilitando realmente el servidor. |
+| Sin tags ni GitHub Releases públicos | **Abierto** | `git ls-remote --tags origin` vacío y Releases API `[]`. Relanzar limpio con `v0.1.1` (RC primero ~2026-06-09, final ~2026-06-16). |
 | Curva de aprendizaje de client-go | **Activo** | Planificar 3 decisiones de diseño antes de tirar código en próxima sesión |
 | Rollback puede romper clusters | Pendiente (Etapa 5) | Probar primero en kind/minikube, nunca cluster real hasta pulir |
-| Storage local se llena sin retención automática | Pendiente (Phase 2 P7) | Warning logs cuando >80% — todavía no implementado |
+| Storage local se llena sin retención automática | **Resuelto (v0.1.1)** | `--retain-days` (default 30) con GC que conserva el último full anterior al corte como ancla, de modo que todo delta dentro de la ventana sigue siendo reconstruible. Los warnings de ocupación >80% siguen pendientes. |
 | Status noise en diff durante rollouts | ✅ **Resuelto (Etapa 7, 2026-05-23)** | Cerrado vía decisión de producto: KTM es declarative-state recorder, `.status` se stripea en `marshal.go` (ADR-0005). El diff post-`kubectl set image` ahora muestra solo el hunk relevante (image change), sin ruido derivado de `observedGeneration`/`lastUpdateTime`/ReplicaSet hash. |
 | Smoke test real contra un cluster | ✅ **Hecho 2026-05-20** | Add/Update (Deployment image + ConfigMap patch) y Delete (en delta y en full) validados end-to-end contra OrbStack K8s 1.33 |
 | Smoke test del chart Helm | ✅ **Hecho 2026-05-20 (Etapa 6)** | Install/uninstall completo en OrbStack K8s 1.33: pod nonroot, RBAC cluster-scoped, PVC, NetworkPolicy, snapshots persisten al PVC con cadencia esperada |

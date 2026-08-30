@@ -51,6 +51,49 @@ Events are the closest thing Kubernetes ships natively to a change log — but t
 **Use events when** you need real-time signal during an incident.
 **Use kube-time-machine when** the incident is more than an hour old, or when you need to compare states.
 
+## vs Kubernetes audit logs
+
+Kubernetes audit logs answer who called which API endpoint, with request and
+response metadata depending on the cluster's audit policy. They are the right
+source for security investigations, denied requests, and pre-admission request
+bodies. They are not enabled or retained uniformly across providers, and
+reconstructing one resource's effective state over time requires joining and
+replaying API records.
+
+| | Kubernetes audit logs | kube-time-machine |
+|---|---|---|
+| Primary goal | API security and compliance trail | Declarative-state forensics |
+| Captures actor and request metadata | ✅ | ⚠️ (field managers observed, not proven authors) |
+| Captures denied requests | ✅ | ❌ |
+| Captures post-admission effective state | Policy-dependent | ✅ |
+| Per-resource diff/blame | Requires log processing | First-class |
+| Selective rollback | ❌ | ✅ |
+
+Use audit logs when the question is who called the API, including failed or
+rejected requests. Use KTM when the question is which declarative state
+actually persisted and how to inspect or restore it. In a mature production
+environment, retain both.
+
+## vs `kubectl rollout undo`
+
+`kubectl rollout undo` asks a workload controller to return to a previous
+ReplicaSet revision. It is fast and built in, but applies only to rollout-aware
+workloads and does not provide a general history for ConfigMaps or arbitrary
+declarative fields.
+
+| | `kubectl rollout undo` | kube-time-machine |
+|---|---|---|
+| Deployment image rollback | ✅ | ✅ |
+| ConfigMap rollback | ❌ | ✅ |
+| Field-level diff and blame | ❌ | ✅ |
+| Captures direct edits outside a rollout revision | Partial | ✅ |
+| Optimistic lock between preview and update | ❌ | ✅ |
+
+Use `kubectl rollout undo` when a Deployment revision is known and reversing
+the rollout is sufficient. Use KTM when you first need to discover what
+changed, when multiple declarative fields changed, or when the target is not a
+rollout revision.
+
 ## vs Prometheus / kube-state-metrics
 
 [Prometheus](https://prometheus.io/) and [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics) are the canonical answer for *runtime* questions: "did the rollout finish?", "what was the available replica count five minutes ago?", "which Pod was in `CrashLoopBackOff`?". They report on the *observed* side of every object — the `.status` block, condition transitions, container restart counts. None of that is in scope for KTM.

@@ -40,6 +40,7 @@ kubectl apply -f examples/demo-scenario/02-deployment.yaml
 # Wait long enough for at least one KTM snapshot to capture the healthy state.
 # With --interval 10s --full-every 3, fifteen seconds covers it.
 sleep 15
+GOOD_ID="$(./bin/ktm --storage-dir /tmp/ktm snapshot list | awk 'NR > 1 { id=$1 } END { print id }')"
 
 # 2. Break it. Pods stick in ImagePullBackOff; the previous ReplicaSet
 #    keeps serving until its retention kicks in.
@@ -47,6 +48,7 @@ kubectl apply -f examples/demo-scenario/03-break.yaml
 
 # Give the agent another tick to record the broken state.
 sleep 12
+BROKEN_ID="$(./bin/ktm --storage-dir /tmp/ktm snapshot list | awk 'NR > 1 { id=$1 } END { print id }')"
 
 # 3. Investigate. Find when the deployment last looked sane.
 ./bin/ktm --storage-dir /tmp/ktm snapshot list | tail
@@ -54,12 +56,12 @@ sleep 12
 
 # 4. Diff the broken state against the last good one.
 ./bin/ktm --storage-dir /tmp/ktm diff \
-  --from <last-good-id> --to <latest-id>
+  --from "$GOOD_ID" --to "$BROKEN_ID"
 
 # 5. Roll the Deployment back. ktm fetches the live object, shows a
 #    preview, prompts for [y/N], then Updates with the captured RV.
 ./bin/ktm --storage-dir /tmp/ktm rollback \
-  deployment/ktm-demo/api --to <last-good-id>
+  deployment/ktm-demo/api --to "$GOOD_ID"
 
 # 6. Pods recover.
 kubectl -n ktm-demo rollout status deployment/api

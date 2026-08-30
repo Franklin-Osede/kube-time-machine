@@ -2,7 +2,7 @@
 
 KTM has two operating modes. Both share the same agent and CLI binaries and the same on-disk snapshot format — they differ in **where the storage lives**.
 
-- **Mode A — local-first.** Run `ktm-agent` on your laptop against a kubeconfig, then query the same `--storage-dir` with `ktm`. Recommended for v0.1.0 and for incident-response workflows.
+- **Mode A — local-first.** Run `ktm-agent` on your laptop against a kubeconfig, then query the same `--storage-dir` with `ktm`. Recommended for v0.1.1 and for incident-response workflows.
 - **Mode B — continuous in-cluster recording.** Install the Helm chart so the agent runs as a Pod and writes to a PersistentVolume. To query that history with `ktm`, you currently have to extract the PVC contents to your laptop (recipe below) and point the CLI at the local copy.
 
 ## Prerequisites
@@ -10,9 +10,7 @@ KTM has two operating modes. Both share the same agent and CLI binaries and the 
 - A Kubernetes cluster (≥ 1.27 tested; OrbStack K8s 1.33 is the development target).
 - `kubectl` configured against the target cluster.
 - For Mode B: `helm` v3.x.
-- The CLI binary (`ktm`) and the agent binary (`ktm-agent`). Either:
-  - Download the v0.1.0 binaries for your platform from the [Releases page](https://github.com/Franklin-Osede/kube-time-machine/releases), or
-  - Build from source with `make build` from the repo root.
+- The CLI binary (`ktm`) and the agent binary (`ktm-agent`). Release binaries are not published yet; build them from source with `make build` from the repo root.
 
 ## Mode A — local-first agent
 
@@ -43,13 +41,19 @@ This is the path the launch demo uses — see [examples/demo-scenario/](../examp
 
 ## Mode B — continuous in-cluster recording (Helm chart)
 
-For longer-running deployments where you want history captured even when no laptop is attached, install the chart from the OCI artefact published in GHCR:
+For longer-running deployments where you want history captured even when no laptop is attached, install the chart from the repository. The OCI chart and agent image are not published yet, so first build the image and make it available to your cluster:
 
 ```bash
-helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
-  --version 0.1.0 \
-  --namespace ktm-system --create-namespace
+docker build -t ktm-agent:dev .
+
+helm install ktm deploy/helm \
+  --namespace ktm-system --create-namespace \
+  --set image.repository=ktm-agent \
+  --set image.tag=dev \
+  --set image.pullPolicy=Never
 ```
+
+`image.pullPolicy=Never` works for local clusters whose container runtime can see the locally built image. For a remote cluster, push the image to a registry the cluster can access and set `image.repository`, `image.tag`, and `image.pullPolicy` accordingly.
 
 Verify:
 
@@ -59,7 +63,7 @@ kubectl get clusterrole,clusterrolebinding | grep ktm
 kubectl -n ktm-system logs deploy/ktm-kube-time-machine
 ```
 
-The agent logs `informer caches synced` once it is ready to record. From that moment, every Add/Update/Delete on a watched Deployment or ConfigMap reaches the local buffer and is flushed to the PVC at the configured cadence (`snapshot.intervalSeconds`, default 300 s).
+The agent logs `informer caches synced`, immediately persists its first full snapshot, and then becomes Ready. From that moment, every Add/Update/Delete on a watched Deployment or ConfigMap reaches the local buffer and is flushed to the PVC at the configured cadence (`snapshot.intervalSeconds`, default 300 s).
 
 ### Querying history from Mode B (CLI ↔ PVC)
 
@@ -88,7 +92,7 @@ kubectl -n ktm-system exec "$POD" -c "$DEBUG" -- \
 ./bin/ktm --storage-dir /tmp/ktm snapshot list
 ```
 
-For routine inspection this is operationally awkward; it is good enough for v0.1.0 forensics on a real incident. A `ktm proxy` subcommand that talks to the agent over the API server is a Phase 2 candidate, gated on real-world traction.
+For routine inspection this is operationally awkward; it is good enough for v0.1.1 forensics on a real incident. A `ktm proxy` subcommand that talks to the agent over the API server is a Phase 2 candidate, gated on real-world traction.
 
 ### Customising the install
 
@@ -98,8 +102,11 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 |---|---|---|
 | `snapshot.intervalSeconds` | `300` | Flush cadence in seconds. Smaller = lower MTTR for forensic queries, more storage. |
 | `snapshot.fullEvery` | `12` | Every Nth flush is a full reference snapshot. Bounds chain-reconstruction cost (see [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md)). |
+| `snapshot.retainDays` | `30` | Deletes history before the safe full-snapshot anchor. Set `0` to retain everything. |
 | `storage.size` | `10Gi` | PVC size. Storage scales with change rate, not snapshot rate. |
 | `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
+| `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes liveness/readiness probes. |
+| `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. |
 | `agent.resources.*` | conservative | The agent's working set is dominated by the informer cache; tune up if you watch large clusters. |
 | `networkPolicy.enabled` | `true` | Turn off only on clusters whose CNI does not enforce NetworkPolicy. |
 
@@ -113,9 +120,42 @@ If a change happens to the cluster during that gap it will surface in the next f
 
 ### RBAC: what the agent can and cannot do
 
-The bundled `ClusterRole` grants `get`, `list`, `watch` on `deployments.apps` and `configmaps` cluster-wide. The agent has no other permissions — it cannot write, cannot read Secrets, cannot watch any other kind.
+The bundled `ClusterRole` grants `get`, `list`, `watch` on `deployments.apps`
+and `configmaps` cluster-wide. The default agent has no other permissions — it
+cannot write or read Secrets. Experimental dynamic watches are opt-in and
+require matching rules in both `agent.watchResources` and `rbac.extraRules`.
 
 If you want to scope the agent down further (e.g. to specific namespaces), today the chart does not parameterise the rule subject lists; you would patch the `ClusterRole` after install. Scoping is a Phase 2 enhancement.
+
+### Network exposure of the health endpoints
+
+When `networkPolicy.enabled` is true and the CNI enforces it, ingress is denied
+except to the health port — and that rule has **no source restriction**. So
+`/healthz`, `/readyz` and `/metrics` are reachable from any pod in the cluster.
+
+This is deliberate. Probes come from the kubelet on the node, and node-originated
+traffic is not attributable to a pod, so adding a `podSelector` or
+`namespaceSelector` can block probes entirely on CNIs that apply policy to
+node→pod traffic (Cilium among them). A restriction that fails this way presents
+as a crash-looping agent, which is a worse outcome than the exposure.
+
+None of the three endpoints serve snapshot data. `/metrics` does reveal
+operational shape — how many resources are watched, flush counts and timings —
+so treat it as you would any unauthenticated metrics endpoint. A
+`networkPolicy.healthIngressFrom` value to narrow the source is a candidate for
+a later release, gated on testing against the CNIs we support.
+
+### Security: the storage is confidential
+
+The PVC (Mode B) and the `--storage-dir` (Mode A) hold the full declarative state of every Deployment and ConfigMap in the cluster, accumulated over time. Treat that data as sensitive:
+
+- **ConfigMaps often carry sensitive configuration** even though they are not Secrets — connection strings, internal hostnames, feature flags, tokens that should have been Secrets but weren't. All of it is recorded verbatim in the snapshots.
+- **Secrets are *not* captured.** The bundled `ClusterRole` grants no access to `secrets`, so the agent cannot read them and they never reach storage. This is by design (see [ADR-0007](adr/0007-packaging-defaults.md)).
+- **Use a StorageClass that encrypts at rest** for the PVC (`storage.storageClassName`). On managed clusters this usually means an encrypted EBS/PD/Disk class.
+- **Restrict access to the data.** Anyone who can read the PVC — or the `kubectl debug` + `kubectl cp` extraction path documented above — can read the recorded state. Limit who can exec into the `ktm-system` namespace, and treat any copy extracted to a laptop as confidential: delete it once the incident is closed.
+- **Retention defaults to 30 days.** GC preserves the latest full snapshot at
+  or before the cutoff as a reconstruction anchor, so actual retained history
+  can be slightly longer. Set `snapshot.retainDays=0` to keep all history.
 
 ### Uninstall
 
@@ -123,7 +163,24 @@ If you want to scope the agent down further (e.g. to specific namespaces), today
 helm uninstall ktm -n ktm-system
 ```
 
-`helm uninstall` also removes the cluster-scoped `ClusterRole` and `ClusterRoleBinding` that the chart created (their names are suffixed with the release namespace to avoid collisions between installs). The PVC is removed along with the namespace; **the snapshots stored on it are deleted**. To preserve them, extract them first using the recipe above, or set up a backup of the storage class.
+`helm uninstall` also removes the cluster-scoped `ClusterRole` and `ClusterRoleBinding` that the chart created (their names are suffixed with the release namespace to avoid collisions between installs).
+
+**The PVC survives by default.** `storage.retain` defaults to `true`, which annotates the claim with `helm.sh/resource-policy: keep`, so uninstalling to troubleshoot does not destroy the forensic record you may be about to need. Consequences:
+
+- The PVC is left behind and must be deleted deliberately:
+  ```bash
+  kubectl -n ktm-system delete pvc ktm-kube-time-machine-data
+  ```
+- Deleting the *namespace* still deletes the PVC. `resource-policy: keep` protects against Helm, not against namespace deletion.
+- To attach a kept PVC to a fresh install:
+  ```bash
+  helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
+    --version 0.1.1 -n ktm-system \
+    --set storage.existingClaim=ktm-kube-time-machine-data
+  ```
+- For ephemeral or CI installs where leftover PVCs are noise, set `--set storage.retain=false` to get the old behaviour.
+
+Retention is not a backup: a single ReadWriteOnce volume is one storage-class failure away from gone. For anything you would miss, extract with the recipe above or use a storage class with VolumeSnapshot support.
 
 ## Troubleshooting
 

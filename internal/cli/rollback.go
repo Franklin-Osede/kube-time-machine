@@ -25,9 +25,11 @@ import (
 
 func newRollbackCmd(opts *Options) *cobra.Command {
 	var (
-		snapshotID string
-		kubeconfig string
-		autoYes    bool
+		snapshotID  string
+		kubeconfig  string
+		kubeContext string
+		autoYes     bool
+		allowCreate bool
 	)
 
 	cmd := &cobra.Command{
@@ -39,6 +41,11 @@ func newRollbackCmd(opts *Options) *cobra.Command {
 			"resource has changed in the cluster between preview and apply, Kubernetes\n" +
 			"rejects the update (optimistic locking) — re-run ktm rollback to see the new\n" +
 			"state and confirm again.\n\n" +
+			"The target cluster is always printed before anything is applied, including\n" +
+			"under --yes.\n\n" +
+			"If the resource no longer exists, rollback stops rather than recreating it:\n" +
+			"a deliberate deletion must not be silently undone. Pass --allow-create to\n" +
+			"opt into recreation.\n\n" +
 			"Supported kinds: Deployment, ConfigMap.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -50,24 +57,27 @@ func newRollbackCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			return runRollback(cmd.OutOrStdout(), os.Stdin,
-				opts.StorageDir, kubeconfig, target, types.SnapshotID(snapshotID), autoYes)
+				opts.StorageDir, kubeconfig, kubeContext, target,
+				types.SnapshotID(snapshotID), autoYes, allowCreate)
 		},
 	}
 	cmd.Flags().StringVar(&snapshotID, "to", "", "snapshot ID to roll back to")
 	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "path to kubeconfig (empty = try in-cluster, $KUBECONFIG, ~/.kube/config)")
-	cmd.Flags().BoolVar(&autoYes, "yes", false, "skip interactive confirmation (for scripts and CI)")
+	cmd.Flags().StringVar(&kubeContext, "context", "", "kubeconfig context to use (default: the current context)")
+	cmd.Flags().BoolVar(&autoYes, "yes", false, "skip interactive confirmation (for scripts and CI); the target cluster is still printed")
+	cmd.Flags().BoolVar(&allowCreate, "allow-create", false, "recreate the resource if it no longer exists in the cluster")
 	return cmd
 }
 
 func runRollback(
 	out io.Writer,
 	in io.Reader,
-	storageDir, kubeconfig string,
+	storageDir, kubeconfig, kubeContext string,
 	target delta.Key,
 	snapshotID types.SnapshotID,
-	autoYes bool,
+	autoYes, allowCreate bool,
 ) error {
-	store, err := storage.NewLocal(storageDir)
+	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
 		return errf("open storage at %s: %w", storageDir, err)
 	}
@@ -82,16 +92,27 @@ func runRollback(
 		return errf("resource %s is not present in snapshot %s", keyString(target), snapshotID)
 	}
 
-	client, err := kubeclient.NewClient(kubeconfig)
+	client, clusterTarget, err := kubeclient.NewClientForContext(kubeconfig, kubeContext)
 	if err != nil {
 		return err
 	}
 
+	// Print the destination before anything is applied, unconditionally —
+	// --yes suppresses the prompt, not the disclosure. Rolling the right
+	// resource back in the wrong cluster is the failure this prevents, and a
+	// confirmation prompt that does not name the cluster cannot prevent it.
+	fmt.Fprintf(out, "cluster:  %s\n", clusterTarget)
+	if clusterTarget.User != "" {
+		fmt.Fprintf(out, "user:     %s\n", clusterTarget.User)
+	}
+	fmt.Fprintf(out, "target:   %s\n", keyString(target))
+	fmt.Fprintf(out, "snapshot: %s\n\n", snapshotID)
+
 	switch target.Kind {
 	case agent.KindDeployment:
-		return rollbackDeployment(ctx, out, in, client, target, payload, autoYes)
+		return rollbackDeployment(ctx, out, in, client, target, payload, autoYes, allowCreate)
 	case agent.KindConfigMap:
-		return rollbackConfigMap(ctx, out, in, client, target, payload, autoYes)
+		return rollbackConfigMap(ctx, out, in, client, target, payload, autoYes, allowCreate)
 	default:
 		return errf("rollback supports only Deployment and ConfigMap in MVP (got %q)", target.Kind)
 	}
@@ -109,12 +130,15 @@ func rollbackDeployment(
 	client kubernetes.Interface,
 	target delta.Key,
 	payload delta.State,
-	autoYes bool,
+	autoYes, allowCreate bool,
 ) error {
 	api := client.AppsV1().Deployments(target.Namespace)
 
 	live, err := api.Get(ctx, target.Name, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) {
+		if !allowCreate {
+			return errf("%s no longer exists in the cluster. Rollback will not recreate it, because a deliberate deletion must not be silently undone. Re-run with --allow-create to recreate it from snapshot.", keyString(target))
+		}
 		return createDeployment(ctx, out, in, api, target, payload, autoYes)
 	}
 	if err != nil {
@@ -128,7 +152,17 @@ func rollbackDeployment(
 	// informed consent.
 	previewRV := live.ResourceVersion
 
-	if !showPreviewAndConfirm(out, in, target, live, payload, autoYes) {
+	// Sanitise the live object through the SAME marshaller the agent uses
+	// to record snapshots (ADR-0005: strip .status, resourceVersion,
+	// managedFields, generation). Without this the preview diffs the raw
+	// live object — full of server-owned churn — against the sanitised
+	// snapshot payload, drowning the one hunk the user actually cares
+	// about in noise at the exact moment they give informed consent.
+	_, beforeBytes, err := agent.MarshalDeployment(live)
+	if err != nil {
+		return errf("render preview for %s: %w", keyString(target), err)
+	}
+	if !showPreviewAndConfirm(out, in, target, beforeBytes, payload, autoYes) {
 		return nil
 	}
 
@@ -168,12 +202,15 @@ func rollbackConfigMap(
 	client kubernetes.Interface,
 	target delta.Key,
 	payload delta.State,
-	autoYes bool,
+	autoYes, allowCreate bool,
 ) error {
 	api := client.CoreV1().ConfigMaps(target.Namespace)
 
 	live, err := api.Get(ctx, target.Name, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) {
+		if !allowCreate {
+			return errf("%s no longer exists in the cluster. Rollback will not recreate it, because a deliberate deletion must not be silently undone. Re-run with --allow-create to recreate it from snapshot.", keyString(target))
+		}
 		return createConfigMap(ctx, out, in, api, target, payload, autoYes)
 	}
 	if err != nil {
@@ -182,7 +219,14 @@ func rollbackConfigMap(
 
 	previewRV := live.ResourceVersion
 
-	if !showPreviewAndConfirm(out, in, target, live, payload, autoYes) {
+	// Same sanitisation as in rollbackDeployment — diff the snapshot
+	// payload against a like-for-like sanitised view of the live object,
+	// not the raw server representation. See the comment there.
+	_, beforeBytes, err := agent.MarshalConfigMap(live)
+	if err != nil {
+		return errf("render preview for %s: %w", keyString(target), err)
+	}
+	if !showPreviewAndConfirm(out, in, target, beforeBytes, payload, autoYes) {
 		return nil
 	}
 
@@ -259,22 +303,23 @@ func createConfigMap(
 	return nil
 }
 
-// showPreviewAndConfirm marshals the live object and the target payload,
-// renders a unified diff with the existing printDelta machinery, and
-// prompts the user. Returns true if the apply should proceed.
+// showPreviewAndConfirm renders a unified diff between the sanitised live
+// state (beforeBytes) and the target snapshot payload using the existing
+// printDelta machinery, then prompts the user. Both sides are sanitised
+// the same way (see callers), so the diff shows only the declarative
+// fields that actually differ. Returns true if the apply should proceed.
 func showPreviewAndConfirm(
 	out io.Writer,
 	in io.Reader,
 	target delta.Key,
-	live any,
+	beforeBytes delta.State,
 	payload delta.State,
 	autoYes bool,
 ) bool {
-	liveBytes, _ := json.Marshal(live)
 	d := delta.Delta{
 		Modified: map[delta.Key]delta.State{target: payload},
 	}
-	prev := delta.Snapshot{target: liveBytes}
+	prev := delta.Snapshot{target: beforeBytes}
 	fmt.Fprintln(out, "--- preview (apply will Update with the ResourceVersion read above) ---")
 	printDelta(out, d, prev)
 	return autoYes || promptConfirm(in, out)

@@ -23,9 +23,16 @@ import (
 // Locking: a sync.RWMutex protects state. Writes (Upsert, Delete) take
 // the write lock; reads (Snapshot, Len) take the read lock. The pattern
 // fits our workload — many small writes, infrequent but bulky reads.
+//
+// Reactive flush: Buffer keeps a monotonically increasing change counter
+// (pendingChanges). The Snapshotter polls DrainChanges() and triggers an
+// early flush when the counter exceeds a configurable burst threshold.
+// This preserves intra-interval granularity during deploy storms without
+// altering the normal cadence. See Snapshotter.Run for usage.
 type Buffer struct {
-	mu    sync.RWMutex
-	state delta.Snapshot
+	mu             sync.RWMutex
+	state          delta.Snapshot
+	pendingChanges int // incremented on every Upsert / Delete
 }
 
 // NewBuffer constructs an empty Buffer.
@@ -38,6 +45,7 @@ func (b *Buffer) Upsert(k delta.Key, s delta.State) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.state[k] = s
+	b.pendingChanges++
 }
 
 // Delete removes k from the buffer. No-op if k is not present.
@@ -45,6 +53,25 @@ func (b *Buffer) Delete(k delta.Key) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.state, k)
+	b.pendingChanges++
+}
+
+// PendingChanges returns the number of Upsert/Delete calls since the last
+// DrainChanges call. Safe to call concurrently.
+func (b *Buffer) PendingChanges() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.pendingChanges
+}
+
+// DrainChanges atomically reads and resets the pending-change counter.
+// The Snapshotter calls this after each flush to restart the burst window.
+func (b *Buffer) DrainChanges() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := b.pendingChanges
+	b.pendingChanges = 0
+	return n
 }
 
 // Snapshot returns a copy of the current state. The returned map is

@@ -4,7 +4,18 @@ Date: 2026-05-23
 
 ## Status
 
-Accepted. (Post-hoc — the decision was taken when `internal/agent/informers.go` was written; this ADR captures the rationale.)
+Accepted, and **partially superseded in v0.1.1**. (Post-hoc — the decision was
+taken when `internal/agent/informers.go` was written; this ADR captures the
+rationale.)
+
+Alternative 2 below — "typed for the two MVP kinds + dynamic registered for
+future CRDs" — was rejected here as YAGNI, and is what v0.1.1 now implements via
+the opt-in `--watch-resources` flag and `internal/agent/dynamic_informers.go`.
+The rejection was right at the time and the reasoning still holds for the
+default path: typed informers remain the only rollback-capable route, dynamic
+watching is off unless explicitly configured, and it requires manually aligned
+RBAC. What changed is that Phase 2 arrived, which is exactly the condition this
+ADR named for revisiting the decision.
 
 ## Context
 
