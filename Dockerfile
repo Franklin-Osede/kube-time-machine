@@ -3,7 +3,7 @@
 # Result: ~41 MB distroless image (static client-go binary), runs as UID
 # 65532, no shell, no apt.
 
-FROM golang:1.26.6-alpine AS builder
+FROM golang:1.27.0-alpine AS builder
 
 # VERSION is injected by the release workflow via --build-arg so that
 # `ktm-agent --version` reports the real tag inside the container image.
