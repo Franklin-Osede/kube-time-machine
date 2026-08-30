@@ -93,9 +93,26 @@ rbac:
   #     verbs: ["get", "list", "watch"]
   extraRules: []
 
-# NetworkPolicy: ingress deny-all, egress allows DNS + everything else
-# (a stricter "only kube-apiserver" rule is brittle across cluster
-# providers — see ADR-0007). Disable on clusters whose CNI does not
-# enforce NetworkPolicy (vanilla kindnet, flannel without the addon).
+# NetworkPolicy.
+#
+# Ingress: deny-all except the health port, and that rule deliberately has no
+# `from:` selector. Liveness and readiness probes originate from the kubelet on
+# the node, and node-originated traffic is not attributable to a pod, so a
+# podSelector or namespaceSelector can block probes outright on CNIs that
+# subject node->pod traffic to policy (Cilium, for instance). The consequence to
+# be aware of: where the CNI enforces this policy, /healthz, /readyz and
+# /metrics are reachable from anywhere in the cluster. None of them serve
+# snapshot data.
+#
+# Restricting that source is a values knob worth adding later
+# (networkPolicy.healthIngressFrom), once it has been tested against the CNIs
+# we intend to support. Imposing a selector untested would trade a small
+# exposure for probe failures that look like a crash-looping agent.
+#
+# Egress: DNS is called out explicitly and everything else is allowed; a
+# stricter "only kube-apiserver" rule is brittle across providers (ADR-0007).
+#
+# Disable entirely on clusters whose CNI does not enforce NetworkPolicy
+# (vanilla kindnet, flannel without the addon).
 networkPolicy:
   enabled: true

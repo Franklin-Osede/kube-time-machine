@@ -127,6 +127,24 @@ require matching rules in both `agent.watchResources` and `rbac.extraRules`.
 
 If you want to scope the agent down further (e.g. to specific namespaces), today the chart does not parameterise the rule subject lists; you would patch the `ClusterRole` after install. Scoping is a Phase 2 enhancement.
 
+### Network exposure of the health endpoints
+
+When `networkPolicy.enabled` is true and the CNI enforces it, ingress is denied
+except to the health port — and that rule has **no source restriction**. So
+`/healthz`, `/readyz` and `/metrics` are reachable from any pod in the cluster.
+
+This is deliberate. Probes come from the kubelet on the node, and node-originated
+traffic is not attributable to a pod, so adding a `podSelector` or
+`namespaceSelector` can block probes entirely on CNIs that apply policy to
+node→pod traffic (Cilium among them). A restriction that fails this way presents
+as a crash-looping agent, which is a worse outcome than the exposure.
+
+None of the three endpoints serve snapshot data. `/metrics` does reveal
+operational shape — how many resources are watched, flush counts and timings —
+so treat it as you would any unauthenticated metrics endpoint. A
+`networkPolicy.healthIngressFrom` value to narrow the source is a candidate for
+a later release, gated on testing against the CNIs we support.
+
 ### Security: the storage is confidential
 
 The PVC (Mode B) and the `--storage-dir` (Mode A) hold the full declarative state of every Deployment and ConfigMap in the cluster, accumulated over time. Treat that data as sensitive:
