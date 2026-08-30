@@ -63,7 +63,7 @@ replaying API records.
 | | Kubernetes audit logs | kube-time-machine |
 |---|---|---|
 | Primary goal | API security and compliance trail | Declarative-state forensics |
-| Captures actor and request metadata | ✅ | ⚠️ (managed-fields attribution) |
+| Captures actor and request metadata | ✅ | ⚠️ (field managers observed, not proven authors) |
 | Captures denied requests | ✅ | ❌ |
 | Captures post-admission effective state | Policy-dependent | ✅ |
 | Per-resource diff/blame | Requires log processing | First-class |

@@ -30,9 +30,16 @@ const (
 
 // blameEntry is one row of the blame timeline.
 type blameEntry struct {
-	Time       time.Time
-	Op         blameOp
-	Actors     string // comma-separated SSA manager names from ktm.io/managers
+	Time time.Time
+	Op   blameOp
+	// Managers is the comma-separated set of Server-Side Apply field managers
+	// observed on the resource at this point, from ktm.io/managers.
+	//
+	// Deliberately NOT called "actors". managedFields lists every manager that
+	// owns any field on the object, which is cumulative — it does not identify
+	// which one caused the transition on this row. Calling it an actor would
+	// assert causation the data cannot support.
+	Managers   string
 	SnapshotID types.SnapshotID
 }
 
@@ -49,7 +56,11 @@ func newBlameCmd(opts *Options) *cobra.Command {
 			"way to detect deletes that happen to land on a full-snapshot tick.\n\n" +
 			"Use --namespace to restrict the blame scan to a single namespace. When\n" +
 			"provided, only events for resources in that namespace are considered,\n" +
-			"mirroring the --namespace behaviour of `ktm diff`.",
+			"mirroring the --namespace behaviour of `ktm diff`.\n\n" +
+			"The MANAGERS column lists the Kubernetes field managers observed on the\n" +
+			"resource at that point — every manager owning any field, taken from\n" +
+			"managedFields. It is a set of candidates, NOT proof that one of them made\n" +
+			"the change on that row.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target, err := parseKeyFilter(args[0])
@@ -93,13 +104,13 @@ func runBlame(out io.Writer, storageDir string, target delta.Key, namespace stri
 	}
 
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "TIME\tOP\tACTORS\tSNAPSHOT")
+	fmt.Fprintln(w, "TIME\tOP\tMANAGERS\tSNAPSHOT")
 	for _, e := range entries {
-		actors := e.Actors
-		if actors == "" {
-			actors = "-"
+		managers := e.Managers
+		if managers == "" {
+			managers = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Time.Format(time.RFC3339), e.Op, actors, e.SnapshotID)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", e.Time.Format(time.RFC3339), e.Op, managers, e.SnapshotID)
 	}
 	return w.Flush()
 }
@@ -167,12 +178,12 @@ func computeBlame(ctx context.Context, store storage.Store, target delta.Key) ([
 
 		switch {
 		case !prevPres && curPres:
-			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opCreated, Actors: actorsFromState(curSt), SnapshotID: meta.ID})
+			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opCreated, Managers: managersFromState(curSt), SnapshotID: meta.ID})
 		case prevPres && !curPres:
-			// Resource was deleted; use prevSt to recover the last-known actors.
-			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opRemoved, Actors: actorsFromState(prevSt), SnapshotID: meta.ID})
+			// Resource was deleted; use prevSt to recover the last-known managers.
+			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opRemoved, Managers: managersFromState(prevSt), SnapshotID: meta.ID})
 		case prevPres && curPres && !bytes.Equal(prevSt, curSt):
-			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opModified, Actors: actorsFromState(curSt), SnapshotID: meta.ID})
+			entries = append(entries, blameEntry{Time: meta.Timestamp, Op: opModified, Managers: managersFromState(curSt), SnapshotID: meta.ID})
 		}
 
 		prevPres = curPres
@@ -194,11 +205,17 @@ func kindsContain(kinds []string, kind string) bool {
 	return false
 }
 
-// actorsFromState decodes the synthetic "ktm.io/managers" annotation that
+// managersFromState decodes the synthetic "ktm.io/managers" annotation that
 // the marshal layer injects into every stored state. Returns an empty string
 // when the annotation is absent or the state cannot be parsed (e.g. for
 // older snapshots written before Phase 3.1).
-func actorsFromState(s delta.State) string {
+//
+// What this returns is the set of field managers that owned SOME field on the
+// object when the snapshot was taken. It is not proof that any of them made the
+// change shown on that row — narrowing it to the managers of the fields that
+// actually changed would require per-field ownership comparison, which is a
+// larger change than v0.1.1 takes on.
+func managersFromState(s delta.State) string {
 	if s == nil {
 		return ""
 	}

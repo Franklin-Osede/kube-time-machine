@@ -69,6 +69,13 @@ version to install.
 - Snapshot IDs are validated before being resolved to a path. A manipulated
   `index.json` could previously have directed the retention pass's `RemoveAll`
   outside the snapshots directory.
+- `ktm blame`'s `ACTORS` column is now `MANAGERS`. It was never a list of
+  actors: `managedFields` names every field manager owning any field on the
+  object, which is cumulative and does not identify which one caused the
+  transition on that row. The stored data was always correct — the annotation
+  has always been `ktm.io/managers` — only the presentation overclaimed. Help
+  text now states the limit explicitly. **Breaking for anything parsing
+  `ktm blame` output.**
 - `ktm` opens the snapshot store read-only. Every CLI command previously opened
   it for writing, and opening for write repairs the store — rebuilding
   `index.json`, and removing tombstones for deletions the agent had staged but

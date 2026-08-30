@@ -241,11 +241,11 @@ func TestRunBlame_NamespaceAppliedFromFlag(t *testing.T) {
 	}
 }
 
-// TestComputeBlame_ActorsFromJSONPayload pins the ACTORS column end-to-end.
-// Existing tests use raw byte strings as state (not JSON) so actorsFromState
+// TestComputeBlame_ManagersFromJSONPayload pins the MANAGERS column end-to-end.
+// Existing tests use raw byte strings as state (not JSON) so managersFromState
 // always returned "". This test uses a real JSON payload with the
 // ktm.io/managers annotation that the agent marshal layer injects.
-func TestComputeBlame_ActorsFromJSONPayload(t *testing.T) {
+func TestComputeBlame_ManagersFromJSONPayload(t *testing.T) {
 	_, store := seedBlameStore(t)
 	ctx := context.Background()
 	target := key("Deployment", "default", "api")
@@ -264,7 +264,7 @@ func TestComputeBlame_ActorsFromJSONPayload(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("want 1 entry, got %d: %+v", len(entries), entries)
 	}
-	if entries[0].Actors != "helm,kubectl" {
-		t.Errorf("actors: want %q, got %q", "helm,kubectl", entries[0].Actors)
+	if entries[0].Managers != "helm,kubectl" {
+		t.Errorf("managers: want %q, got %q", "helm,kubectl", entries[0].Managers)
 	}
 }

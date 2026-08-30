@@ -153,15 +153,20 @@ ok "diff reports changes in the demo namespace"
 log "blame Deployment/demo/api"
 "$KTM" --storage-dir "$STORE" blame Deployment/demo/api > "$WORK/blame.txt"
 cat "$WORK/blame.txt"
-# blame renders an attribution table: TIME / OP / ACTORS / SNAPSHOT. The
-# interesting assertion is not that the image string appears, but that the
-# mutation was attributed to the actor that actually performed it —
-# `kubectl set image` shows up as the kubectl-set field manager.
+# blame renders a table: TIME / OP / MANAGERS / SNAPSHOT. The interesting
+# assertion is not that the image string appears, but that the field manager
+# `kubectl set image` uses -- kubectl-set -- shows up among the managers once
+# the mutation has been recorded.
+#
+# Note this asserts PRESENCE, not authorship: MANAGERS is cumulative, so
+# kubectl-set appearing on the MODIFIED row does not by itself prove it made
+# that change. The check is still meaningful because kubectl-set is absent
+# before the mutation and present after.
 grep -q 'CREATED' "$WORK/blame.txt"  || fail "blame is missing the CREATED event"
 grep -q 'MODIFIED' "$WORK/blame.txt" || fail "blame is missing the MODIFIED event"
 awk '/MODIFIED/ && /kubectl-set/ {found=1} END{exit !found}' "$WORK/blame.txt" \
-  || fail "blame did not attribute the modification to the kubectl-set field manager"
-ok "blame attributes the change to kubectl-set"
+  || fail "kubectl-set is not among the managers on the MODIFIED row"
+ok "kubectl-set appears among the managers after the change"
 
 # ------------------------------------------------------------ rollback ---
 # Roll back to a snapshot that still has nginx:1.27, then verify the live
