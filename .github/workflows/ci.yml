@@ -64,8 +64,10 @@ jobs:
       # Pinned, not 'latest': .golangci.yml uses the v2 config schema, and a
       # major-version jump would fail the job on config parsing rather than on
       # anything in the code. Dependabot proposes bumps.
+      # Action major and linter major are coupled: golangci-lint-action v6
+      # rejects any v2.x linter outright. Bump them together.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
           args: --timeout=5m
