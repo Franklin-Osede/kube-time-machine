@@ -43,8 +43,6 @@ Items move to issues or the CHANGELOG as they are picked up.
 ## Cleanup
 
 - [ ] Comment pass over every package against `CONTRIBUTING.md` § Comments.
-- [ ] Decide whether `pkg/types` should be `internal/types` — `pkg/` promises
-      a stable import path.
 - [ ] Consider splitting `internal/storage/local.go` (index, delete, atomic
       writes, locking).
 - [ ] Decide whether `DynamicInformers` ships in v0.1.1 given the scope-lock.
