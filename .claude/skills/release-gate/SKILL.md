@@ -5,8 +5,15 @@ description: Run kube-time-machine's full release gate — the CI checks locally
 
 # Release gate
 
-Run every step; report a table of step → pass/fail with the failing output.
-Do not stop at the first failure unless a later step depends on it.
+Run every step; report a table of step → pass / fail / unverified, with the
+failing output. Do not stop at the first failure unless a later step depends on
+it.
+
+A step that could not run — tool missing, no network, no cluster — is
+**unverified**, never pass. Head the report with what was tested: `git rev-parse
+HEAD`, whether the tree was dirty, the Go and Helm versions, and for e2e the
+kind cluster name. Output that is real but came from the wrong commit or
+cluster is not evidence.
 
 ## 1. Pre-tag (local)
 
