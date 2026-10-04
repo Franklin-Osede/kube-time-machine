@@ -107,7 +107,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # Pinned explicitly rather than inferred from go.mod: released
           # binaries must be built by a toolchain with the stdlib advisories
