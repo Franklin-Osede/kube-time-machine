@@ -5,9 +5,6 @@ Items move to issues or the CHANGELOG as they are picked up.
 
 ## Before v0.1.1
 
-- [ ] Delete the withdrawn `0.1.0` versions from GHCR (`ktm-agent` index plus
-      its four child manifests, and the chart). Versions only — never the
-      packages.
 - [ ] README says artefacts are unpublished and CHANGELOG dates 0.1.1 as
       released, while only `v0.1.1-rc.1` exists. Reconcile at release time.
 - [ ] Triage the open Dependabot PRs. The `golang:1.27.1-alpine` bump conflicts
