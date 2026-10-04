@@ -17,9 +17,9 @@ Closed. v0.1.0 was a silent pre-launch target with two confirmed bugs (case-sens
 | 7 | README polish, Mermaid diagram, ADRs, demo recording, launch post draft | 🚧 in progress |
 | 8 | Public launch (repo public, image + chart + binaries published, video, post live) | 🚧 in progress |
 
-`docs/PROGRESS.md` is the source of truth for per-stage state and carries the running history.
+`CHANGELOG.md` records what shipped; [TODO.md](../TODO.md) holds the open backlog.
 
-**Strict scope-lock:** Deployments and ConfigMaps only. Local PVC storage only. No web UI. No multi-cluster. (A minimal `/metrics` endpoint was added with the health server in v0.1.1; it was not part of the original scope-lock.) Anything else goes into [TODO.md](../TODO.md) (created when needed) and is reconsidered post-launch.
+**Strict scope-lock:** Deployments and ConfigMaps only. Local PVC storage only. No web UI. No multi-cluster. (A minimal `/metrics` endpoint was added with the health server in v0.1.1; it was not part of the original scope-lock.) Anything else goes into [TODO.md](../TODO.md) and is reconsidered post-launch.
 
 ## Phase 2 gate
 

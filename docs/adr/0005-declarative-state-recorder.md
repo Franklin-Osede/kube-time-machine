@@ -14,7 +14,7 @@ A KTM snapshot represents one moment in the life of a Kubernetes resource. The q
 
 Three forces apply.
 
-1. **Diff and blame usability.** After a `kubectl set image`, the diff of two consecutive snapshots naturally shows four hunks: one meaningful (the image change) and three derived from the rollout — `observedGeneration`, `status.conditions[*].lastUpdateTime`, the ReplicaSet hash. Useful in some debugging contexts, but pure noise in the audit/intent-tracking context that motivates KTM. This was observed first-hand during the Etapa 2.3 smoke test on 2026-05-20 and is documented in [PROGRESS.md](../PROGRESS.md) as the status-noise risk.
+1. **Diff and blame usability.** After a `kubectl set image`, the diff of two consecutive snapshots naturally shows four hunks: one meaningful (the image change) and three derived from the rollout — `observedGeneration`, `status.conditions[*].lastUpdateTime`, the ReplicaSet hash. Useful in some debugging contexts, but pure noise in the audit/intent-tracking context that motivates KTM. This was observed first-hand during the Etapa 2.3 smoke test on 2026-05-20 and is documented in [PROGRESS.md](https://github.com/Franklin-Osede/kube-time-machine/blob/fdf65b7/docs/PROGRESS.md) (since retired) as the status-noise risk.
 
 2. **Storage economy.** `.status` blocks on Deployments dominate the per-snapshot size in the steady state. Across a cluster of 100 Deployments captured every 5 minutes, status payload alone accounts for the majority of bytes written.
 
