@@ -3,8 +3,8 @@
 In-cluster agent (`cmd/agent`) records Deployment and ConfigMap state to a local
 PVC as full snapshots plus deltas; the CLI (`cmd/ktm`) lists, diffs,
 reconstructs, blames and rolls back from that store. Architecture:
-`docs/architecture.md`. Decisions: `docs/adr/`. Per-stage state:
-`docs/PROGRESS.md`.
+`docs/architecture.md`. Decisions: `docs/adr/`. Open work:
+`TODO.md`.
 
 ## Scope-lock (pre-launch)
 
@@ -59,8 +59,9 @@ The full procedure, including post-tag checks, is the `release-gate` skill.
 
 ## Conventions
 
-- Comments are held to the same standard as code. An inaccurate comment is a
-  defect: it is what lets bugs survive review.
+- Comments follow the policy in `CONTRIBUTING.md` § Comments: keep why,
+  invariants and external quirks; delete restatement and history. An
+  inaccurate comment is a defect: it is what lets bugs survive review.
 - Docs claim only what shipped. Verify against the code before writing a
   number, a size, or a "we do X".
 - Focused commits; messages say why, not what.
@@ -70,4 +71,4 @@ The full procedure, including post-tag checks, is the `release-gate` skill.
 
 Tags `v*` trigger `release.yml`. A tag containing a hyphen (`v0.1.1-rc.1`) is a
 prerelease and does not move `:latest`. `0.1.0` is withdrawn — see
-`CHANGELOG.md` and `docs/PRE-DEPLOY-AUDIT.md`.
+`CHANGELOG.md` and `TODO.md`.
