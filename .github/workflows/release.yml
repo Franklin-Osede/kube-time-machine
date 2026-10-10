@@ -12,8 +12,8 @@
 #      and app.version pinned to the tag (kept coupled pre-v1.0; see
 #      ADR-0007).
 #
-# GHCR-only — Docker Hub mirror is deliberately out of scope for the MVP
-# (extra secret, extra surface; can be added in a follow-up).
+# Nothing publishes until the verify job passes: a tag on a commit that
+# fails its tests must not produce artefacts.
 
 name: Release
 
@@ -21,17 +21,47 @@ on:
   push:
     tags: ['v*']
 
+# Read-only by default; each job asks for exactly the write it needs.
 permissions:
-  contents: write   # to create the GitHub release and upload assets
-  packages: write   # to push to GHCR
+  contents: read
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
+  verify:
+    name: Verify the tagged commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.14.0
+
+      - name: Format, vet, race tests, chart render
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race -count=1 -timeout 5m ./...
+          helm lint deploy/helm
+          helm template ktm deploy/helm --namespace ktm-system >/dev/null
+
   image:
     name: Agent image (multi-arch → GHCR)
     runs-on: ubuntu-latest
+    needs: verify
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -94,6 +124,7 @@ jobs:
   cli:
     name: ktm + ktm-agent binaries (5 platforms)
     runs-on: ubuntu-latest
+    needs: verify
     strategy:
       matrix:
         include:
@@ -147,6 +178,10 @@ jobs:
   chart:
     name: Helm chart (OCI → GHCR)
     runs-on: ubuntu-latest
+    needs: verify
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -188,6 +223,8 @@ jobs:
     name: GitHub Release
     runs-on: ubuntu-latest
     needs: [image, cli, chart]
+    permissions:
+      contents: write
     steps:
       - name: Download all CLI artefacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
