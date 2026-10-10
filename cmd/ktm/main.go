@@ -1,6 +1,6 @@
-// Command ktm is the local CLI for kube-time-machine. It reads snapshots
-// produced by the ktm-agent and supports listing them, showing the
-// reconstructed state at any point, and diffing between two points.
+// Command ktm is the local CLI for kube-time-machine. It reads the snapshots
+// ktm-agent writes and lists, reconstructs, diffs, blames and rolls back
+// from them.
 //
 // All command logic lives in internal/cli; this file only handles the
 // process boundary (exit codes).

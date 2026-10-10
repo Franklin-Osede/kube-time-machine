@@ -1,15 +1,7 @@
-// Command ktm-agent runs inside a Kubernetes cluster, watches
-// Deployments and ConfigMaps via client-go informers, and persists
-// periodic snapshots (full + deltas) to a local PersistentVolume.
-//
-// Configuration flags:
-//
-//	--kubeconfig    explicit path; if empty, falls back to in-cluster,
-//	                then to $KUBECONFIG, then to $HOME/.kube/config
-//	--storage-dir   directory where snapshots are persisted
-//	--interval      how often to flush snapshots
-//	--full-every    take a full reference snapshot every N flushes
-//	--health-addr   HTTP listen address for /healthz and /readyz (empty = disabled)
+// Command ktm-agent watches Deployments and ConfigMaps through client-go
+// informers and persists periodic snapshots (full + deltas) to a local
+// directory. It runs in-cluster with a PersistentVolume (Mode B) or on a
+// laptop against a kubeconfig (Mode A). Flags: ktm-agent -help.
 package main
 
 import (
@@ -49,7 +41,7 @@ func run() error {
 		storageDir        = flag.String("storage-dir", "/var/lib/ktm", "directory where snapshots are persisted")
 		interval          = flag.Duration("interval", 5*time.Minute, "how often to flush snapshots")
 		fullEvery         = flag.Int("full-every", 12, "take a full reference snapshot every N flushes")
-		healthAddr        = flag.String("health-addr", ":8080", "HTTP listen address for /healthz and /readyz (empty = disabled)")
+		healthAddr        = flag.String("health-addr", ":8080", "HTTP listen address for /healthz, /readyz and /metrics (empty = disabled)")
 		excludeNamespaces = flag.String("exclude-namespaces", "kube-system,kube-public,kube-node-lease", "comma-separated list of namespaces to exclude from watching")
 		watchResources    = flag.String("watch-resources",
 			"",
@@ -142,7 +134,7 @@ func run() error {
 
 	// Best-effort final flush: capture whatever happened between the last
 	// periodic flush and the SIGTERM, so we don't lose the closing window.
-	// Gated on inf.Ready() for the same reason Snapshotter.Run is — if the
+	// Gated on allReady for the same reason Snapshotter.Run is — if the
 	// agent is cancelled before the informer caches sync, the buffer holds
 	// only a partial view, and flushing it would persist a misleading full
 	// snapshot. A non-blocking receive distinguishes "synced" from "never
