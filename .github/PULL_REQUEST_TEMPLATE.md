@@ -10,7 +10,7 @@
 
 <!-- Delete what does not apply. -->
 
-- [ ] `make test` / `go test -race ./...`
+- [ ] `go test -race ./...`
 - [ ] `helm lint deploy/helm` and `helm template ktm deploy/helm -n ktm-system`
 - [ ] Exercised against a real cluster (say which: kind, k3s, cloud)
 
@@ -18,4 +18,5 @@
 
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`, if this is user-visible
 - [ ] Docs updated, if this changes install steps, flags, or chart values
+- [ ] ADR added or updated, if this changes the storage format or a recorded decision
 - [ ] No new RBAC permissions — or the new ones are justified below
