@@ -70,5 +70,5 @@ The full procedure, including post-tag checks, is the `release-gate` skill.
 ## Release
 
 Tags `v*` trigger `release.yml`. A tag containing a hyphen (`v0.1.1-rc.1`) is a
-prerelease and does not move `:latest`. `0.1.0` is withdrawn — see
-`CHANGELOG.md` and `TODO.md`.
+prerelease and does not move `:latest`. `0.1.0` is withdrawn and its GHCR
+versions are deleted, so `:latest` resolves to nothing until a stable tag.

@@ -32,6 +32,10 @@ helm template ktm deploy/helm --namespace ktm-system >/dev/null
 `govulncheck` stdlib findings are fixed by a toolchain patch, not code; report
 them separately from module findings. Module findings fail the gate.
 
+CI renders the chart with Helm v3.14.0. If the local `helm version` is a
+different major, a local pass does not prove the CI render passes — say so in
+the report.
+
 ## 2. End-to-end
 
 ```bash
@@ -44,8 +48,9 @@ Two known local hazards — check before debugging the product:
   `kube-proxy` is crash-looping on "too many open files", raise the limit:
   `docker run --rm --privileged alpine sh -c 'sysctl -w fs.inotify.max_user_instances=1024'`.
   Never delete the user's other kind clusters to free instances.
-- **buildx missing:** `e2e.sh` already falls back to a non-BuildKit build.
-  CI uses its own buildx, so the real Dockerfile is still exercised there.
+- **buildx missing:** `docker buildx version` fails on some local setups.
+  `e2e.sh` detects that and falls back to a non-BuildKit build. CI brings its
+  own buildx, so the real Dockerfile is still exercised there.
 
 ## 3. Post-tag (after `release.yml` finishes for `vX.Y.Z`)
 
