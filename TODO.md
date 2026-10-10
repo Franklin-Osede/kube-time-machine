@@ -7,8 +7,10 @@ Items move to issues or the CHANGELOG as they are picked up.
 
 - [ ] README says artefacts are unpublished and CHANGELOG dates 0.1.1 as
       released, while only `v0.1.1-rc.1` exists. Reconcile at release time.
-- [ ] Triage the open Dependabot PRs. The `golang:1.27.1-alpine` bump conflicts
-      with the toolchain pin from `5d9842a`.
+- [ ] Close Dependabot #5–#9 as superseded by the SHA-pinning commit, and merge
+      #14 and #15 once they are green on the rebased base.
+- [ ] Tag `v0.1.1-rc.2`: first run of the release `verify` job and of the
+      bumped release-only actions (buildx, build-push, upload/download-artifact).
 - [ ] Scan the published image, not just the one E2E builds.
 - [ ] Move `docs/launch.md` (post drafts) out of the repository.
 
