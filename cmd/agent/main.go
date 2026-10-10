@@ -56,7 +56,7 @@ func run() error {
 			"comma-separated list of resource[.group]/version to watch via dynamic informers (complements typed Deployment/ConfigMap watchers)")
 		burstThreshold = flag.Int("burst-threshold", 50,
 			"flush early when this many changes accumulate before the next periodic tick; 0 disables burst flushing")
-		retainDays  = flag.Int("retain-days", 30, "delete snapshots older than this many days after each full flush; 0 keeps all snapshots forever")
+		retainDays  = flag.Int("retain-days", 30, "delete snapshots older than this many days, checked before every flush; 0 keeps all snapshots forever")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()

@@ -23,7 +23,7 @@ snapshot:
   # Flush early when this many changes accumulate before the next periodic tick.
   # Useful during deploy storms to capture fine-grained history. 0 = disabled.
   burstThreshold: 50
-  # Delete snapshots older than this many days after each full-snapshot flush.
+  # Delete snapshots older than this many days, checked before every flush.
   # The GC algorithm keeps the most-recent full snapshot before the cutoff as
   # an anchor so every delta in the retention window remains reconstructable.
   # 0 = keep all snapshots forever (useful for development / small clusters).

@@ -1,10 +1,8 @@
 // Package types defines the public, serializable metadata used to describe
 // snapshots persisted by kube-time-machine.
 //
-// This package intentionally has no dependency on internal/. Consumers
-// outside the project (future CLI plugins, third-party tooling, the
-// Phase-2 web visor) can import it to talk *about* snapshots without
-// needing access to payload internals.
+// It has no dependency on internal/, so tooling outside this module can
+// read snapshot metadata without access to payload internals.
 package types
 
 import "time"
@@ -39,8 +37,8 @@ const (
 // For full snapshots it covers every kind in the full state; for deltas
 // it covers only the kinds that changed. An empty slice means the
 // payload has no entries (or the snapshot predates this field — treat
-// as unknown). CLI tools and future indexing layers can use Kinds to
-// skip loading snapshots that cannot possibly contain the target kind.
+// as unknown). `ktm blame` uses Kinds to skip loading deltas that cannot
+// contain the target kind.
 type SnapshotMeta struct {
 	ID        SnapshotID   `json:"id"`
 	Kind      SnapshotKind `json:"kind"`

@@ -12,12 +12,27 @@ updates:
         patterns:
           - "k8s.io/*"
 
+  # One PR for all action bumps. Separate PRs touch the same workflow files,
+  # and with "require branches up to date" each merge stales the rest.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
 
+  # The Go toolchain is pinned in three places — go.mod's toolchain line, the
+  # Dockerfile, and release.yml — and Dependabot can only move the Dockerfile.
+  # Minor and major bumps are done by hand in all three at once. Patch bumps
+  # still open a PR, as a reminder: extend it to the other two before merging.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: golang
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

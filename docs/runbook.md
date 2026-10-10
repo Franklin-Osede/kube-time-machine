@@ -17,7 +17,7 @@ kubectl -n ktm-system logs -l app.kubernetes.io/name=kube-time-machine --tail=10
 
 **Symptoms**
 - `kubectl -n ktm-system get pod` shows `Running` but `READY 0/1`
-- `/readyz` returns `{"status":"not ready"}`
+- `/readyz` returns HTTP 503 with the plain-text body `not ready`
 - `/healthz` returns 200 (liveness unaffected)
 
 **Most likely cause — invalid `--watch-resources`**

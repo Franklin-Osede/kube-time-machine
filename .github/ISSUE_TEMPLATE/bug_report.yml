@@ -13,6 +13,13 @@ body:
       placeholder: v0.1.1
     validations:
       required: true
+  - type: input
+    id: kubernetes
+    attributes:
+      label: Kubernetes version and distribution
+      placeholder: "1.33, kind / EKS / GKE / k3s"
+    validations:
+      required: true
   - type: dropdown
     id: mode
     attributes:

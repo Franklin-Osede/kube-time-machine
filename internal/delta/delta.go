@@ -10,11 +10,10 @@ import "bytes"
 
 // Key identifies a single resource within a Snapshot. All fields are
 // strings, which makes Key comparable and therefore usable directly as a
-// map key — no string concatenation, no hashing helper.
+// map key.
 //
-// JSON tags are lowercase so the on-disk and wire representations stay
-// readable with standard tooling (cat, jq) and predictable for any
-// future plugin or external consumer.
+// JSON tags are lowercase so the on-disk format stays readable with
+// standard tooling (cat, jq).
 type Key struct {
 	Kind      string `json:"kind"`
 	Namespace string `json:"namespace"`
