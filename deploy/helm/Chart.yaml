@@ -2,8 +2,9 @@ apiVersion: v2
 name: kube-time-machine
 description: Git blame and time-travel for Kubernetes clusters.
 type: application
-# version  = chart version (bump on chart changes)
-# appVersion = application version (bump on agent image changes)
+# release.yml overwrites both from the release tag, keeping chart and app
+# versions equal before v1.0 (ADR-0007). These values only apply to installs
+# from a source checkout.
 version: 0.1.1
 appVersion: "0.1.1"
 home: https://github.com/Franklin-Osede/kube-time-machine
