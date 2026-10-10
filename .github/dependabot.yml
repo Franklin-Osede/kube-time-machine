@@ -4,13 +4,18 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
     groups:
       # client-go, api, and apimachinery must move together — a partial bump
       # produces a build that compiles but disagrees about API types.
       kubernetes:
         patterns:
           - "k8s.io/*"
+      # The x/ modules depend on each other and usually move together (an
+      # x/net security bump pulled x/sync, x/sys, x/term and x/text with it).
+      # One PR avoids a queue of PRs that stale each other on go.mod.
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
 
   # One PR for all action bumps. Separate PRs touch the same workflow files,
   # and with "require branches up to date" each merge stales the rest.
