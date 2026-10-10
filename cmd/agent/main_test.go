@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -34,5 +35,26 @@ func TestValidateConfig(t *testing.T) {
 				t.Fatalf("validateConfig error = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// A namespace that keeps a stray space would silently stop being excluded,
+// and the agent would start recording it.
+func TestSplitTrimmed(t *testing.T) {
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{in: "", want: []string{}},
+		{in: "kube-system", want: []string{"kube-system"}},
+		{in: "kube-system, kube-public ,kube-node-lease", want: []string{"kube-system", "kube-public", "kube-node-lease"}},
+		{in: "a,,b,", want: []string{"a", "b"}},
+		{in: " , ", want: []string{}},
+	}
+
+	for _, tt := range tests {
+		if got := splitTrimmed(tt.in); !slices.Equal(got, tt.want) {
+			t.Errorf("splitTrimmed(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
