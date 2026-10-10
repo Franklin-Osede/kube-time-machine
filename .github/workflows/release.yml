@@ -1,10 +1,9 @@
-# Release workflow.
 # Triggered when a tag matching v* is pushed. Produces three artefacts,
 # all under the same version derived from the tag:
 #
 #   1. Multi-arch ktm-agent image (linux/amd64 + linux/arm64) pushed to
-#      GHCR. Multi-arch is on by default because ARM nodes (Apple Silicon,
-#      Graviton, Ampere) are routine in 2026; see ADR-0007.
+#      GHCR. Multi-arch by default because ARM nodes (Apple Silicon,
+#      Graviton, Ampere) are common; see ADR-0007.
 #   2. ktm AND ktm-agent binaries for linux/macOS/Windows × amd64/arm64,
 #      attached as assets to the GitHub Release. Both are needed for Mode A
 #      (local-first): ktm-agent records, ktm queries.
@@ -46,6 +45,15 @@ jobs:
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.14.0
+
+      # A malformed tag (v0.1, vtest) would otherwise publish an image and
+      # binaries under a version no semver tool can order.
+      - name: Tag is vMAJOR.MINOR.PATCH[-PRERELEASE]
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH[-PRERELEASE]"
+            exit 1
+          fi
 
       - name: Format, vet, race tests, chart render
         run: |
@@ -140,11 +148,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Pinned explicitly rather than inferred from go.mod: released
-          # binaries must be built by a toolchain with the stdlib advisories
-          # fixed. go.mod's 'go' directive is the 1.26.0 floor client-go
-          # requires, and building with exactly 1.26.0 would ship the
-          # vulnerable net/http, crypto/tls, net/url and encoding/asn1.
+          # Same patch as go.mod's toolchain line and the Dockerfile, so every
+          # published artefact comes from one toolchain with the stdlib fixes.
+          # The three pins move together; Dependabot can only see the
+          # Dockerfile.
           go-version: '1.26.9'
           cache: true
 
@@ -191,13 +198,15 @@ jobs:
         with:
           version: v3.14.0
 
+      # The token goes through env, not ${{ }} in the script, so it is never
+      # part of the command text.
       - name: Log in to GHCR (helm)
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | \
-            helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | helm registry login ghcr.io -u "$ACTOR" --password-stdin
 
-      # Lowercase the owner for the same OCI-spec reason as in the image
-      # job — GHCR rejects mixed-case references.
+      # Lowercase for the same reason as in the image job.
       - name: Derive version and lowercase owner
         id: meta
         env:
