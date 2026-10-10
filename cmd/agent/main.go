@@ -24,8 +24,7 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/internal/storage"
 )
 
-// version is stamped at release time via -ldflags="-X main.version=...".
-// Mirrors the CLI so both binaries report a consistent version.
+// version is set at release time with -ldflags="-X main.version=...".
 var version = "dev"
 
 func main() {
@@ -100,9 +99,9 @@ func run() error {
 		dynInf = dynInf.WithSyncTimeout(2 * time.Minute)
 	}
 
-	// Gate the Snapshotter on BOTH typed and dynamic informers syncing.
-	// This ensures the first (always-full) snapshot is complete across all
-	// watched resource kinds.
+	// allReady closes once both the typed and the dynamic informers have
+	// listed the whole cluster. Nothing is persisted before that: a partial
+	// cache must never become a full snapshot.
 	allReady := agent.CombinedReady(inf.Ready(), dynInf.Ready())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -125,21 +124,14 @@ func run() error {
 	}).
 		WithMetrics(func() string { return agentMetrics(buf, snap) })
 	g.Go(func() error { return healthSrv.Run(gctx) })
-	// snap.Run waits on allReady before its first flush so the first
-	// (always-full) snapshot reflects a fully-synced cluster, not the
-	// partial buffer that exists during the informers' initial list/watch.
 	g.Go(func() error { return snap.Run(gctx, allReady) })
 
 	runErr := g.Wait()
 
-	// Best-effort final flush: capture whatever happened between the last
-	// periodic flush and the SIGTERM, so we don't lose the closing window.
-	// Gated on allReady for the same reason Snapshotter.Run is — if the
-	// agent is cancelled before the informer caches sync, the buffer holds
-	// only a partial view, and flushing it would persist a misleading full
-	// snapshot. A non-blocking receive distinguishes "synced" from "never
-	// synced" without waiting. Use a fresh, short-timeout context — the
-	// parent is already cancelled.
+	// Final flush: keep the changes made since the last periodic one. Same
+	// allReady rule as above; the select's default branch tells "never
+	// synced" apart without blocking. ctx is already cancelled, so the
+	// flush gets its own 5-second budget.
 	select {
 	case <-allReady:
 		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -176,9 +168,8 @@ func validateConfig(interval time.Duration, fullEvery, burstThreshold, retainDay
 	return nil
 }
 
-// agentMetrics returns a Prometheus text-format metrics page sampling the
-// current buffer and snapshotter state. Called on every /metrics request;
-// no caching needed at this cardinality.
+// agentMetrics renders the /metrics page in Prometheus text format,
+// sampled fresh on every request.
 func agentMetrics(buf *agent.Buffer, snap *agent.Snapshotter) string {
 	var b strings.Builder
 	entries := buf.Len()
