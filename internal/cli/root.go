@@ -19,14 +19,14 @@ type Options struct {
 // cmd.Execute — that's the caller's job in cmd/ktm/main.go. The version
 // string is plumbed in from cmd/ktm/main.go so the linker-stamped value
 // (-X main.version=...) reaches cobra's built-in Version field, which
-// powers `ktm --version` and `ktm version`.
+// powers `ktm --version`.
 func NewRootCmd(version string) *cobra.Command {
 	opts := &Options{}
 
 	cmd := &cobra.Command{
 		Use:           "ktm",
 		Short:         "Git blame & time-travel for your Kubernetes cluster",
-		Long:          "ktm inspects the snapshot history produced by the ktm-agent: list snapshots, show their contents, and diff between any two points in time.",
+		Long:          "ktm reads the snapshot history recorded by ktm-agent: list snapshots, reconstruct the state at any point, diff two points in time, blame a resource's changes, and roll a resource back.",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: false,
