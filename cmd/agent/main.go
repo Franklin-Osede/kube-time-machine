@@ -40,7 +40,7 @@ func run() error {
 		storageDir        = flag.String("storage-dir", "/var/lib/ktm", "directory where snapshots are persisted")
 		interval          = flag.Duration("interval", 5*time.Minute, "how often to flush snapshots")
 		fullEvery         = flag.Int("full-every", 12, "take a full reference snapshot every N flushes")
-		healthAddr        = flag.String("health-addr", ":8080", "HTTP listen address for /healthz, /readyz and /metrics (empty = disabled)")
+		healthAddr        = flag.String("health-addr", "127.0.0.1:8080", "HTTP listen address for /healthz, /readyz and /metrics; the Helm chart sets :8080 so kubelet can reach it (empty = disabled)")
 		excludeNamespaces = flag.String("exclude-namespaces", "kube-system,kube-public,kube-node-lease", "comma-separated list of namespaces to exclude from watching")
 		watchResources    = flag.String("watch-resources",
 			"",
