@@ -58,8 +58,8 @@ func (b *Buffer) Delete(k delta.Key) {
 	b.pendingChanges++
 }
 
-// PendingChanges returns the number of Upsert/Delete calls since the last
-// DrainChanges call. Safe to call concurrently.
+// PendingChanges returns the number of state-changing Upsert/Delete calls
+// since the last DrainChanges. Safe to call concurrently.
 func (b *Buffer) PendingChanges() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
