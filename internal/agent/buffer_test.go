@@ -138,3 +138,37 @@ func TestBuffer_ConcurrentAccessIsRaceFree(t *testing.T) {
 		t.Errorf("final Len: want %d, got %d", want, got)
 	}
 }
+
+// The change counter drives burst flushes and ktm_buffer_pending_changes. An
+// update whose sanitised payload is unchanged — a rollout's status churn —
+// must not count, or noise alone would trigger flushes.
+func TestBuffer_PendingChangesCountsOnlyRealChanges(t *testing.T) {
+	b := agent.NewBuffer()
+	api := k("Deployment", "default", "api")
+
+	steps := []struct {
+		name string
+		do   func()
+		want int
+	}{
+		{"add", func() { b.Upsert(api, delta.State("v1")) }, 1},
+		{"identical upsert", func() { b.Upsert(api, delta.State("v1")) }, 1},
+		{"real change", func() { b.Upsert(api, delta.State("v2")) }, 2},
+		{"delete absent", func() { b.Delete(k("ConfigMap", "default", "nope")) }, 2},
+		{"delete present", func() { b.Delete(api) }, 3},
+		{"delete again", func() { b.Delete(api) }, 3},
+	}
+	for _, s := range steps {
+		s.do()
+		if got := b.PendingChanges(); got != s.want {
+			t.Fatalf("after %s: PendingChanges = %d, want %d", s.name, got, s.want)
+		}
+	}
+
+	if got := b.DrainChanges(); got != 3 {
+		t.Errorf("DrainChanges = %d, want 3", got)
+	}
+	if got := b.PendingChanges(); got != 0 {
+		t.Errorf("PendingChanges after drain = %d, want 0", got)
+	}
+}

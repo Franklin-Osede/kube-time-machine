@@ -9,6 +9,7 @@
 package agent
 
 import (
+	"bytes"
 	"sync"
 
 	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
@@ -24,15 +25,15 @@ import (
 // the write lock; reads (Snapshot, Len) take the read lock. The pattern
 // fits our workload — many small writes, infrequent but bulky reads.
 //
-// Reactive flush: Buffer keeps a monotonically increasing change counter
-// (pendingChanges). The Snapshotter polls DrainChanges() and triggers an
-// early flush when the counter exceeds a configurable burst threshold.
-// This preserves intra-interval granularity during deploy storms without
-// altering the normal cadence. See Snapshotter.Run for usage.
+// Change counter: pendingChanges counts Upserts and Deletes that changed the
+// state. An Upsert with byte-identical State — a rollout's status-only
+// updates, after sanitisation — does not count, so noise alone cannot trigger
+// a burst flush or inflate ktm_buffer_pending_changes. The Snapshotter
+// reads it with PendingChanges and resets it with DrainChanges.
 type Buffer struct {
 	mu             sync.RWMutex
 	state          delta.Snapshot
-	pendingChanges int // incremented on every Upsert / Delete
+	pendingChanges int
 }
 
 // NewBuffer constructs an empty Buffer.
@@ -40,10 +41,13 @@ func NewBuffer() *Buffer {
 	return &Buffer{state: delta.Snapshot{}}
 }
 
-// Upsert inserts or replaces the State for k.
+// Upsert inserts or replaces the State for k. Byte-identical State is a no-op.
 func (b *Buffer) Upsert(k delta.Key, s delta.State) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if old, ok := b.state[k]; ok && bytes.Equal(old, s) {
+		return
+	}
 	b.state[k] = s
 	b.pendingChanges++
 }
@@ -52,6 +56,9 @@ func (b *Buffer) Upsert(k delta.Key, s delta.State) {
 func (b *Buffer) Delete(k delta.Key) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if _, ok := b.state[k]; !ok {
+		return
+	}
 	delete(b.state, k)
 	b.pendingChanges++
 }
