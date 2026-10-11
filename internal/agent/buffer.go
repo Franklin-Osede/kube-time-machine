@@ -1,11 +1,6 @@
-// Package agent contains the in-cluster agent: the informer wiring that
-// turns Kubernetes resource events into delta.Snapshot mutations, the
-// in-memory buffer that holds the current known state, and the periodic
-// snapshotter that flushes deltas (and occasional full reference
-// snapshots) to a storage.Store.
-//
-// This file defines the Buffer. The informer wiring lives in
-// informers.go; the periodic snapshotter lives in snapshot.go.
+// Package agent is the recorder: informers turn Kubernetes resource events
+// into Buffer updates, and the Snapshotter periodically flushes the buffer
+// to a storage.Store as deltas plus occasional full reference snapshots.
 package agent
 
 import (
@@ -71,8 +66,9 @@ func (b *Buffer) PendingChanges() int {
 	return b.pendingChanges
 }
 
-// DrainChanges atomically reads and resets the pending-change counter.
-// The Snapshotter calls this after each flush to restart the burst window.
+// DrainChanges atomically reads and resets the pending-change counter. The
+// Snapshotter calls it just before each flush attempt to restart the burst
+// window.
 func (b *Buffer) DrainChanges() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -98,8 +94,8 @@ func (b *Buffer) Snapshot() delta.Snapshot {
 	return out
 }
 
-// Len returns the current number of buffered entries. Useful for tests,
-// readiness probes, and future /metrics endpoints.
+// Len returns the current number of buffered entries, exported as
+// ktm_buffer_entries on /metrics.
 func (b *Buffer) Len() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
