@@ -5,7 +5,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "ktm.fullname" . }}-data
+  name: {{ include "ktm.claimName" . }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "ktm.labels" . | nindent 4 }}

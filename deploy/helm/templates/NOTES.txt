@@ -5,7 +5,7 @@ Verify the recorder:
   kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "ktm.fullname" . }}
   kubectl -n {{ .Release.Namespace }} logs deployment/{{ include "ktm.fullname" . }}
 
-The in-cluster agent writes history to PVC {{ include "ktm.fullname" . }}-data.
+The in-cluster agent writes history to PVC {{ include "ktm.claimName" . }}.
 The ktm CLI does not query that PVC remotely in this release. To run commands
 such as:
 
@@ -14,4 +14,4 @@ such as:
 first copy the PVC contents to a local directory and pass it with
 --storage-dir. See:
 
-  https://github.com/Franklin-Osede/kube-time-machine/blob/main/docs/install.md#querying-history-from-mode-b-cli--pvc
+  https://github.com/Franklin-Osede/kube-time-machine/blob/v{{ .Chart.AppVersion }}/docs/install.md#querying-history-from-mode-b-cli--pvc

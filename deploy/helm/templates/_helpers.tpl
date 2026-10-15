@@ -49,6 +49,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
+PVC the agent writes to: storage.existingClaim when set, else the one pvc.yaml
+creates. Every template that names the claim uses this, so they cannot drift.
+*/}}
+{{- define "ktm.claimName" -}}
+{{- .Values.storage.existingClaim | default (printf "%s-data" (include "ktm.fullname" .)) -}}
+{{- end -}}
+
+{{/*
 ServiceAccount name. Defaults to the fullname; overridable.
 */}}
 {{- define "ktm.serviceAccountName" -}}
