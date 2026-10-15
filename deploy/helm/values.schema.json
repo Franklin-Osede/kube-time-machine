@@ -80,11 +80,6 @@
           "type": "object",
           "properties": {
             "enabled": { "type": "boolean" },
-            "addr": {
-              "type": "string",
-              "pattern": "^(|[^:]*:[0-9]{1,5})$",
-              "description": "Listen address such as \":8080\". Empty disables the server; the chart normally sets this from health.enabled."
-            },
             "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
           }
         },

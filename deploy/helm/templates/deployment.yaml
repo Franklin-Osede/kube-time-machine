@@ -40,12 +40,13 @@ spec:
             - --full-every={{ .Values.snapshot.fullEvery }}
             - --burst-threshold={{ .Values.snapshot.burstThreshold }}
             - --retain-days={{ .Values.snapshot.retainDays }}
+            {{- /* Built from the port so the server, containerPort, probes and
+                   NetworkPolicy can never disagree. When disabled the flag is
+                   explicitly empty: the binary's default (127.0.0.1:8080)
+                   would still start a server the chart says is off. */}}
             {{- if .Values.agent.health.enabled }}
-            - --health-addr={{ .Values.agent.health.addr }}
+            - --health-addr=:{{ .Values.agent.health.port }}
             {{- else }}
-            # Explicitly empty: the binary defaults to :8080, so omitting the
-            # flag would leave the health server running even though the chart
-            # says it is disabled (no port, no probes, NetworkPolicy deny-all).
             - --health-addr=
             {{- end }}
             {{- if .Values.agent.excludeNamespaces }}

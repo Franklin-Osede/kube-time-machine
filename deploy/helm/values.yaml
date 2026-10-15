@@ -49,7 +49,6 @@ storage:
 agent:
   health:
     enabled: true
-    addr: ":8080"
     port: 8080
   # Namespaces to exclude from watching. Events from these namespaces are
   # dropped before reaching the buffer, preventing system controller churn

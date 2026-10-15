@@ -37,7 +37,6 @@ storage:
 agent:
   health:
     enabled: true
-    addr: ":8080"
     port: 8080
 
   # Add namespaces containing plaintext credentials or other ConfigMap data
