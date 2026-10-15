@@ -1,19 +1,5 @@
 {{- if .Values.networkPolicy.enabled -}}
-# Ingress: the agent has no Service, but it exposes a health port for the
-# kubelet's liveness/readiness probes. We allow ingress to exactly that
-# port and nothing else, so probes succeed even on CNIs that subject
-# node→pod traffic to NetworkPolicy (e.g. Cilium). The port serves only
-# /healthz, /readyz and /metrics (counters) — never snapshot data — so this
-# opens no confidential surface. When the health server is disabled, ingress
-# stays deny-all.
-#
-# Egress: DNS plus allow-all to the rest of the cluster + internet, minus
-# the cloud metadata service.
-# A stricter "only kube-apiserver" rule is brittle across providers
-# (apiserver endpoint moves between ClusterIP and external LB), so the
-# MVP keeps egress wide and treats this NetworkPolicy as a clear
-# ingress shield + an intent marker on egress. Tightening egress is
-# a Phase 2 follow-up. See ADR-0007 for the trade-off.
+# Trade-offs and their consequences: values.yaml § NetworkPolicy, ADR-0007.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -28,6 +14,9 @@ spec:
   policyTypes:
     - Ingress
     - Egress
+  # Only the health port, with no `from:` on purpose: probes come from the
+  # kubelet on the node, and a pod or namespace selector blocks them on CNIs
+  # such as Cilium. It serves no snapshot data.
   ingress:
     {{- if .Values.agent.health.enabled }}
     - ports:
@@ -47,14 +36,10 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Everything else (kube-apiserver, any other endpoint). Explicit
-    # so that adding policyTypes: [Egress] above doesn't silently cut
-    # the agent off from the API server.
-    #
-    # Except the cloud instance-metadata service, which can hand out node
-    # credentials. The agent authenticates with its ServiceAccount token and
-    # never needs it. Only the /32: other link-local addresses stay open, e.g.
-    # NodeLocal DNSCache on 169.254.20.10.
+    # Everything else, because the API server's address differs by provider
+    # — except the cloud metadata service, which hands out node credentials
+    # the agent never needs. Only the /32: other link-local addresses such as
+    # NodeLocal DNSCache (169.254.20.10) stay reachable.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
