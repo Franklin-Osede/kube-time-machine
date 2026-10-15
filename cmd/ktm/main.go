@@ -12,9 +12,8 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/internal/cli"
 )
 
-// version is stamped at release time via -ldflags="-X main.version=...".
-// Defaults to "dev" for local builds. Surface this through cobra's
-// built-in Version field so users can run `ktm --version`.
+// version is set at release time with -ldflags="-X main.version=..." and
+// reaches `ktm --version` through cobra's Version field.
 var version = "dev"
 
 func main() {
