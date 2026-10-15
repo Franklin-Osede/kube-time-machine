@@ -27,8 +27,9 @@ Items move to issues or the CHANGELOG as they are picked up.
 
 ## Operational
 
-- [ ] NetworkPolicy egress allows `0.0.0.0/0`, so cloud metadata at
-      169.254.169.254 is reachable.
+- [ ] NetworkPolicy egress is IPv4-only (`0.0.0.0/0`): on an IPv6-only cluster
+      the agent could not reach the API server. Untested; verify before
+      claiming IPv6 support.
 - [ ] No warning when the storage volume passes 80% full.
 - [ ] No cosign signature or SBOM on releases; checksums only.
 - [ ] Chart has no `icon` (the only `helm lint` finding) and no image digest

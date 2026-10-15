@@ -97,9 +97,9 @@ version to install.
 - Removed the unused `resources.watch` chart value, which collided with the
   conventional Helm `resources` key and silently did nothing when set.
 - The NetworkPolicy now admits kubelet probe traffic, so liveness and readiness
-  probes are not blocked by the deny-all ingress rule. Egress remains open
-  (`0.0.0.0/0`) with DNS called out explicitly; narrowing it is a Phase 2
-  follow-up tracked in `deploy/helm/templates/networkpolicy.yaml`.
+  probes are not blocked by the deny-all ingress rule. Egress stays open
+  (`0.0.0.0/0`) with DNS called out explicitly, except the cloud metadata
+  service at `169.254.169.254`, which the agent never needs.
 
 ### Security
 

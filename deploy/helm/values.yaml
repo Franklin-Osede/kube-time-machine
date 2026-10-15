@@ -108,8 +108,9 @@ rbac:
 # we intend to support. Imposing a selector untested would trade a small
 # exposure for probe failures that look like a crash-looping agent.
 #
-# Egress: DNS is called out explicitly and everything else is allowed; a
-# stricter "only kube-apiserver" rule is brittle across providers (ADR-0007).
+# Egress: DNS is called out explicitly and everything else is allowed except
+# the cloud metadata service (169.254.169.254); a stricter "only
+# kube-apiserver" rule is brittle across providers (ADR-0007).
 #
 # Disable entirely on clusters whose CNI does not enforce NetworkPolicy
 # (vanilla kindnet, flannel without the addon).

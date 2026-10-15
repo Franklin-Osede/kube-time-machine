@@ -7,7 +7,8 @@
 # opens no confidential surface. When the health server is disabled, ingress
 # stays deny-all.
 #
-# Egress: DNS plus allow-all to the rest of the cluster + internet.
+# Egress: DNS plus allow-all to the rest of the cluster + internet, minus
+# the cloud metadata service.
 # A stricter "only kube-apiserver" rule is brittle across providers
 # (apiserver endpoint moves between ClusterIP and external LB), so the
 # MVP keeps egress wide and treats this NetworkPolicy as a clear
@@ -49,7 +50,14 @@ spec:
     # Everything else (kube-apiserver, any other endpoint). Explicit
     # so that adding policyTypes: [Egress] above doesn't silently cut
     # the agent off from the API server.
+    #
+    # Except the cloud instance-metadata service, which can hand out node
+    # credentials. The agent authenticates with its ServiceAccount token and
+    # never needs it. Only the /32: other link-local addresses stay open, e.g.
+    # NodeLocal DNSCache on 169.254.20.10.
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
 {{- end }}
