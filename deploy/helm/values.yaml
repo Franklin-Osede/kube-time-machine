@@ -31,7 +31,7 @@ snapshot:
 
 # Local PVC storage. Cloud drivers are Phase 2 (see roadmap).
 storage:
-  create: true
+  create: true                 # false requires existingClaim
   size: 10Gi
   storageClassName: ""         # empty = use the cluster default
   # Keep the PVC when the release is uninstalled. Defaults to true because the
