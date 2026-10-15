@@ -153,8 +153,10 @@ func run() error {
 }
 
 func validateConfig(interval time.Duration, fullEvery, burstThreshold, retainDays int) error {
-	if interval <= 0 {
-		return fmt.Errorf("--interval must be greater than zero")
+	// Snapshot IDs have millisecond resolution and a collision fails the
+	// flush; a one-second floor keeps periodic flushes well apart.
+	if interval < time.Second {
+		return fmt.Errorf("--interval must be at least 1s")
 	}
 	if fullEvery < 1 {
 		return fmt.Errorf("--full-every must be at least 1")

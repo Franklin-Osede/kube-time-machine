@@ -17,6 +17,7 @@ func TestValidateConfig(t *testing.T) {
 		{name: "valid", interval: time.Second, fullEvery: 1},
 		{name: "zero interval", fullEvery: 1, wantErr: "--interval"},
 		{name: "negative interval", interval: -time.Second, fullEvery: 1, wantErr: "--interval"},
+		{name: "sub-second interval", interval: time.Millisecond, fullEvery: 1, wantErr: "--interval"},
 		{name: "zero full every", interval: time.Second, wantErr: "--full-every"},
 		{name: "negative burst", interval: time.Second, fullEvery: 1, burst: -1, wantErr: "--burst-threshold"},
 		{name: "negative retention", interval: time.Second, fullEvery: 1, retainDays: -1, wantErr: "--retain-days"},
