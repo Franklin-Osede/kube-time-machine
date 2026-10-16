@@ -57,6 +57,14 @@ creates. Every template that names the claim uses this, so they cannot drift.
 {{- end -}}
 
 {{/*
+ClusterRole and ClusterRoleBinding name. Both are cluster-scoped, so the
+release namespace is appended to keep two installs from colliding.
+*/}}
+{{- define "ktm.clusterRoleName" -}}
+{{- printf "%s-%s" (include "ktm.fullname" .) .Release.Namespace -}}
+{{- end -}}
+
+{{/*
 ServiceAccount name. Defaults to the fullname; overridable.
 */}}
 {{- define "ktm.serviceAccountName" -}}
