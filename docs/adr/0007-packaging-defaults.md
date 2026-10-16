@@ -28,6 +28,8 @@ Rejected: `scratch` (no CA certs — TLS to the apiserver would need manual cert
 
 The agent's `ServiceAccount` is bound to a `ClusterRole` with `get`, `list`, `watch` on `deployments.apps` and `configmaps`. Nothing more.
 
+> **Amendment (2026-10-16):** `get` is dropped. Informers only `list` and `watch`, and the agent never issues a `get`, so the verb was the same kind of dead permission this section rules out.
+
 Rollback writes to the cluster — but [ADR-0006](0006-rollback-live-resourceversion.md) determined that rollback is executed by the CLI under the user's own kubeconfig, never by the agent. The agent therefore needs **no** write verbs, ever. Adding `patch`/`update` "for the future" would be a dead permission from day one.
 
 Cluster-scoped (not namespace-scoped) because the product value is "see the whole cluster" — a namespace-restricted agent contradicts the use case.

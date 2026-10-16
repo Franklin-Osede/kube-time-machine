@@ -89,7 +89,7 @@ rbac:
   # extraRules:
   #   - apiGroups: ["apps"]
   #     resources: ["statefulsets"]
-  #     verbs: ["get", "list", "watch"]
+  #     verbs: ["list", "watch"]
   extraRules: []
 
 # NetworkPolicy.

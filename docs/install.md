@@ -120,7 +120,7 @@ If a change happens to the cluster during that gap it will surface in the next f
 
 ### RBAC: what the agent can and cannot do
 
-The bundled `ClusterRole` grants `get`, `list`, `watch` on `deployments.apps`
+The bundled `ClusterRole` grants `list` and `watch` on `deployments.apps`
 and `configmaps` cluster-wide. The default agent has no other permissions — it
 cannot write or read Secrets. Experimental dynamic watches are opt-in and
 require matching rules in both `agent.watchResources` and `rbac.extraRules`.
