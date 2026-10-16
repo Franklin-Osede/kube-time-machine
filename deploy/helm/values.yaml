@@ -78,9 +78,12 @@ agent:
 # supports concurrent writers — see roadmap P1).
 
 serviceAccount:
-  create: true
+  create: true                 # false requires name
   name: ""                     # if empty, defaults to the fullname
-  annotations: {}              # e.g. IAM role annotations for IRSA on EKS
+  # The agent authenticates to Kubernetes only; it needs no cloud identity
+  # (IRSA, Workload Identity), and granting one would undo the metadata block
+  # in the NetworkPolicy.
+  annotations: {}
 
 # Cluster-scoped read-only RBAC. See ADR-0007.
 rbac:
