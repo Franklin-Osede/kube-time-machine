@@ -22,20 +22,13 @@ type Informers struct {
 	deployInf cache.SharedIndexInformer
 	cmInf     cache.SharedIndexInformer
 	buf       *Buffer
-	excludeNS map[string]struct{} // namespaces whose events are silently dropped
-	ready     chan struct{}       // closed once the initial cache sync completes
+	excludeNS map[string]struct{}
+	ready     chan struct{}
 }
 
-// NewInformers constructs Informers wired to buf.
-//
-// resync is the cadence for periodic informer cache resyncs. Pass 0 to
-// disable resync — the K8s API guarantees the informer cache stays
-// coherent via watch, so resync is paranoia, not correctness. Enable
-// only if real-world drift appears.
-//
-// excludeNamespaces is the list of namespaces whose events are silently
-// dropped before reaching the buffer. Typical values: "kube-system",
-// "kube-public", "kube-node-lease". Pass nil to watch all namespaces.
+// NewInformers constructs Informers wired to buf. A resync of 0 disables
+// periodic resyncs: the watch already keeps the cache coherent. Events from
+// excludeNamespaces never reach the buffer.
 func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration, excludeNamespaces []string) *Informers {
 	factory := informers.NewSharedInformerFactory(client, resync)
 	excludeNS := make(map[string]struct{}, len(excludeNamespaces))
@@ -52,10 +45,8 @@ func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration
 		excludeNS: excludeNS,
 		ready:     make(chan struct{}),
 	}
-	// AddEventHandler can fail (e.g. if the informer was already
-	// started). At construction time the informers are fresh, so the
-	// only realistic failure is programmer error — surface it via panic
-	// rather than swallowing.
+	// AddEventHandler fails only on an already-started informer; these are
+	// fresh, so an error here is a programming bug.
 	if _, err := in.deployInf.AddEventHandler(in.deploymentHandler()); err != nil {
 		panic(fmt.Errorf("agent: register Deployment handler: %w", err))
 	}
@@ -185,10 +176,9 @@ func (i *Informers) handleConfigMapUpsert(obj any, op string) {
 	i.buf.Upsert(key, state)
 }
 
-// unwrapDelete handles the DeletedFinalStateUnknown case: when the
-// informer lost watch events and can't tell us the final state, it
-// delivers a tombstone wrapping the last known object. We only need the
-// Key to remove the entry from the buffer, so unwrapping is enough.
+// unwrapDelete handles DeletedFinalStateUnknown: when the watch missed the
+// final state, client-go delivers the last known object wrapped in a
+// tombstone. Its key is all a delete needs.
 func unwrapDelete(obj any) any {
 	if t, ok := obj.(cache.DeletedFinalStateUnknown); ok {
 		return t.Obj
