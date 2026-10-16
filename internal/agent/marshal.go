@@ -14,31 +14,22 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
-// This file is the boundary between Kubernetes typed objects and the
-// internal delta model. Every place upstream of here speaks
-// *appsv1.Deployment / *corev1.ConfigMap; every place downstream speaks
-// delta.Key / delta.State. If we ever swap typed informers for dynamic
-// informers (Phase 2), only this file changes.
-//
-// MarshalDeployment / MarshalConfigMap are used by Add/Update handlers.
-// KeyForDeployment / KeyForConfigMap are used by Delete handlers, where
-// we only need to identify the resource to remove from the buffer.
+// This file turns typed Kubernetes objects into delta.Key / delta.State,
+// stripping everything that changes without a human changing it (ADR-0005).
+// dynamic_informers.go applies the same rules to unstructured objects.
 
-// Kind names used in delta.Keys. Centralised so the rest of the codebase
-// never sees stringly-typed kind constants.
+// Kind names used in delta.Keys.
 const (
 	KindDeployment = "Deployment"
 	KindConfigMap  = "ConfigMap"
 )
 
-// KeyForDeployment returns the delta.Key identifying d. Safe to call
-// with the live informer object; does not mutate or copy.
+// KeyForDeployment returns the delta.Key identifying d.
 func KeyForDeployment(d *appsv1.Deployment) delta.Key {
 	return delta.Key{Kind: KindDeployment, Namespace: d.Namespace, Name: d.Name}
 }
 
-// KeyForConfigMap returns the delta.Key identifying cm. Safe to call
-// with the live informer object; does not mutate or copy.
+// KeyForConfigMap returns the delta.Key identifying cm.
 func KeyForConfigMap(cm *corev1.ConfigMap) delta.Key {
 	return delta.Key{Kind: KindConfigMap, Namespace: cm.Namespace, Name: cm.Name}
 }
@@ -76,9 +67,8 @@ func MarshalConfigMap(cm *corev1.ConfigMap) (delta.Key, delta.State, error) {
 	if err != nil {
 		return delta.Key{}, nil, fmt.Errorf("agent: marshal ConfigMap %s/%s: %w", cm.Namespace, cm.Name, err)
 	}
-	// ConfigMaps have no .status, so stripStatus is a no-op here; we
-	// still route through it for contract symmetry and to keep the
-	// post-marshal key order consistent across kinds.
+	// ConfigMaps have no .status; the round-trip still normalises key order
+	// to match Deployments.
 	payload, err = stripStatus(payload)
 	if err != nil {
 		return delta.Key{}, nil, fmt.Errorf("agent: strip status from ConfigMap %s/%s: %w", cm.Namespace, cm.Name, err)
@@ -126,9 +116,8 @@ var noiseAnnotationPrefixes = []string{
 //   - ResourceVersion bumps on every server-side touch, including
 //     no-op resyncs by other controllers.
 //   - ManagedFields is large and tracks SSA owners, not user intent.
-//     The manager names are extracted first and preserved as the
-//     synthetic annotation "ktm.io/managers" so blame output can show
-//     which controller or kubectl-user last touched the resource.
+//     The manager names are extracted first and preserved as
+//     types.ManagersAnnotation, so blame can show which tools touched it.
 //   - Generation increments on every spec change — but the spec change
 //     itself is the signal, so the generation field is redundant noise.
 //   - Known controller-owned annotations (see noiseAnnotationKeys and
@@ -143,8 +132,7 @@ func sanitiseMeta(m *metav1.ObjectMeta) {
 	m.ManagedFields = nil
 	m.Generation = 0
 	stripNoiseAnnotations(m)
-	// Inject the extracted manager names AFTER noise stripping so they
-	// are never accidentally removed by stripNoiseAnnotations.
+	// After stripping, so the synthetic annotation can never be removed.
 	if len(managers) > 0 {
 		if m.Annotations == nil {
 			m.Annotations = make(map[string]string)
@@ -153,9 +141,7 @@ func sanitiseMeta(m *metav1.ObjectMeta) {
 	}
 }
 
-// extractManagers returns a sorted, de-duplicated list of the manager
-// field values found in managedFields entries. An empty slice is
-// returned when no entries exist or all managers are empty strings.
+// extractManagers returns the sorted, de-duplicated non-empty manager names.
 func extractManagers(mf []metav1.ManagedFieldsEntry) []string {
 	if len(mf) == 0 {
 		return nil
