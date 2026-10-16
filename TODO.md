@@ -31,6 +31,9 @@ Items move to issues or the CHANGELOG as they are picked up.
       the agent could not reach the API server. Untested; verify before
       claiming IPv6 support.
 - [ ] No warning when the storage volume passes 80% full.
+- [ ] A `networkPolicy.healthIngressFrom` value to narrow who can reach the
+      health port, once tested against the CNIs we support: an untested
+      selector can block kubelet probes and look like a crash-looping agent.
 - [ ] No cosign signature or SBOM on releases; checksums only.
 - [ ] Chart has no `icon` (the only `helm lint` finding) and no image digest
       pinning.

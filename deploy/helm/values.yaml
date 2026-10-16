@@ -45,8 +45,8 @@ storage:
   # storage.size / storageClassName / retain are ignored.
   existingClaim: ""
 
-# Health endpoints for Kubernetes probes (/healthz liveness, /readyz readiness).
 agent:
+  # Serves /healthz (liveness probe), /readyz (readiness probe) and /metrics.
   health:
     enabled: true
     port: 8080
@@ -105,11 +105,6 @@ rbac:
 # be aware of: where the CNI enforces this policy, /healthz, /readyz and
 # /metrics are reachable from anywhere in the cluster. None of them serve
 # snapshot data.
-#
-# Restricting that source is a values knob worth adding later
-# (networkPolicy.healthIngressFrom), once it has been tested against the CNIs
-# we intend to support. Imposing a selector untested would trade a small
-# exposure for probe failures that look like a crash-looping agent.
 #
 # Egress: DNS is called out explicitly and everything else is allowed except
 # the cloud metadata service (169.254.169.254); a stricter "only
