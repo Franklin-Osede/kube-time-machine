@@ -31,13 +31,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
+	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
-
-// KTMManagedAnnotation is the synthetic annotation key injected by KTM
-// to record which SSA managers last touched a resource.
-// Defined here as a package-level constant so blame and diff can reference
-// it without importing internal/agent.
-const KTMManagedAnnotation = "ktm.io/managers"
 
 // DefaultDynamicGVRs is the default set of resources watched by
 // DynamicInformers. These complement the Deployments and ConfigMaps covered
@@ -240,7 +235,7 @@ func marshalUnstructured(u *unstructured.Unstructured) (delta.Key, delta.State, 
 // sanitiseUnstructuredMeta removes noise fields from the metadata section of
 // an unstructured object, applying the same rules as sanitiseMeta on the
 // typed path. Manager names are extracted from managedFields before it is
-// cleared and preserved as the synthetic annotation "ktm.io/managers".
+// cleared and preserved as types.ManagersAnnotation.
 func sanitiseUnstructuredMeta(u *unstructured.Unstructured) {
 	// Extract manager names before clearing managedFields.
 	// GetManagedFields() is implemented by Unstructured and returns
@@ -264,28 +259,13 @@ func sanitiseUnstructuredMeta(u *unstructured.Unstructured) {
 	// Inject manager names AFTER stripping so the synthetic annotation
 	// is never accidentally removed by isNoiseAnnotationKey.
 	if len(managers) > 0 {
-		anns[KTMManagedAnnotation] = strings.Join(managers, ",")
+		anns[types.ManagersAnnotation] = strings.Join(managers, ",")
 	}
 	if len(anns) == 0 {
 		u.SetAnnotations(nil)
 	} else {
 		u.SetAnnotations(anns)
 	}
-}
-
-// isNoiseAnnotationKey returns true if the annotation key matches a known
-// noise key or a noise prefix. Mirrors the logic in marshal.go so both
-// the typed and dynamic paths apply identical filtering.
-func isNoiseAnnotationKey(key string) bool {
-	if _, exact := noiseAnnotationKeys[key]; exact {
-		return true
-	}
-	for _, prefix := range noiseAnnotationPrefixes {
-		if strings.HasPrefix(key, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // ParseGVR parses a "resource[.group]/version" string into a

@@ -13,6 +13,14 @@ import "time"
 // choose other formats; consumers MUST treat the value as opaque.
 type SnapshotID string
 
+// ManagersAnnotation is the synthetic annotation the agent writes into every
+// recorded object: a sorted, comma-separated list of the field managers
+// (kubectl, helm, kube-controller-manager...) seen in its managedFields,
+// which are themselves stripped. `ktm blame` reads it. Part of the on-disk
+// format: renaming it would hide the managers of every snapshot already
+// written.
+const ManagersAnnotation = "ktm.io/managers"
+
 // SnapshotKind discriminates between a full reference snapshot and an
 // incremental delta. A storage backend's Get must consult this field to
 // decide which payload type to return.

@@ -227,5 +227,5 @@ func managersFromState(s delta.State) string {
 	if err := json.Unmarshal(s, &obj); err != nil {
 		return ""
 	}
-	return obj.Metadata.Annotations["ktm.io/managers"]
+	return obj.Metadata.Annotations[types.ManagersAnnotation]
 }

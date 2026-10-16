@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
+	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
 // This file is the boundary between Kubernetes typed objects and the
@@ -148,7 +149,7 @@ func sanitiseMeta(m *metav1.ObjectMeta) {
 		if m.Annotations == nil {
 			m.Annotations = make(map[string]string)
 		}
-		m.Annotations["ktm.io/managers"] = strings.Join(managers, ",")
+		m.Annotations[types.ManagersAnnotation] = strings.Join(managers, ",")
 	}
 }
 
@@ -173,6 +174,20 @@ func extractManagers(mf []metav1.ManagedFieldsEntry) []string {
 	return out
 }
 
+// isNoiseAnnotationKey reports whether key is controller-owned noise. The
+// typed and dynamic paths both use it, so they filter identically.
+func isNoiseAnnotationKey(key string) bool {
+	if _, exact := noiseAnnotationKeys[key]; exact {
+		return true
+	}
+	for _, prefix := range noiseAnnotationPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // stripNoiseAnnotations removes controller-owned annotations in-place.
 // Called only on a DeepCopy, so the informer cache is never mutated.
 func stripNoiseAnnotations(m *metav1.ObjectMeta) {
@@ -180,15 +195,8 @@ func stripNoiseAnnotations(m *metav1.ObjectMeta) {
 		return
 	}
 	for key := range m.Annotations {
-		if _, exact := noiseAnnotationKeys[key]; exact {
+		if isNoiseAnnotationKey(key) {
 			delete(m.Annotations, key)
-			continue
-		}
-		for _, prefix := range noiseAnnotationPrefixes {
-			if strings.HasPrefix(key, prefix) {
-				delete(m.Annotations, key)
-				break
-			}
 		}
 	}
 	// Normalise: if stripping left an empty map, nil it so two objects
