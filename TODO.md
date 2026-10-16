@@ -27,6 +27,15 @@ Items move to issues or the CHANGELOG as they are picked up.
 
 ## Operational
 
+- [ ] The typed informers have no initial-sync timeout, while the dynamic ones
+      give up after two minutes. With RBAC denied, the agent stays
+      Running-but-not-Ready indefinitely instead of failing with a clear
+      error. Decide on one behaviour; a timeout must allow for slow initial
+      lists on large clusters (the runbook cites 60–90 s).
+- [ ] Excluded namespaces are filtered after the informers cache them, so
+      their objects still cost memory. A `metadata.namespace!=` field selector
+      on the list/watch would skip them at the API server. Measure first.
+
 - [ ] NetworkPolicy egress is IPv4-only (`0.0.0.0/0`): on an IPv6-only cluster
       the agent could not reach the API server. Untested; verify before
       claiming IPv6 support.

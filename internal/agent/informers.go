@@ -15,11 +15,8 @@ import (
 
 // Informers wires Kubernetes shared informers for Deployments and
 // ConfigMaps into a Buffer. Every Add / Update event is marshalled and
-// upserted; every Delete event removes the corresponding Key.
-//
-// Scope-lock: only Deployments and ConfigMaps are watched. Adding more
-// kinds in Phase 2 means adding new informers here and a marshal
-// function in marshal.go — nothing else changes.
+// upserted; every Delete event removes the corresponding Key. Other kinds
+// are recorded by DynamicInformers.
 type Informers struct {
 	factory   informers.SharedInformerFactory
 	deployInf cache.SharedIndexInformer
@@ -68,48 +65,37 @@ func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration
 	return in
 }
 
-// Start launches the informer goroutines and blocks until ctx is
-// cancelled. It returns an error only if the initial cache sync fails;
-// after sync, the underlying informers run until ctx ends.
+// Start runs the informers and blocks until ctx is cancelled, returning
+// ctx.Err().
 //
-// Callers MUST call Start before relying on Buffer contents. Without
-// sync, the buffer reflects only events received so far, which may be
-// a partial view.
+// There is no sync timeout. If the initial list never completes — RBAC
+// denies it, or the API server is unreachable — the informers retry
+// forever, Ready never closes, and the failure surfaces as /readyz failing
+// plus client-go's own list errors in the log.
 func (i *Informers) Start(ctx context.Context) error {
 	i.factory.Start(ctx.Done())
+	// WaitForCacheSync returns false only when ctx is done.
 	if !cache.WaitForCacheSync(ctx.Done(), i.deployInf.HasSynced, i.cmInf.HasSynced) {
-		// WaitForCacheSync returns false in two distinct cases: the
-		// context was cancelled, or sync genuinely failed. Disambiguate
-		// so callers can distinguish a shutdown from a real error.
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		return fmt.Errorf("agent: informer cache sync failed")
+		return ctx.Err()
 	}
-	// Signal readiness so the Snapshotter can take its first flush against
-	// a complete buffer. Closed exactly once, only on a successful sync —
-	// callers waiting on Ready() will keep waiting if sync fails or the
-	// context is cancelled first, which is the correct behaviour (no
-	// partial snapshot is ever taken).
+	// Closed only after a complete sync, so nothing waiting on Ready can
+	// persist a partial view of the cluster.
 	close(i.ready)
 	slog.Info("agent: informer caches synced")
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-// Ready returns a channel that is closed once the initial informer cache
-// sync has completed successfully. It is the synchronisation point the
-// Snapshotter waits on before its first flush; see the contract note on
-// Start. The channel is never closed if Start exits due to a sync failure
-// or a cancelled context.
+// Ready returns a channel closed once the initial cache sync completes. The
+// Snapshotter waits on it before its first flush. It never closes if ctx is
+// cancelled first.
 func (i *Informers) Ready() <-chan struct{} {
 	return i.ready
 }
 
-// isExcluded reports whether ns is in the exclude list. Events from
-// excluded namespaces are dropped before reaching the buffer, preventing
-// kube-system / kube-public / kube-node-lease churn from appearing in
-// snapshots and blame output.
+// isExcluded reports whether ns is in the exclude list. The informers still
+// list and cache excluded namespaces; their events are dropped here, before
+// the buffer.
 func (i *Informers) isExcluded(ns string) bool {
 	_, ok := i.excludeNS[ns]
 	return ok
