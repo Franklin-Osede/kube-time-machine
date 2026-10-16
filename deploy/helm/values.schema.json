@@ -1,30 +1,58 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "kube-time-machine values",
-  "description": "Rejects at `helm install` time the values that the agent would otherwise only reject at startup, turning a CrashLoopBackOff into an install error.",
+  "description": "Rejects at `helm install` time the values that the agent would otherwise only reject at startup, turning a CrashLoopBackOff into an install error. Unknown keys are rejected too, so a typo fails instead of silently keeping the default.",
   "type": "object",
   "properties": {
-    "nameOverride": { "type": "string" },
-    "fullnameOverride": { "type": "string" },
-
+    "global": {
+      "type": "object"
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
     "image": {
       "type": "object",
       "properties": {
-        "repository": { "type": "string", "minLength": 1 },
-        "tag": { "type": "string" },
-        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        },
         "pullSecrets": {
           "type": "array",
           "items": {
             "type": "object",
-            "properties": { "name": { "type": "string", "minLength": 1 } },
-            "required": ["name"]
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
           }
         }
       },
-      "required": ["repository"]
+      "required": [
+        "repository"
+      ],
+      "additionalProperties": false
     },
-
     "snapshot": {
       "type": "object",
       "description": "Mirrors cmd/agent validateConfig. Keep the two in step.",
@@ -49,19 +77,27 @@
           "minimum": 0,
           "description": "0 keeps everything forever. Negative is rejected."
         }
-      }
+      },
+      "additionalProperties": false
     },
-
     "storage": {
       "type": "object",
       "properties": {
-        "create": { "type": "boolean" },
+        "create": {
+          "type": "boolean"
+        },
         "size": {
           "type": "string",
           "pattern": "^[0-9]+(\\.[0-9]+)?(E|P|T|G|M|k|Ei|Pi|Ti|Gi|Mi|Ki)?$",
           "description": "Kubernetes quantity, e.g. 10Gi."
         },
-        "storageClassName": { "type": "string" },
+        "storageClassName": {
+          "type": "string",
+          "not": {
+            "pattern": "^REPLACE_"
+          },
+          "description": "Empty uses the cluster default. A REPLACE_ placeholder (values-prod.yaml) is rejected so it cannot leave the PVC pending on a class that does not exist."
+        },
         "retain": {
           "type": "boolean",
           "description": "Annotate the PVC with helm.sh/resource-policy: keep so `helm uninstall` does not destroy the recorded history."
@@ -70,22 +106,32 @@
           "type": "string",
           "description": "Bind to an existing PVC instead of creating one. When set, no PVC is created and size/storageClassName/retain are ignored."
         }
-      }
+      },
+      "additionalProperties": false
     },
-
     "agent": {
       "type": "object",
       "properties": {
         "health": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
-          }
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          },
+          "additionalProperties": false
         },
         "excludeNamespaces": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "watchResources": {
           "type": "array",
@@ -95,45 +141,83 @@
             "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?/[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
           }
         },
-        "resources": { "type": "object" }
-      }
+        "resources": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
     },
-
     "serviceAccount": {
       "type": "object",
       "properties": {
-        "create": { "type": "boolean" },
-        "name": { "type": "string" },
-        "annotations": { "type": "object" }
-      }
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
     },
-
     "rbac": {
       "type": "object",
       "properties": {
-        "create": { "type": "boolean" },
+        "create": {
+          "type": "boolean"
+        },
         "extraRules": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "apiGroups": { "type": "array", "items": { "type": "string" } },
-              "resources": { "type": "array", "items": { "type": "string" } },
+              "apiGroups": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "resources": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
               "verbs": {
                 "type": "array",
-                "items": { "type": "string", "enum": ["get", "list", "watch"] },
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "get",
+                    "list",
+                    "watch"
+                  ]
+                },
                 "description": "Read-only only. The agent never writes, and a mutating verb here would silently widen a cluster-scoped role."
               }
             },
-            "required": ["apiGroups", "resources", "verbs"]
+            "required": [
+              "apiGroups",
+              "resources",
+              "verbs"
+            ],
+            "additionalProperties": false
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
-
     "networkPolicy": {
       "type": "object",
-      "properties": { "enabled": { "type": "boolean" } }
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
     }
-  }
+  },
+  "additionalProperties": false
 }
