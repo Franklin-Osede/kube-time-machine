@@ -612,3 +612,49 @@ func mustList(t *testing.T, store storage.Store) []types.SnapshotMeta {
 	}
 	return metas
 }
+
+// Burst flushing had no test. Real changes past the threshold must flush
+// well before the periodic tick; byte-identical upserts (status churn after
+// sanitisation) must not.
+func TestSnapshotter_BurstFlushesOnRealChangesOnly(t *testing.T) {
+	buf := agent.NewBuffer()
+	s := agent.NewSnapshotter(buf, newFSStore(t), time.Hour, 12).
+		WithBurstFlush(3, 5*time.Millisecond)
+
+	ready := make(chan struct{})
+	close(ready)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx, ready) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	flushes := func() int { f, d := s.FlushCounts(); return f + d }
+	waitFor := func(want int) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for flushes() < want {
+			if time.Now().After(deadline) {
+				t.Fatalf("flushes = %d, want %d", flushes(), want)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	waitFor(1) // the initial flush
+
+	api := k("Deployment", "default", "api")
+	buf.Upsert(api, delta.State("v1"))
+	for range 10 {
+		buf.Upsert(api, delta.State("v1"))
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := flushes(); got != 1 {
+		t.Fatalf("identical upserts triggered a burst flush: flushes = %d, want 1", got)
+	}
+
+	buf.Upsert(api, delta.State("v2"))
+	buf.Upsert(api, delta.State("v3"))
+	waitFor(2)
+}
