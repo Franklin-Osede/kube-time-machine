@@ -29,8 +29,8 @@ import (
 // Reactive flush: when `burstThreshold` > 0, Run also polls the buffer's
 // pending-change counter every `burstPollInterval`. If the counter exceeds
 // `burstThreshold` before the normal tick fires, an early flush is triggered.
-// This preserves intra-interval granularity during deploy storms (e.g. 20
-// resources changed in 30 seconds) without altering the normal cadence.
+// This keeps a deploy storm from collapsing into one delta without altering
+// the normal cadence.
 // Set burstThreshold = 0 to disable reactive flushing.
 //
 // Retention / GC: when `retainDays` > 0, a GC pass runs before every flush
@@ -82,7 +82,7 @@ func NewSnapshotter(buf *Buffer, store storage.Store, interval time.Duration, fu
 		store:             store,
 		interval:          interval,
 		fullEvery:         fullEvery,
-		burstThreshold:    50, // flush early after 50 changes in one poll window
+		burstThreshold:    50, // changes since the last flush; main.go overrides it
 		burstPollInterval: 10 * time.Second,
 		now:               time.Now,
 	}
@@ -115,13 +115,10 @@ func (s *Snapshotter) WithClock(now func() time.Time) *Snapshotter {
 	return s
 }
 
-// Flush takes the current buffer state and persists it. It returns the
-// metadata of the snapshot that was written (full or delta). Flush is
-// safe to call concurrently with itself; the internal lock serializes
-// access to prevState / prevID / flushNum.
-//
-// Flush is exposed (not just used internally by Run) so the eventual CLI
-// can implement a "force flush now" command on top.
+// Flush takes the current buffer state and persists it, returning the
+// metadata of the snapshot written (full or delta). It is safe to call
+// concurrently with itself. Run calls it on schedule; main.go calls it once
+// more at shutdown.
 func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,10 +204,9 @@ func (s *Snapshotter) recordFlushOutcome(err error) {
 	s.consecutiveFailures = 0
 }
 
-// GC runs the snapshot retention/GC algorithm immediately and blocks until
-// it completes. It is identical to the gc pass that Run triggers after each
-// full flush, but exposed so callers (tests, a future "ktm gc" CLI command)
-// can invoke it on demand. Returns nil when retainDays==0 (GC disabled).
+// GC runs the retention pass immediately and blocks until it completes. It
+// is the same pass Run makes before every flush attempt; tests call it
+// directly. A no-op when retainDays is 0.
 func (s *Snapshotter) GC(ctx context.Context) { s.gc(ctx) }
 
 // gc runs the snapshot retention / garbage-collection algorithm.
@@ -291,10 +287,8 @@ func (s *Snapshotter) gc(ctx context.Context) {
 // skip the gate (used by tests that drive Flush directly). If ctx is
 // cancelled while waiting, Run returns without ever flushing.
 //
-// Reactive flush: when burstThreshold > 0, Run also polls buf.PendingChanges()
-// every burstPollInterval. If the counter reaches the threshold before the
-// normal tick, an early flush is triggered and the tick timer is reset, so
-// we don't double-flush within the same window.
+// Reactive flush: see the type comment. After a burst flush the periodic
+// ticker is reset, so a tick does not follow it moments later.
 func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 	if ready != nil {
 		select {
@@ -308,11 +302,15 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 	}
 
 	doFlush := func(reason string) {
-		s.buf.DrainChanges() // reset counter before flush so the next window starts clean
-		// Run GC before every flush attempt. This ensures old snapshots are
-		// freed even when the subsequent full write fails (e.g. ENOSPC), which
-		// would otherwise deadlock the agent because GC only ran post-success.
-		// GC is a no-op when nothing is old enough to delete.
+		// Drained before the attempt, deliberately, even though a failed flush
+		// then forgets the burst. The changes themselves are not lost: they
+		// stay in the buffer and go out with the next successful flush.
+		// Restoring the count on failure would instead re-trigger a burst
+		// every poll interval for as long as storage keeps failing, turning
+		// one ENOSPC into a retry loop; the periodic tick is the back-off.
+		s.buf.DrainChanges()
+		// GC before the write, so a full volume (ENOSPC) can free space for
+		// the very flush that needs it.
 		s.gc(ctx)
 		if _, err := s.Flush(ctx); err != nil {
 			s.recordFlushOutcome(err)
@@ -330,15 +328,14 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
-	// burstTicker drives the burst-detection poll. When burst flushing is
-	// disabled (threshold == 0) we still create the ticker but never act on
-	// it — the overhead is negligible and it simplifies the select.
-	burstInterval := s.burstPollInterval
-	if burstInterval <= 0 {
-		burstInterval = s.interval // fall back to normal interval, effectively a no-op
+	// With burst flushing disabled burstC stays nil, and a nil channel never
+	// fires in a select.
+	var burstC <-chan time.Time
+	if s.burstThreshold > 0 && s.burstPollInterval > 0 {
+		burstTicker := time.NewTicker(s.burstPollInterval)
+		defer burstTicker.Stop()
+		burstC = burstTicker.C
 	}
-	burstTicker := time.NewTicker(burstInterval)
-	defer burstTicker.Stop()
 
 	for {
 		select {
@@ -347,17 +344,14 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 
 		case <-ticker.C:
 			doFlush("periodic")
-			// Reset the burst ticker so a burst flush immediately after a
-			// periodic flush doesn't fire again within burstPollInterval.
-			burstTicker.Reset(burstInterval)
 
-		case <-burstTicker.C:
-			if s.burstThreshold > 0 && s.buf.PendingChanges() >= s.burstThreshold {
+		case <-burstC:
+			if pending := s.buf.PendingChanges(); pending >= s.burstThreshold {
 				slog.Info("snapshotter: burst threshold reached, flushing early",
-					"pending", s.buf.PendingChanges(), "threshold", s.burstThreshold)
+					"pending", pending, "threshold", s.burstThreshold)
 				doFlush("burst")
-				// Reset the periodic ticker so we don't double-flush within
-				// the same normal interval.
+				// Restart the periodic window so a tick does not follow the
+				// burst flush moments later.
 				ticker.Reset(s.interval)
 			}
 		}

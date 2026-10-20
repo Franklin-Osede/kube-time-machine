@@ -19,9 +19,6 @@ Items move to issues or the CHANGELOG as they are picked up.
       store instead of refusing it. Add a version marker written by the agent
       and checked by `OpenForRead`, with an ADR, before the stable tag.
 
-- [ ] A failed flush loses the burst signal: `DrainChanges()` runs before
-      `Flush` in `internal/agent/snapshot.go`, so burst detection is disarmed
-      until the next periodic tick. Degrades responsiveness, not data.
 - [ ] `idFromTime` has millisecond precision and no collision guard. Safe at
       the 300 s default; reachable at short intervals.
 
