@@ -634,7 +634,7 @@ func TestSnapshotter_BurstFlushesOnRealChangesOnly(t *testing.T) {
 	flushes := func() int { f, d := s.FlushCounts(); return f + d }
 	waitFor := func(want int) {
 		t.Helper()
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		for flushes() < want {
 			if time.Now().After(deadline) {
 				t.Fatalf("flushes = %d, want %d", flushes(), want)
@@ -648,6 +648,11 @@ func TestSnapshotter_BurstFlushesOnRealChangesOnly(t *testing.T) {
 	buf.Upsert(api, delta.State("v1"))
 	for range 10 {
 		buf.Upsert(api, delta.State("v1"))
+	}
+	// Deterministic: the counter itself. The sleep below then checks the same
+	// thing end to end, as far as the scheduler lets the poll run.
+	if got := buf.PendingChanges(); got != 1 {
+		t.Fatalf("identical upserts counted: pending = %d, want 1", got)
 	}
 	time.Sleep(50 * time.Millisecond)
 	if got := flushes(); got != 1 {

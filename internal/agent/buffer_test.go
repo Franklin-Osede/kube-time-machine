@@ -165,8 +165,12 @@ func TestBuffer_PendingChangesCountsOnlyRealChanges(t *testing.T) {
 		}
 	}
 
-	if got := b.DrainChanges(); got != 3 {
-		t.Errorf("DrainChanges = %d, want 3", got)
+	snap, drained := b.SnapshotAndDrain()
+	if drained != 3 {
+		t.Errorf("SnapshotAndDrain count = %d, want 3", drained)
+	}
+	if len(snap) != 0 {
+		t.Errorf("SnapshotAndDrain state = %v, want empty after the final delete", snap)
 	}
 	if got := b.PendingChanges(); got != 0 {
 		t.Errorf("PendingChanges after drain = %d, want 0", got)

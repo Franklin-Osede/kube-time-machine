@@ -24,7 +24,7 @@ import (
 // state. An Upsert with byte-identical State — a rollout's status-only
 // updates, after sanitisation — does not count, so noise alone cannot trigger
 // a burst flush or inflate ktm_buffer_pending_changes. The Snapshotter
-// reads it with PendingChanges and resets it with DrainChanges.
+// reads it with PendingChanges and resets it with SnapshotAndDrain.
 type Buffer struct {
 	mu             sync.RWMutex
 	state          delta.Snapshot
@@ -59,22 +59,27 @@ func (b *Buffer) Delete(k delta.Key) {
 }
 
 // PendingChanges returns the number of state-changing Upsert/Delete calls
-// since the last DrainChanges. Safe to call concurrently.
+// since the last SnapshotAndDrain. Safe to call concurrently.
 func (b *Buffer) PendingChanges() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return b.pendingChanges
 }
 
-// DrainChanges atomically reads and resets the pending-change counter. The
-// Snapshotter calls it just before each flush attempt to restart the burst
-// window.
-func (b *Buffer) DrainChanges() int {
+// SnapshotAndDrain returns a copy of the state, as Snapshot does, and resets
+// the change counter under the same lock, returning the count it cleared.
+// Taken together, a change is either in this copy and not counted, or
+// counted and not yet in any copy, so no change is counted twice.
+func (b *Buffer) SnapshotAndDrain() (delta.Snapshot, int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	out := make(delta.Snapshot, len(b.state))
+	for k, v := range b.state {
+		out[k] = v
+	}
 	n := b.pendingChanges
 	b.pendingChanges = 0
-	return n
+	return out, n
 }
 
 // Snapshot returns a copy of the current state. The returned map is

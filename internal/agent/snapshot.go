@@ -27,11 +27,10 @@ import (
 // at most one full snapshot + `fullEvery-1` deltas.
 //
 // Reactive flush: when `burstThreshold` > 0, Run also polls the buffer's
-// pending-change counter every `burstPollInterval`. If the counter exceeds
+// pending-change counter every `burstPollInterval`. If the counter reaches
 // `burstThreshold` before the normal tick fires, an early flush is triggered.
 // This keeps a deploy storm from collapsing into one delta without altering
-// the normal cadence.
-// Set burstThreshold = 0 to disable reactive flushing.
+// the normal cadence. A threshold or poll interval of 0 disables it.
 //
 // Retention / GC: when `retainDays` > 0, a GC pass runs before every flush
 // attempt. Running it before the write allows eligible old snapshots to free
@@ -89,8 +88,8 @@ func NewSnapshotter(buf *Buffer, store storage.Store, interval time.Duration, fu
 }
 
 // WithBurstFlush configures reactive flushing. threshold is the number of
-// pending changes that triggers an early flush; set to 0 to disable.
-// pollInterval is how often the change counter is sampled.
+// pending changes that triggers an early flush; pollInterval is how often
+// the counter is sampled. Either one at 0 disables it.
 func (s *Snapshotter) WithBurstFlush(threshold int, pollInterval time.Duration) *Snapshotter {
 	s.burstThreshold = threshold
 	s.burstPollInterval = pollInterval
@@ -123,7 +122,13 @@ func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	curr := s.buf.Snapshot()
+	// Drained with the copy, deliberately, even though a failed write then
+	// forgets the burst. The changes themselves are not lost: prevState is
+	// untouched on failure, so the next successful flush includes them.
+	// Restoring the count instead would re-trigger a burst every poll
+	// interval for as long as storage keeps failing, turning one ENOSPC into
+	// a retry loop; the periodic tick is the back-off.
+	curr, _ := s.buf.SnapshotAndDrain()
 	ts := s.now()
 
 	isFull := s.flushNum%s.fullEvery == 0
@@ -302,13 +307,6 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 	}
 
 	doFlush := func(reason string) {
-		// Drained before the attempt, deliberately, even though a failed flush
-		// then forgets the burst. The changes themselves are not lost: they
-		// stay in the buffer and go out with the next successful flush.
-		// Restoring the count on failure would instead re-trigger a burst
-		// every poll interval for as long as storage keeps failing, turning
-		// one ENOSPC into a retry loop; the periodic tick is the back-off.
-		s.buf.DrainChanges()
 		// GC before the write, so a full volume (ENOSPC) can free space for
 		// the very flush that needs it.
 		s.gc(ctx)
