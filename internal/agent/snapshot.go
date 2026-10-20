@@ -41,17 +41,17 @@ type Snapshotter struct {
 	store             storage.Store
 	interval          time.Duration
 	fullEvery         int
-	burstThreshold    int           // flush early when pending changes >= this; 0 = disabled
-	burstPollInterval time.Duration // how often to check the change counter
-	retainDays        int           // delete snapshots older than this many days; 0 = keep forever
+	burstThreshold    int
+	burstPollInterval time.Duration
+	retainDays        int
 	now               func() time.Time
 
 	mu         sync.Mutex
 	prevState  delta.Snapshot
 	prevID     types.SnapshotID
 	flushNum   int
-	flushFull  int // successful full-snapshot flushes since startup
-	flushDelta int // successful delta flushes since startup
+	flushFull  int
+	flushDelta int
 
 	healthMu            sync.RWMutex
 	lastFlushAttempt    time.Time
@@ -230,9 +230,8 @@ func (s *Snapshotter) GC(ctx context.Context) { s.gc(ctx) }
 // If no anchor exists (i.e. the oldest full snapshot is still within the
 // retention window) we do nothing — there is nothing safe to delete.
 //
-// gc acquires no internal lock of its own because it is always called from
-// a context where the caller does NOT hold s.mu. Delete calls on the store
-// are independent operations protected by the store's own lock.
+// gc takes no lock of its own: callers do not hold s.mu, and each store
+// Delete is protected by the store.
 func (s *Snapshotter) gc(ctx context.Context) {
 	if s.retainDays <= 0 {
 		return
@@ -255,8 +254,6 @@ func (s *Snapshotter) gc(ctx context.Context) {
 		}
 	}
 	if anchorIdx < 0 {
-		// No full snapshot is old enough to serve as an anchor.
-		// Nothing to delete.
 		return
 	}
 
@@ -265,9 +262,7 @@ func (s *Snapshotter) gc(ctx context.Context) {
 	for _, m := range metas[:anchorIdx] {
 		if err := s.store.Delete(ctx, m.ID); err != nil {
 			slog.Error("snapshotter: gc: delete snapshot", "id", m.ID, "err", err)
-			// Continue — best-effort; leave the store consistent for the
-			// index entries we did not touch.
-			continue
+			continue // best-effort: Delete is crash-safe per snapshot
 		}
 		deleted++
 	}
