@@ -215,7 +215,6 @@ func (s *Snapshotter) recordFlushOutcome(err error) {
 func (s *Snapshotter) GC(ctx context.Context) { s.gc(ctx) }
 
 // gc runs the snapshot retention / garbage-collection algorithm.
-// Run calls it before every flush attempt.
 //
 // Algorithm — anchor-based GC:
 //
@@ -244,9 +243,7 @@ func (s *Snapshotter) gc(ctx context.Context) {
 		slog.Error("snapshotter: gc: list snapshots", "err", err)
 		return
 	}
-	// metas is sorted by Timestamp ascending (guaranteed by Local.List).
-
-	// Find the anchor: the last full snapshot at or before cutoff.
+	// Store.List promises Timestamp order, which the anchor search relies on.
 	anchorIdx := -1
 	for i, m := range metas {
 		if m.Kind == types.KindFull && !m.Timestamp.After(cutoff) {
@@ -257,7 +254,6 @@ func (s *Snapshotter) gc(ctx context.Context) {
 		return
 	}
 
-	// Delete everything strictly before the anchor.
 	deleted := 0
 	for _, m := range metas[:anchorIdx] {
 		if err := s.store.Delete(ctx, m.ID); err != nil {
