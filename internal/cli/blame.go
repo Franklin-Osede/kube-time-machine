@@ -81,7 +81,7 @@ func newBlameCmd(opts *Options) *cobra.Command {
 func runBlame(out io.Writer, storageDir string, target delta.Key, namespace string) error {
 	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
-		return errf("open storage at %s: %w", storageDir, err)
+		return fmt.Errorf("open storage at %s: %w", storageDir, err)
 	}
 
 	// If --namespace was given and the target key has no namespace of its
@@ -134,7 +134,7 @@ func runBlame(out io.Writer, storageDir string, target delta.Key, namespace stri
 func computeBlame(ctx context.Context, store storage.Store, target delta.Key) ([]blameEntry, error) {
 	metas, err := store.List(ctx)
 	if err != nil {
-		return nil, errf("list snapshots: %w", err)
+		return nil, fmt.Errorf("list snapshots: %w", err)
 	}
 
 	var (
@@ -163,7 +163,7 @@ func computeBlame(ctx context.Context, store storage.Store, target delta.Key) ([
 
 		loaded, err := store.Get(ctx, meta.ID)
 		if err != nil {
-			return nil, errf("load snapshot %s: %w", meta.ID, err)
+			return nil, fmt.Errorf("load snapshot %s: %w", meta.ID, err)
 		}
 		switch loaded.Meta.Kind {
 		case types.KindFull:
@@ -171,7 +171,7 @@ func computeBlame(ctx context.Context, store storage.Store, target delta.Key) ([
 		case types.KindDelta:
 			running = delta.Apply(running, loaded.Delta)
 		default:
-			return nil, errf("snapshot %s has unknown kind %q", meta.ID, loaded.Meta.Kind)
+			return nil, fmt.Errorf("snapshot %s has unknown kind %q", meta.ID, loaded.Meta.Kind)
 		}
 
 		curSt, curPres := running[target]

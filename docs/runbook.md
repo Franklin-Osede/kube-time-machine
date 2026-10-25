@@ -139,9 +139,9 @@ If you're in an automated rollback scenario with frequent conflicts, the resourc
 ## Scenario 5: `ktm rollback` returns 404 — resource no longer exists
 
 ```
-Deployment/default/api no longer exists in the cluster. Rollback will not
-recreate it, because a deliberate deletion must not be silently undone.
-Re-run with --allow-create to recreate it from snapshot.
+Error: Deployment/default/api no longer exists in the cluster. Rollback will
+not recreate it, because a deliberate deletion must not be silently undone.
+Re-run with --allow-create to recreate it from snapshot
 ```
 
 Rollback stops rather than recreating. Deleting something is usually deliberate,

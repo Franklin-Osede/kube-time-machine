@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
@@ -15,21 +14,19 @@ type Options struct {
 	StorageDir string
 }
 
-// NewRootCmd builds the top-level cobra command. It does not call
-// cmd.Execute — that's the caller's job in cmd/ktm/main.go. The version
-// string is plumbed in from cmd/ktm/main.go so the linker-stamped value
-// (-X main.version=...) reaches cobra's built-in Version field, which
-// powers `ktm --version`.
+// NewRootCmd builds the ktm command tree without executing it. version is
+// the linker-stamped value from cmd/ktm and backs `ktm --version`.
 func NewRootCmd(version string) *cobra.Command {
 	opts := &Options{}
 
 	cmd := &cobra.Command{
-		Use:           "ktm",
-		Short:         "Git blame & time-travel for your Kubernetes cluster",
-		Long:          "ktm reads the snapshot history recorded by ktm-agent: list snapshots, reconstruct the state at any point, diff two points in time, blame a resource's changes, and roll a resource back.",
-		Version:       version,
-		SilenceUsage:  true,
-		SilenceErrors: false,
+		Use:     "ktm",
+		Short:   "Git blame & time-travel for your Kubernetes cluster",
+		Long:    "ktm reads the snapshot history recorded by ktm-agent: list snapshots, reconstruct the state at any point, diff two points in time, blame a resource's changes, and roll a resource back.",
+		Version: version,
+		// A runtime error (missing snapshot, conflict) prints just the error,
+		// not the usage text, which only helps with a mistyped command.
+		SilenceUsage: true,
 	}
 
 	cmd.PersistentFlags().StringVar(&opts.StorageDir, "storage-dir", defaultStorageDir(),
@@ -52,11 +49,4 @@ func defaultStorageDir() string {
 		return filepath.Join(home, ".ktm", "data")
 	}
 	return "."
-}
-
-// errf is a tiny helper to format command errors consistently — callers
-// inside subcommands return errf("...", ...) so cobra prints "Error: ..."
-// without leaking internal package names.
-func errf(format string, a ...any) error {
-	return fmt.Errorf(format, a...)
 }

@@ -380,7 +380,7 @@ func TestRunRollback_UnknownKindErrors(t *testing.T) {
 	// dispatch logic by calling the helper that would reject the kind.
 	// In practice the unsupported-kind error is raised in runRollback;
 	// here we just assert the message format the user would see.
-	err := errf("rollback supports only Deployment and ConfigMap in MVP (got %q)", "Service")
+	err := fmt.Errorf("rollback supports only Deployment and ConfigMap in MVP (got %q)", "Service")
 	if !strings.Contains(err.Error(), "Deployment and ConfigMap") {
 		t.Errorf("unexpected error format: %v", err)
 	}

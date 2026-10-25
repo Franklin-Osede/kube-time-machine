@@ -40,11 +40,11 @@ func newSnapshotListCmd(opts *Options) *cobra.Command {
 func runSnapshotList(out io.Writer, storageDir string) error {
 	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
-		return errf("open storage at %s: %w", storageDir, err)
+		return fmt.Errorf("open storage at %s: %w", storageDir, err)
 	}
 	metas, err := store.List(context.Background())
 	if err != nil {
-		return errf("list snapshots: %w", err)
+		return fmt.Errorf("list snapshots: %w", err)
 	}
 	if len(metas) == 0 {
 		fmt.Fprintf(out, "no snapshots in %s\n", storageDir)
@@ -83,7 +83,7 @@ func newSnapshotShowCmd(opts *Options) *cobra.Command {
 func runSnapshotShow(out io.Writer, storageDir string, id types.SnapshotID, keyFilter string) error {
 	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
-		return errf("open storage at %s: %w", storageDir, err)
+		return fmt.Errorf("open storage at %s: %w", storageDir, err)
 	}
 	snap, err := reconstruct(context.Background(), store, id)
 	if err != nil {
@@ -97,7 +97,7 @@ func runSnapshotShow(out io.Writer, storageDir string, id types.SnapshotID, keyF
 		}
 		state, ok := snap[k]
 		if !ok {
-			return errf("resource %s not found in snapshot %s", keyFilter, id)
+			return fmt.Errorf("resource %s not found in snapshot %s", keyFilter, id)
 		}
 		return printPrettyJSON(out, state)
 	}
@@ -123,7 +123,7 @@ func runSnapshotShow(out io.Writer, storageDir string, id types.SnapshotID, keyF
 func parseKeyFilter(s string) (delta.Key, error) {
 	parts := strings.SplitN(s, "/", 3)
 	if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
-		return delta.Key{}, errf("--key must be Kind/Namespace/Name (got %q)", s)
+		return delta.Key{}, fmt.Errorf("--key must be Kind/Namespace/Name (got %q)", s)
 	}
 	return delta.Key{Kind: normalizeKind(parts[0]), Namespace: parts[1], Name: parts[2]}, nil
 }

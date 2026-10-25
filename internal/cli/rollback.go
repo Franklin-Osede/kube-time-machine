@@ -50,7 +50,7 @@ func newRollbackCmd(opts *Options) *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if snapshotID == "" {
-				return errf("--to <snapshot-id> is required")
+				return fmt.Errorf("--to <snapshot-id> is required")
 			}
 			target, err := parseKeyFilter(args[0])
 			if err != nil {
@@ -79,7 +79,7 @@ func runRollback(
 ) error {
 	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
-		return errf("open storage at %s: %w", storageDir, err)
+		return fmt.Errorf("open storage at %s: %w", storageDir, err)
 	}
 	ctx := context.Background()
 
@@ -89,7 +89,7 @@ func runRollback(
 	}
 	payload, ok := snap[target]
 	if !ok {
-		return errf("resource %s is not present in snapshot %s", keyString(target), snapshotID)
+		return fmt.Errorf("resource %s is not present in snapshot %s", keyString(target), snapshotID)
 	}
 
 	client, clusterTarget, err := kubeclient.NewClientForContext(kubeconfig, kubeContext)
@@ -114,7 +114,7 @@ func runRollback(
 	case agent.KindConfigMap:
 		return rollbackConfigMap(ctx, out, in, client, target, payload, autoYes, allowCreate)
 	default:
-		return errf("rollback supports only Deployment and ConfigMap in MVP (got %q)", target.Kind)
+		return fmt.Errorf("rollback supports only Deployment and ConfigMap in MVP (got %q)", target.Kind)
 	}
 }
 
@@ -137,12 +137,12 @@ func rollbackDeployment(
 	live, err := api.Get(ctx, target.Name, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) {
 		if !allowCreate {
-			return errf("%s no longer exists in the cluster. Rollback will not recreate it, because a deliberate deletion must not be silently undone. Re-run with --allow-create to recreate it from snapshot.", keyString(target))
+			return fmt.Errorf("%s no longer exists in the cluster. Rollback will not recreate it, because a deliberate deletion must not be silently undone. Re-run with --allow-create to recreate it from snapshot", keyString(target))
 		}
 		return createDeployment(ctx, out, in, api, target, payload, autoYes)
 	}
 	if err != nil {
-		return errf("get Deployment %s: %w", keyString(target), err)
+		return fmt.Errorf("get Deployment %s: %w", keyString(target), err)
 	}
 
 	// Capture the ResourceVersion observed at preview time. We will reuse
@@ -160,7 +160,7 @@ func rollbackDeployment(
 	// about in noise at the exact moment they give informed consent.
 	_, beforeBytes, err := agent.MarshalDeployment(live)
 	if err != nil {
-		return errf("render preview for %s: %w", keyString(target), err)
+		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
 	if !showPreviewAndConfirm(out, in, target, beforeBytes, payload, autoYes) {
 		return nil
@@ -168,7 +168,7 @@ func rollbackDeployment(
 
 	var targetDep appsv1.Deployment
 	if err := json.Unmarshal(payload, &targetDep); err != nil {
-		return errf("unmarshal target Deployment payload: %w", err)
+		return fmt.Errorf("unmarshal target Deployment payload: %w", err)
 	}
 	// Strip server-owned metadata that the snapshot inherited. sanitiseMeta
 	// in the agent (ADR-0005) deliberately keeps UID and CreationTimestamp
@@ -187,9 +187,9 @@ func rollbackDeployment(
 
 	if _, err := api.Update(ctx, &targetDep, metav1.UpdateOptions{}); err != nil {
 		if k8serrors.IsConflict(err) {
-			return errf("rollback rejected: %s changed in the cluster between preview and apply. Re-run `ktm rollback` to see the new state and confirm again.", keyString(target))
+			return fmt.Errorf("rollback rejected: %s changed in the cluster between preview and apply. Re-run `ktm rollback` to see the new state and confirm again", keyString(target))
 		}
-		return errf("update Deployment %s: %w", keyString(target), err)
+		return fmt.Errorf("update Deployment %s: %w", keyString(target), err)
 	}
 	fmt.Fprintf(out, "rollback applied: %s now matches snapshot\n", keyString(target))
 	return nil
@@ -209,12 +209,12 @@ func rollbackConfigMap(
 	live, err := api.Get(ctx, target.Name, metav1.GetOptions{})
 	if k8serrors.IsNotFound(err) {
 		if !allowCreate {
-			return errf("%s no longer exists in the cluster. Rollback will not recreate it, because a deliberate deletion must not be silently undone. Re-run with --allow-create to recreate it from snapshot.", keyString(target))
+			return fmt.Errorf("%s no longer exists in the cluster. Rollback will not recreate it, because a deliberate deletion must not be silently undone. Re-run with --allow-create to recreate it from snapshot", keyString(target))
 		}
 		return createConfigMap(ctx, out, in, api, target, payload, autoYes)
 	}
 	if err != nil {
-		return errf("get ConfigMap %s: %w", keyString(target), err)
+		return fmt.Errorf("get ConfigMap %s: %w", keyString(target), err)
 	}
 
 	previewRV := live.ResourceVersion
@@ -224,7 +224,7 @@ func rollbackConfigMap(
 	// not the raw server representation. See the comment there.
 	_, beforeBytes, err := agent.MarshalConfigMap(live)
 	if err != nil {
-		return errf("render preview for %s: %w", keyString(target), err)
+		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
 	if !showPreviewAndConfirm(out, in, target, beforeBytes, payload, autoYes) {
 		return nil
@@ -232,7 +232,7 @@ func rollbackConfigMap(
 
 	var targetCM corev1.ConfigMap
 	if err := json.Unmarshal(payload, &targetCM); err != nil {
-		return errf("unmarshal target ConfigMap payload: %w", err)
+		return fmt.Errorf("unmarshal target ConfigMap payload: %w", err)
 	}
 	// Same UID-stripping invariant as in rollbackDeployment — see the
 	// comment there for why this is load-bearing on delete+recreate.
@@ -241,9 +241,9 @@ func rollbackConfigMap(
 
 	if _, err := api.Update(ctx, &targetCM, metav1.UpdateOptions{}); err != nil {
 		if k8serrors.IsConflict(err) {
-			return errf("rollback rejected: %s changed in the cluster between preview and apply. Re-run `ktm rollback` to see the new state and confirm again.", keyString(target))
+			return fmt.Errorf("rollback rejected: %s changed in the cluster between preview and apply. Re-run `ktm rollback` to see the new state and confirm again", keyString(target))
 		}
-		return errf("update ConfigMap %s: %w", keyString(target), err)
+		return fmt.Errorf("update ConfigMap %s: %w", keyString(target), err)
 	}
 	fmt.Fprintf(out, "rollback applied: %s now matches snapshot\n", keyString(target))
 	return nil
@@ -266,11 +266,11 @@ func createDeployment(
 	}
 	var dep appsv1.Deployment
 	if err := json.Unmarshal(payload, &dep); err != nil {
-		return errf("unmarshal Deployment payload: %w", err)
+		return fmt.Errorf("unmarshal Deployment payload: %w", err)
 	}
 	stripServerOwned(&dep.ObjectMeta)
 	if _, err := api.Create(ctx, &dep, metav1.CreateOptions{}); err != nil {
-		return errf("create Deployment %s: %w", keyString(target), err)
+		return fmt.Errorf("create Deployment %s: %w", keyString(target), err)
 	}
 	fmt.Fprintf(out, "rollback applied: %s created from snapshot\n", keyString(target))
 	return nil
@@ -293,11 +293,11 @@ func createConfigMap(
 	}
 	var cm corev1.ConfigMap
 	if err := json.Unmarshal(payload, &cm); err != nil {
-		return errf("unmarshal ConfigMap payload: %w", err)
+		return fmt.Errorf("unmarshal ConfigMap payload: %w", err)
 	}
 	stripServerOwned(&cm.ObjectMeta)
 	if _, err := api.Create(ctx, &cm, metav1.CreateOptions{}); err != nil {
-		return errf("create ConfigMap %s: %w", keyString(target), err)
+		return fmt.Errorf("create ConfigMap %s: %w", keyString(target), err)
 	}
 	fmt.Fprintf(out, "rollback applied: %s created from snapshot\n", keyString(target))
 	return nil

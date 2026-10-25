@@ -29,7 +29,7 @@ func newDiffCmd(opts *Options) *cobra.Command {
 			"headers for resources with internal modifications.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if from == "" || to == "" {
-				return errf("--from and --to are required")
+				return fmt.Errorf("--from and --to are required")
 			}
 			return runDiff(cmd.OutOrStdout(), opts.StorageDir,
 				types.SnapshotID(from), types.SnapshotID(to), namespace)
@@ -44,7 +44,7 @@ func newDiffCmd(opts *Options) *cobra.Command {
 func runDiff(out io.Writer, storageDir string, fromID, toID types.SnapshotID, ns string) error {
 	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
-		return errf("open storage at %s: %w", storageDir, err)
+		return fmt.Errorf("open storage at %s: %w", storageDir, err)
 	}
 
 	ctx := context.Background()
