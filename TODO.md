@@ -14,11 +14,6 @@ Items move to issues or the CHANGELOG as they are picked up.
 
 ## Correctness
 
-- [ ] The on-disk store has no format version. Once v0.1.1 is public, a later
-      format change cannot be detected: an older `ktm` would misread a newer
-      store instead of refusing it. Add a version marker written by the agent
-      and checked by `OpenForRead`, with an ADR, before the stable tag.
-
 - [ ] `idFromTime` has millisecond precision and no collision guard. Safe at
       the 300 s default; reachable at short intervals.
 

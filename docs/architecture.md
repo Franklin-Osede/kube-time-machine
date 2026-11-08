@@ -59,6 +59,7 @@ Why deltas instead of full snapshots every tick: storage cost grows with **chang
 
 ```
 <root>/
+  format.json      -- layout version, checked on every open
   index.json
   snapshots/
     <id>/
@@ -68,6 +69,8 @@ Why deltas instead of full snapshots every tick: storage cost grows with **chang
 ```
 
 The per-snapshot directory is self-describing — `meta.json` carries enough metadata (id, kind, timestamp, prevId for deltas) to read the payload on its own. `index.json` is a cache used by the CLI's hot read path (`snapshot list`); the per-snapshot files are the source of truth. The store can be rebuilt by walking the directory tree even if `index.json` is lost. See [ADR-0004](adr/0004-rebuildable-index.md).
+
+`format.json` records the layout version. The agent and the CLI both refuse a store written in a newer format than they understand, before reading or repairing anything; a store without the file is format 1. See [ADR-0008](adr/0008-store-format-version.md).
 
 The `<id>` is a sortable UTC timestamp at millisecond precision: `20260518T140530123Z`.
 
@@ -101,3 +104,4 @@ See [docs/roadmap.md](roadmap.md) for the full Phase 2 backlog.
 - [ADR-0005](adr/0005-declarative-state-recorder.md) — declarative-state recorder, not observed-state.
 - [ADR-0006](adr/0006-rollback-live-resourceversion.md) — rollback uses live `ResourceVersion`.
 - [ADR-0007](adr/0007-packaging-defaults.md) — distroless, ClusterRole read-only, NetworkPolicy, Recreate strategy.
+- [ADR-0008](adr/0008-store-format-version.md) — `format.json` versions the store; newer formats are refused before any repair.

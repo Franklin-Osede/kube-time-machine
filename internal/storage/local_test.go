@@ -850,3 +850,133 @@ func TestReadOnlyStoreRefusesWrites(t *testing.T) {
 		t.Errorf("AcquireWriterLock on a read-only store: got %v, want storage.ErrReadOnly", err)
 	}
 }
+
+func writeFormat(t *testing.T, root, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "format.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readFormatVersion(t *testing.T, root string) int {
+	t.Helper()
+	var m struct {
+		Version int `json:"version"`
+	}
+	b, err := os.ReadFile(filepath.Join(root, "format.json"))
+	if err != nil {
+		t.Fatalf("read format.json: %v", err)
+	}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("parse format.json: %v", err)
+	}
+	return m.Version
+}
+
+func TestNewLocal_WritesFormatMarker(t *testing.T) {
+	root := t.TempDir()
+	if _, err := storage.NewLocal(root); err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	if got := readFormatVersion(t, root); got != storage.FormatVersion {
+		t.Errorf("format.json version = %d, want %d", got, storage.FormatVersion)
+	}
+}
+
+// Stores written before the marker existed are format 1. The writer adopts
+// them by adding the marker; their history must survive.
+func TestNewLocal_AdoptsStoreWithoutMarker(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	w, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	m, err := w.PutFull(ctx, at(2026, 5, 20, 10, 0, 0, 0), delta.Snapshot{})
+	if err != nil {
+		t.Fatalf("PutFull: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "format.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	w2, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("reopen store without marker: %v", err)
+	}
+	// 1, not FormatVersion: the data predates the marker and is format 1
+	// whatever this build's current version is.
+	if got := readFormatVersion(t, root); got != 1 {
+		t.Errorf("format.json version = %d, want 1", got)
+	}
+	list, err := w2.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != m.ID {
+		t.Errorf("history lost on adoption: %v", list)
+	}
+}
+
+func TestOpenForRead_StoreWithoutMarkerIsFormat1(t *testing.T) {
+	root := t.TempDir()
+	if _, err := storage.NewLocal(root); err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, "format.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := storage.OpenForRead(root); err != nil {
+		t.Fatalf("OpenForRead: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "format.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("OpenForRead created format.json (stat err = %v); it must never write", err)
+	}
+}
+
+// A newer store must be refused before NewLocal repairs anything: rebuilding
+// its index with this build's layout would corrupt it.
+func TestNewerFormatIsRefusedUntouched(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		open func(string) (*storage.Local, error)
+	}{
+		{"NewLocal", storage.NewLocal},
+		{"OpenForRead", storage.OpenForRead},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFormat(t, root, fmt.Sprintf(`{"version": %d}`, storage.FormatVersion+1))
+			// No snapshots/ and no index: NewLocal would otherwise create
+			// the one and rebuild the other.
+			before := snapshotTree(t, root)
+
+			_, err := tc.open(root)
+			if !errors.Is(err, storage.ErrUnsupportedFormat) {
+				t.Fatalf("err = %v, want ErrUnsupportedFormat", err)
+			}
+			if got := snapshotTree(t, root); !reflect.DeepEqual(before, got) {
+				t.Errorf("refused store was modified.\nbefore: %v\nafter:  %v", before, got)
+			}
+		})
+	}
+}
+
+func TestInvalidFormatMarkerIsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"garbage", "not json"},
+		{"missing version", "{}"},
+		{"negative version", `{"version": -1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFormat(t, root, tc.body)
+			if _, err := storage.NewLocal(root); err == nil {
+				t.Error("NewLocal accepted an invalid format.json")
+			}
+			if _, err := storage.OpenForRead(root); err == nil {
+				t.Error("OpenForRead accepted an invalid format.json")
+			}
+		})
+	}
+}

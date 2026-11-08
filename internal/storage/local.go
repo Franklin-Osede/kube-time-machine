@@ -22,6 +22,7 @@ import (
 // On-disk layout:
 //
 //	<root>/
+//	  format.json  -- layout version; see FormatVersion
 //	  index.json
 //	  snapshots/
 //	    <id>/
@@ -56,7 +57,92 @@ const (
 	metaFileName     = "meta.json"
 	fullFileName     = "full.json"
 	deltaFileName    = "delta.json"
+	formatFileName   = "format.json"
 )
+
+// FormatVersion is the on-disk layout version this build reads and writes.
+// Bump it, with an ADR, whenever an older build would misread the new layout.
+// See ADR-0008.
+const FormatVersion = 1
+
+// ErrUnsupportedFormat is returned when a store's format.json names a version
+// this build cannot read.
+var ErrUnsupportedFormat = errors.New("storage: unsupported store format")
+
+// legacyFormatVersion is the layout of stores written before format.json
+// existed (v0.1.1-rc.1). It is fixed: it describes old data, not this build.
+const legacyFormatVersion = 1
+
+type formatMarker struct {
+	Version int `json:"version"`
+}
+
+// checkFormat resolves the store's format version and refuses any version
+// other than FormatVersion. present reports whether format.json exists.
+//
+// A missing marker on a store that already holds data means
+// legacyFormatVersion, never FormatVersion: stamping old data with the current
+// version would claim a migration that never happened. A missing marker on an
+// empty store means a fresh store, which is FormatVersion.
+//
+// It must run before anything else touches the store. NewLocal repairs the
+// index on open; repairing a store in another format with this build's idea
+// of the layout would corrupt it.
+func (l *Local) checkFormat() (version int, present bool, err error) {
+	var m formatMarker
+	err = readJSON(filepath.Join(l.root, formatFileName), &m)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		hasData, herr := l.hasData()
+		if herr != nil {
+			return 0, false, herr
+		}
+		version = FormatVersion
+		if hasData {
+			version = legacyFormatVersion
+		}
+	case err != nil:
+		// Written atomically, so an unreadable marker is not a torn write.
+		// Guessing a version could misread the whole store.
+		return 0, true, fmt.Errorf("storage: read %s: %w", formatFileName, err)
+	default:
+		version, present = m.Version, true
+	}
+
+	switch {
+	case version > FormatVersion:
+		return version, present, fmt.Errorf("%w: %s is format %d, this build reads up to %d; upgrade ktm",
+			ErrUnsupportedFormat, l.root, version, FormatVersion)
+	case version < 1:
+		return version, present, fmt.Errorf("%w: %s has invalid format version %d",
+			ErrUnsupportedFormat, l.root, version)
+	case version < FormatVersion:
+		// Unreachable while FormatVersion is 1. It exists so that bumping the
+		// version cannot silently open older stores as the new layout: the
+		// bump has to replace this with a migration.
+		return version, present, fmt.Errorf("%w: %s is format %d and this build has no migration to %d",
+			ErrUnsupportedFormat, l.root, version, FormatVersion)
+	}
+	return version, present, nil
+}
+
+// hasData reports whether the root holds anything a store writes.
+func (l *Local) hasData() (bool, error) {
+	for _, name := range []string{indexFileName, ".deleting"} {
+		if _, err := os.Stat(filepath.Join(l.root, name)); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("storage: stat %s: %w", name, err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(l.root, snapshotsDirName))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("storage: read %s: %w", snapshotsDirName, err)
+	}
+	return len(entries) > 0, nil
+}
 
 // Root returns the root directory path of the store. Useful in tests that
 // need to inspect the on-disk layout without bypassing the Store interface.
@@ -71,10 +157,24 @@ func (l *Local) Root() string { return l.root }
 // agent may do that, and only while holding the writer lock — use OpenForRead
 // for anything that merely inspects history.
 func NewLocal(root string) (*Local, error) {
-	if err := os.MkdirAll(filepath.Join(root, snapshotsDirName), 0o700); err != nil {
+	// Only the root before checkFormat: a store in another format must be
+	// refused before anything inside it is created or repaired.
+	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("storage: create root: %w", err)
 	}
 	l := &Local{root: root}
+	version, present, err := l.checkFormat()
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		if err := atomicWriteJSON(filepath.Join(root, formatFileName), formatMarker{Version: version}); err != nil {
+			return nil, fmt.Errorf("storage: write %s: %w", formatFileName, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, snapshotsDirName), 0o700); err != nil {
+		return nil, fmt.Errorf("storage: create %s: %w", snapshotsDirName, err)
+	}
 	if err := l.loadIndex(); err != nil {
 		return nil, fmt.Errorf("storage: load index: %w", err)
 	}
@@ -100,6 +200,9 @@ func OpenForRead(root string) (*Local, error) {
 		return nil, fmt.Errorf("storage: open %s for reading: %w", root, err)
 	}
 	l := &Local{root: root, readOnly: true}
+	if _, _, err := l.checkFormat(); err != nil {
+		return nil, err
+	}
 	if err := l.loadIndex(); err != nil {
 		return nil, fmt.Errorf("storage: load index: %w", err)
 	}

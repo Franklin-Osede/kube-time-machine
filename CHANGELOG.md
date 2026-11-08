@@ -16,6 +16,11 @@ version to install.
 
 ### Added
 
+- Stores carry a `format.json` layout version. The agent and the CLI refuse
+  a store written in a newer format before reading or repairing it, so a
+  future layout change cannot be misread or corrupted by an older build.
+  Stores from v0.1.1-rc.1 have no marker, are read as format 1, and get the
+  marker the next time the agent opens them (ADR-0008).
 - Publish `ktm` and `ktm-agent` binaries for Linux and macOS (amd64 + arm64)
   and Windows (amd64). Both are required for Mode A: `ktm-agent` records, `ktm`
   queries.
