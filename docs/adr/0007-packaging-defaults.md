@@ -58,6 +58,8 @@ The `values.yaml` documents that `replicas` must remain `1` until a storage back
 
 `release.yml` (image publication to GHCR, multi-arch binaries, provenance, release-tag triggers) is deferred to Etapa 7. It pairs naturally with the demo recording and launch-post polish work that's already scoped for that etapa, and it requires repository secrets (`GHCR_TOKEN`) that aren't worth wiring up before the chart and Dockerfile are validated end-to-end.
 
+> **Amendment (2026-11-08):** `release.yml` shipped. A `v*` tag runs a `verify` job, then pushes the `linux/amd64` + `linux/arm64` image to GHCR, builds `ktm` and `ktm-agent` for five platforms, pushes the OCI chart, and attaches the binaries with SHA-256 checksums to the GitHub release. It authenticates with the built-in `GITHUB_TOKEN`, so no `GHCR_TOKEN` secret was needed. It does not produce provenance attestations, signatures or an SBOM; that is tracked in `TODO.md`.
+
 ## Consequences
 
 **Easier**

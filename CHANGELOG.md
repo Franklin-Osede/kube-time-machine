@@ -9,15 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
-## [0.1.1] - 2026-08-24
+## [0.1.1] - Unreleased
 
 First supported release. v0.1.0 was withdrawn (see below); v0.1.1 is the
 version to install.
 
 ### Added
 
-- Publish `ktm` and `ktm-agent` binaries for Linux, macOS, and Windows
-  (amd64 + arm64). Both are required for Mode A: `ktm-agent` records, `ktm`
+- Publish `ktm` and `ktm-agent` binaries for Linux and macOS (amd64 + arm64)
+  and Windows (amd64). Both are required for Mode A: `ktm-agent` records, `ktm`
   queries.
 - Publish the multi-architecture agent image and the OCI Helm chart, with
   SHA-256 checksums attached to the release and source/version/revision
@@ -92,7 +92,7 @@ version to install.
   workflow inferred its version from `go.mod`, whose `go 1.26.0` directive names
   an exact patch, so published binaries would have shipped the vulnerable
   standard library.
-- Bumped `golang.org/x/net` to v0.55.0 and `golang.org/x/text` to v0.39.0 for
+- Bumped `golang.org/x/net` to v0.60.0 and `golang.org/x/text` to v0.42.0 for
   advisories reachable from `ktm rollback`.
 - Removed the unused `resources.watch` chart value, which collided with the
   conventional Helm `resources` key and silently did nothing when set.

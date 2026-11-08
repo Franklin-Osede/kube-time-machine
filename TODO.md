@@ -5,8 +5,8 @@ Items move to issues or the CHANGELOG as they are picked up.
 
 ## Before v0.1.1
 
-- [ ] README says artefacts are unpublished and CHANGELOG dates 0.1.1 as
-      released, while only `v0.1.1-rc.1` exists. Reconcile at release time.
+- [ ] At the final tag: date the `[0.1.1]` CHANGELOG entry (now
+      "Unreleased") and drop the README "not published yet" notice.
 - [ ] Tag `v0.1.1-rc.2`: first run of the release `verify` job and of the
       bumped release-only actions (buildx, build-push, upload/download-artifact).
 - [ ] Scan the published image, not just the one E2E builds.
@@ -46,10 +46,6 @@ Items move to issues or the CHANGELOG as they are picked up.
 
 ## Documentation
 
-- [ ] ADR-0007 still describes `release.yml` as deferred; it shipped. Add a
-      status note rather than rewriting the record.
-- [ ] Check the rollback output quoted in `docs/runbook.md` against
-      `internal/cli/rollback.go`.
 - [ ] Decisions that shipped without an ADR: retention/GC with anchor, health
       and metrics endpoints, dynamic informers, the writer lock, burst flush,
       and stripping `last-applied-configuration`. Write them or retire the ADR

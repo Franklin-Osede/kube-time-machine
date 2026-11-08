@@ -40,7 +40,7 @@ When the gate opens, work proceeds feature-by-feature, each shipped in its own r
 | 0 | Extended resource support | Services, Ingress, Secrets (encrypted), StatefulSets, DaemonSets, NetworkPolicies, RBAC objects, plus a plugin hook for CRDs |
 | 1 | Cloud storage drivers + lifecycle | S3 / GCS / Azure Blob, KMS at rest, cold-tier policies |
 | 2 | Web visor | Go + HTMX (no React). Timeline, side-by-side diff, RBAC-aware auth |
-| 3 | Metrics & observability | `/metrics` endpoint, Grafana dashboard in `docs/grafana/` |
+| 3 | Metrics & observability | Flush-health and disk-usage metrics on the existing `/metrics`, opt-in PodMonitor, Grafana dashboard in `docs/grafana/` |
 | 4 | Multi-cluster | Central controller aggregates per-cluster agents |
 | 5 | Slack / Teams alerts | Webhook on suspicious changes (after-hours, secret edits, NetworkPolicy deletes) |
 | 6 | Cascading rollback with dependency analysis | Detect Deployment ↔ ConfigMap dependencies, suggest rollback set, mandatory dry-run |
