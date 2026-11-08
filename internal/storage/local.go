@@ -149,20 +149,31 @@ func (l *Local) hasData() (bool, error) {
 func (l *Local) Root() string { return l.root }
 
 // NewLocal opens (or initializes) a Local store for WRITING, rooted at the
-// given path. The root and its snapshots/ subdirectory are created if missing,
-// index.json is loaded or rebuilt, and any deletion staged but not committed
-// before a crash is reconciled.
+// given path, and holds its writer lock until Close. The root and its
+// snapshots/ subdirectory are created if missing, index.json is loaded or
+// rebuilt, and any deletion staged but not committed before a crash is
+// reconciled.
 //
-// Opening for write repairs the store, which means writing to it. Only the
-// agent may do that, and only while holding the writer lock — use OpenForRead
-// for anything that merely inspects history.
-func NewLocal(root string) (*Local, error) {
+// Opening for write repairs the store, which means writing to it, so the lock
+// is taken first: a second writer is turned away before it can adopt the
+// format, rebuild the index or clear a tombstone. Use OpenForRead for
+// anything that merely inspects history.
+func NewLocal(root string) (_ *Local, err error) {
 	// Only the root before checkFormat: a store in another format must be
-	// refused before anything inside it is created or repaired.
+	// refused before anything inside it is created or repaired. The lock
+	// file is the one exception; it coordinates writers and holds no data.
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("storage: create root: %w", err)
 	}
 	l := &Local{root: root}
+	if err := l.AcquireWriterLock(); err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = l.Close()
+		}
+	}()
 	version, present, err := l.checkFormat()
 	if err != nil {
 		return nil, err
@@ -215,12 +226,10 @@ func OpenForRead(root string) (*Local, error) {
 var ErrReadOnly = errors.New("storage: store is open read-only")
 
 // AcquireWriterLock obtains a process-scoped exclusive lock for this store.
-//
-// NewLocal deliberately does not acquire the lock: CLI read commands must be
-// able to inspect a store while the agent is recording. The agent is the only
-// writer process and calls this method during startup. A second agent pointed
-// at the same PVC fails fast instead of racing writes to index.json and the
-// snapshot directories.
+// NewLocal calls it before touching anything, and calling it again while the
+// lock is held is a no-op. A second agent pointed at the same PVC fails fast
+// instead of racing writes to index.json and the snapshot directories. Readers
+// use OpenForRead, which takes no lock.
 func (l *Local) AcquireWriterLock() error {
 	if l.readOnly {
 		return ErrReadOnly

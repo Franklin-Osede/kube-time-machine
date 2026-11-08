@@ -55,6 +55,10 @@ version to install.
 
 ### Fixed
 
+- A second agent pointed at a store already in use could rebuild its index
+  and clear staged deletions before being refused, because the writer lock
+  was taken after the store was opened and repaired. `NewLocal` now takes
+  the lock first, so a rejected writer changes nothing.
 - `ktm rollback` no longer deletes annotations the recorder does not store.
   Helm and Argo CD ownership and sync annotations, Flux markers and
   `kubectl.kubernetes.io/last-applied-configuration` were removed from the

@@ -26,17 +26,18 @@ reconstructs, blames and rolls back from that store. Architecture:
 3. **Crash-safe delete.** Delete renames into a tombstone first; the index
    write is the commit point. Tombstones are evidence — only the writer may
    clear them.
-4. **One writer.** Only the agent, holding `AcquireWriterLock`, mutates a
-   store. The CLI uses `OpenForRead`, which repairs in memory and returns
-   `ErrReadOnly` on any write.
+4. **One writer.** Only the agent mutates a store. `NewLocal` takes the
+   writer lock before any write or repair, so a rejected second writer
+   changes nothing. The CLI uses `OpenForRead`, which repairs in memory and
+   returns `ErrReadOnly` on any write.
 5. **Never persist a bogus snapshot.** The final flush is skipped unless the
    informer caches synced; an empty cache must not become a full snapshot.
 6. **Rollback locking (ADR-0006).** Update with the `ResourceVersion` read at
    preview time — no second `Get` after the prompt. `404` refuses unless
    `--allow-create` is set. Every write goes through `prepareForWrite`:
    server-owned fields and `ktm.io/*` are stripped, annotations the recorder
-   does not store keep their live value, and the preview renders that same
-   object. `--yes` skips the prompt, never the disclosure.
+   does not store take their live value (never the payload's), and the
+   preview renders that same object. `--yes` skips the prompt, never the disclosure.
 7. **Retention keeps an anchor.** GC preserves the newest full snapshot before
    the cutoff so every delta in the window stays reconstructable.
 8. **Snapshots are sanitised.** `internal/agent/marshal.go` strips

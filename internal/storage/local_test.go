@@ -49,41 +49,48 @@ func TestEmptyStore_ListIsEmpty(t *testing.T) {
 }
 
 func TestWriterLock_RejectsSecondWriterButAllowsReaders(t *testing.T) {
+	ctx := context.Background()
 	root := t.TempDir()
 
 	first, err := storage.NewLocal(root)
 	if err != nil {
 		t.Fatalf("NewLocal first: %v", err)
 	}
-	if err := first.AcquireWriterLock(); err != nil {
-		t.Fatalf("AcquireWriterLock first: %v", err)
-	}
 	defer first.Close()
-
-	// Opening the same store without acquiring the writer lock must remain
-	// possible so CLI read commands can inspect history while the agent runs.
-	reader, err := storage.NewLocal(root)
-	if err != nil {
-		t.Fatalf("NewLocal reader while writer active: %v", err)
+	if _, err := first.PutFull(ctx, at(2026, 5, 20, 10, 0, 0, 0), delta.Snapshot{}); err != nil {
+		t.Fatalf("PutFull: %v", err)
 	}
-	if _, err := reader.List(context.Background()); err != nil {
+
+	// Readers take no lock, so the CLI can inspect history while the agent
+	// runs.
+	reader, err := storage.OpenForRead(root)
+	if err != nil {
+		t.Fatalf("OpenForRead while writer active: %v", err)
+	}
+	if _, err := reader.List(ctx); err != nil {
 		t.Fatalf("reader List while writer active: %v", err)
 	}
 
-	second, err := storage.NewLocal(root)
-	if err != nil {
-		t.Fatalf("NewLocal second: %v", err)
+	// Give a second writer something to repair: without the lock it would
+	// rebuild index.json before noticing the first writer.
+	if err := os.Remove(filepath.Join(root, "index.json")); err != nil {
+		t.Fatal(err)
 	}
-	if err := second.AcquireWriterLock(); err == nil {
+	before := snapshotTree(t, root)
+	if second, err := storage.NewLocal(root); err == nil {
 		_ = second.Close()
-		t.Fatal("second writer acquired the same store lock")
+		t.Fatal("second writer opened a store whose lock is held")
+	}
+	if got := snapshotTree(t, root); !reflect.DeepEqual(before, got) {
+		t.Errorf("rejected second writer modified the store.\nbefore: %v\nafter:  %v", before, got)
 	}
 
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close first writer: %v", err)
 	}
-	if err := second.AcquireWriterLock(); err != nil {
-		t.Fatalf("second writer did not acquire lock after release: %v", err)
+	second, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("second writer did not open after the first released the lock: %v", err)
 	}
 	if err := second.Close(); err != nil {
 		t.Fatalf("Close second writer: %v", err)
@@ -242,6 +249,10 @@ func TestPersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("PutFull: %v", err)
 	}
 
+	// Simulate a restart: the first writer releases the lock.
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close first writer: %v", err)
+	}
 	s2, err := storage.NewLocal(root)
 	if err != nil {
 		t.Fatalf("NewLocal #2: %v", err)
@@ -284,6 +295,10 @@ func TestRebuildsIndexWhenMissing(t *testing.T) {
 		t.Fatalf("remove index: %v", err)
 	}
 
+	// Simulate a restart: the first writer releases the lock.
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close first writer: %v", err)
+	}
 	s2, err := storage.NewLocal(root)
 	if err != nil {
 		t.Fatalf("NewLocal after index removal: %v", err)
@@ -332,6 +347,10 @@ func TestRebuildsIndexWhenCorrupt(t *testing.T) {
 		t.Fatalf("corrupt index: %v", err)
 	}
 
+	// Simulate a restart: the first writer releases the lock.
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close first writer: %v", err)
+	}
 	s2, err := storage.NewLocal(root)
 	if err != nil {
 		t.Fatalf("NewLocal with a corrupt index should recover, got: %v", err)
@@ -342,6 +361,9 @@ func TestRebuildsIndexWhenCorrupt(t *testing.T) {
 	}
 
 	// The corrupt cache was healed: a third open reads a valid index.json.
+	if err := s2.Close(); err != nil {
+		t.Fatalf("close second writer: %v", err)
+	}
 	s3, err := storage.NewLocal(root)
 	if err != nil {
 		t.Fatalf("NewLocal #3 after repair: %v", err)
@@ -426,6 +448,10 @@ func TestRebuildSkipsMetaWithoutPayload(t *testing.T) {
 		t.Fatalf("remove index: %v", err)
 	}
 
+	// Simulate a restart: the first writer releases the lock.
+	if err := s1.Close(); err != nil {
+		t.Fatalf("close first writer: %v", err)
+	}
 	s2, err := storage.NewLocal(root)
 	if err != nil {
 		t.Fatalf("NewLocal after orphan meta: %v", err)
@@ -528,6 +554,10 @@ func TestDelete_IndexPersistedAfterDelete(t *testing.T) {
 	}
 
 	// Re-open the store: the deleted entry must not reappear.
+	// Simulate a restart: the first writer releases the lock.
+	if err := s.Close(); err != nil {
+		t.Fatalf("close first writer: %v", err)
+	}
 	s2, err := storage.NewLocal(root)
 	if err != nil {
 		t.Fatalf("reopen NewLocal: %v", err)
@@ -589,6 +619,10 @@ func TestDelete_CrashAfterStagingReconcilesIndex(t *testing.T) {
 		t.Fatalf("simulate crash after staging delete: %v", err)
 	}
 
+	// Simulate a restart: the first writer releases the lock.
+	if err := s.Close(); err != nil {
+		t.Fatalf("close first writer: %v", err)
+	}
 	reopened, err := storage.NewLocal(root)
 	if err != nil {
 		t.Fatalf("NewLocal after staged delete: %v", err)
@@ -900,6 +934,10 @@ func TestNewLocal_AdoptsStoreWithoutMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Simulate a restart: the first writer releases the lock.
+	if err := w.Close(); err != nil {
+		t.Fatalf("close first writer: %v", err)
+	}
 	w2, err := storage.NewLocal(root)
 	if err != nil {
 		t.Fatalf("reopen store without marker: %v", err)
@@ -955,7 +993,14 @@ func TestNewerFormatIsRefusedUntouched(t *testing.T) {
 			if !errors.Is(err, storage.ErrUnsupportedFormat) {
 				t.Fatalf("err = %v, want ErrUnsupportedFormat", err)
 			}
-			if got := snapshotTree(t, root); !reflect.DeepEqual(before, got) {
+			got := snapshotTree(t, root)
+			// The writer lock is taken before the format check. Its file
+			// holds no data; creating it also bumps the root's mtime. Any
+			// other new entry still shows up as a new key.
+			delete(got, ".writer.lock")
+			delete(got, ".")
+			delete(before, ".")
+			if !reflect.DeepEqual(before, got) {
 				t.Errorf("refused store was modified.\nbefore: %v\nafter:  %v", before, got)
 			}
 		})

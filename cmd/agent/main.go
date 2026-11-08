@@ -69,12 +69,10 @@ func run() error {
 		return fmt.Errorf("build dynamic kube client: %w", err)
 	}
 
+	// NewLocal takes the writer lock before it repairs anything.
 	store, err := storage.NewLocal(*storageDir)
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
-	}
-	if err := store.AcquireWriterLock(); err != nil {
-		return fmt.Errorf("lock storage for writing: %w", err)
 	}
 	defer func() {
 		if err := store.Close(); err != nil {
