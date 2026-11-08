@@ -21,6 +21,11 @@ type SnapshotID string
 // written.
 const ManagersAnnotation = "ktm.io/managers"
 
+// AnnotationPrefix marks annotations KTM synthesises into recorded state.
+// They describe the recording, not the resource, so rollback never writes
+// them back to the cluster.
+const AnnotationPrefix = "ktm.io/"
+
 // SnapshotKind discriminates between a full reference snapshot and an
 // incremental delta. A storage backend's Get must consult this field to
 // decide which payload type to return.

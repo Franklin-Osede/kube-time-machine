@@ -18,6 +18,7 @@ import (
 	ktesting "k8s.io/client-go/testing"
 
 	"github.com/Franklin-Osede/kube-time-machine/internal/agent"
+	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
 )
 
 // makeDeployment is a small helper used by rollback tests to build a
@@ -394,8 +395,16 @@ func TestStripServerOwned_RemovesEverything(t *testing.T) {
 		Generation:        7,
 		ManagedFields:     []metav1.ManagedFieldsEntry{{Manager: "k"}},
 		SelfLink:          "/api/v1/x",
+		DeletionTimestamp: &metav1.Time{},
+		DeletionGracePeriodSeconds: func() *int64 {
+			v := int64(30)
+			return &v
+		}(),
 	}
 	stripServerOwned(&m)
+	if m.DeletionTimestamp != nil || m.DeletionGracePeriodSeconds != nil {
+		t.Errorf("deletion fields not stripped: %+v", m)
+	}
 
 	if m.Name != "x" {
 		t.Errorf("Name should be preserved")
@@ -476,4 +485,342 @@ func TestRollbackConfigMap_404WithoutAllowCreateRefuses(t *testing.T) {
 	if !strings.Contains(err.Error(), "--allow-create") {
 		t.Errorf("error should point at the opt-in flag, got: %v", err)
 	}
+}
+
+// Annotations the recorder never stores, as a live object managed by Helm,
+// Argo CD and client-side kubectl apply carries them.
+var unrecordedLive = map[string]string{
+	"meta.helm.sh/release-name":                        "ktm",
+	"argocd.argoproj.io/sync-options":                  "Prune=false",
+	"kubectl.kubernetes.io/last-applied-configuration": `{"kind":"Deployment"}`,
+}
+
+// assertWrittenMeta checks the annotations of the object rollback wrote:
+// unrecorded live annotations survive, the snapshot's own annotations are
+// restored, and no ktm.io/ annotation reaches the cluster.
+func assertWrittenMeta(t *testing.T, got map[string]string, wantTeam string) {
+	t.Helper()
+	for k, v := range unrecordedLive {
+		if got[k] != v {
+			t.Errorf("annotation %s = %q, want live value %q kept", k, got[k], v)
+		}
+	}
+	if got["team"] != wantTeam {
+		t.Errorf("annotation team = %q, want %q from the snapshot", got["team"], wantTeam)
+	}
+	for k := range got {
+		if strings.HasPrefix(k, "ktm.io/") {
+			t.Errorf("rollback wrote KTM's own annotation %s to the cluster", k)
+		}
+	}
+}
+
+// assertPreviewMatchesWrite checks that the preview shows the snapshot's
+// change and nothing that the write does not do: no ktm.io/ annotation and
+// no unrecorded annotation, which the write leaves untouched.
+func assertPreviewMatchesWrite(t *testing.T, preview string, wantChanged ...string) {
+	t.Helper()
+	for _, want := range wantChanged {
+		if !strings.Contains(preview, want) {
+			t.Errorf("preview should show %q:\n%s", want, preview)
+		}
+	}
+	for _, hidden := range []string{"ktm.io/", "meta.helm.sh", "argocd.argoproj.io", "last-applied-configuration"} {
+		if strings.Contains(preview, hidden) {
+			t.Errorf("preview shows %q, which the write does not change:\n%s", hidden, preview)
+		}
+	}
+}
+
+func withAnnotations(base map[string]string, extra map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+func TestRollbackDeployment_UpdateKeepsUnrecordedAnnotations(t *testing.T) {
+	live := makeDeployment("api", "nginx:1.27", "100")
+	live.Annotations = withAnnotations(unrecordedLive, map[string]string{"team": "b"})
+	live.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl"}}
+	client := fake.NewSimpleClientset(live)
+
+	old := makeDeployment("api", "nginx:1.25", "")
+	old.Annotations = map[string]string{"team": "a"}
+	old.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "helm"}}
+	_, payload, err := agent.MarshalDeployment(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := rollbackDeployment(context.Background(), &out, strings.NewReader(""),
+		client, key("Deployment", "default", "api"), payload, true, false); err != nil {
+		t.Fatalf("rollbackDeployment: %v", err)
+	}
+	assertPreviewMatchesWrite(t, out.String(), "nginx:1.25", `"team": "a"`)
+
+	got, err := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img := got.Spec.Template.Spec.Containers[0].Image; img != "nginx:1.25" {
+		t.Errorf("image = %q, want nginx:1.25", img)
+	}
+	assertWrittenMeta(t, got.Annotations, "a")
+}
+
+func TestRollbackConfigMap_UpdateKeepsUnrecordedAnnotations(t *testing.T) {
+	live := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cfg", Namespace: "default", ResourceVersion: "55",
+			Annotations:   withAnnotations(unrecordedLive, map[string]string{"team": "b"}),
+			ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "kubectl"}},
+		},
+		Data: map[string]string{"env": "prod"},
+	}
+	client := fake.NewSimpleClientset(live)
+
+	_, payload, err := agent.MarshalConfigMap(&corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{Kind: "ConfigMap", APIVersion: "v1"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cfg", Namespace: "default",
+			Annotations:   map[string]string{"team": "a"},
+			ManagedFields: []metav1.ManagedFieldsEntry{{Manager: "helm"}},
+		},
+		Data: map[string]string{"env": "dev"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := rollbackConfigMap(context.Background(), &out, strings.NewReader(""),
+		client, key("ConfigMap", "default", "cfg"), payload, true, false); err != nil {
+		t.Fatalf("rollbackConfigMap: %v", err)
+	}
+	assertPreviewMatchesWrite(t, out.String(), `"env": "dev"`, `"team": "a"`)
+
+	got, err := client.CoreV1().ConfigMaps("default").Get(context.Background(), "cfg", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Data["env"] != "dev" {
+		t.Errorf("data.env = %q, want dev", got.Data["env"])
+	}
+	assertWrittenMeta(t, got.Annotations, "a")
+}
+
+func TestRollbackCreate_WritesNoKTMAnnotations(t *testing.T) {
+	ctx := context.Background()
+	managed := []metav1.ManagedFieldsEntry{{Manager: "helm"}}
+
+	t.Run("Deployment", func(t *testing.T) {
+		old := makeDeployment("api", "nginx:1.25", "")
+		old.Annotations = map[string]string{"team": "a"}
+		old.ManagedFields = managed
+		_, payload, err := agent.MarshalDeployment(old)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := fake.NewSimpleClientset()
+		var out bytes.Buffer
+		if err := rollbackDeployment(ctx, &out, strings.NewReader(""),
+			client, key("Deployment", "default", "api"), payload, true, true); err != nil {
+			t.Fatalf("rollbackDeployment: %v", err)
+		}
+		got, err := client.AppsV1().Deployments("default").Get(ctx, "api", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Annotations["team"] != "a" || len(got.Annotations) != 1 {
+			t.Errorf("annotations = %v, want only team=a", got.Annotations)
+		}
+		if strings.Contains(out.String(), "ktm.io/") {
+			t.Errorf("create preview shows a ktm.io/ annotation:\n%s", out.String())
+		}
+	})
+
+	t.Run("ConfigMap", func(t *testing.T) {
+		_, payload, err := agent.MarshalConfigMap(&corev1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{Kind: "ConfigMap", APIVersion: "v1"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cfg", Namespace: "default",
+				Annotations: map[string]string{"team": "a"}, ManagedFields: managed,
+			},
+			Data: map[string]string{"env": "dev"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := fake.NewSimpleClientset()
+		var out bytes.Buffer
+		if err := rollbackConfigMap(ctx, &out, strings.NewReader(""),
+			client, key("ConfigMap", "default", "cfg"), payload, true, true); err != nil {
+			t.Fatalf("rollbackConfigMap: %v", err)
+		}
+		got, err := client.CoreV1().ConfigMaps("default").Get(ctx, "cfg", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Annotations["team"] != "a" || len(got.Annotations) != 1 {
+			t.Errorf("annotations = %v, want only team=a", got.Annotations)
+		}
+		if strings.Contains(out.String(), "ktm.io/") {
+			t.Errorf("create preview shows a ktm.io/ annotation:\n%s", out.String())
+		}
+	})
+}
+
+// previewOf renders what showPreviewAndConfirm prints for before -> after.
+func previewOf(target delta.Key, before, after delta.State) string {
+	var buf bytes.Buffer
+	printDelta(&buf, delta.Delta{Modified: map[delta.Key]delta.State{target: after}}, delta.Snapshot{target: before})
+	return buf.String()
+}
+
+// The preview must be exactly the diff between the live object and the object
+// the Update sends. The payload here is not from the current marshaller: it
+// carries an unrecorded annotation live does not have, as a snapshot recorded
+// under an older noise list would. Writing it would be a hidden change.
+func TestRollback_PreviewIsTheDiffOfWhatIsWritten(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("Deployment", func(t *testing.T) {
+		live := makeDeployment("api", "nginx:1.27", "100")
+		live.Annotations = withAnnotations(unrecordedLive, map[string]string{"team": "b"})
+		client := fake.NewSimpleClientset(live)
+		var written *appsv1.Deployment
+		client.PrependReactor("update", "deployments", func(a ktesting.Action) (bool, runtime.Object, error) {
+			written = a.(ktesting.UpdateAction).GetObject().(*appsv1.Deployment).DeepCopy()
+			return false, nil, nil
+		})
+
+		old := makeDeployment("api", "nginx:1.25", "")
+		old.Annotations = map[string]string{"team": "a", "meta.helm.sh/stale": "old"}
+		payload, err := json.Marshal(old)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var out bytes.Buffer
+		target := key("Deployment", "default", "api")
+		if err := rollbackDeployment(ctx, &out, strings.NewReader(""), client, target, payload, true, false); err != nil {
+			t.Fatalf("rollbackDeployment: %v", err)
+		}
+		if written == nil {
+			t.Fatal("no Update was sent")
+		}
+		if _, ok := written.Annotations["meta.helm.sh/stale"]; ok {
+			t.Error("wrote an unrecorded annotation from the payload that live does not have")
+		}
+
+		liveView, sent := live.DeepCopy(), written.DeepCopy()
+		stripServerOwned(&liveView.ObjectMeta)
+		stripServerOwned(&sent.ObjectMeta)
+		_, before, _ := agent.MarshalDeployment(liveView)
+		_, after, _ := agent.MarshalDeployment(sent)
+		if want := previewOf(target, before, after); !strings.Contains(out.String(), want) {
+			t.Errorf("preview is not the diff of live against the written object.\nwant:\n%s\ngot:\n%s", want, out.String())
+		}
+	})
+
+	t.Run("ConfigMap", func(t *testing.T) {
+		live := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cfg", Namespace: "default", ResourceVersion: "55",
+				Annotations: withAnnotations(unrecordedLive, map[string]string{"team": "b"}),
+			},
+			Data: map[string]string{"env": "prod"},
+		}
+		client := fake.NewSimpleClientset(live)
+		var written *corev1.ConfigMap
+		client.PrependReactor("update", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {
+			written = a.(ktesting.UpdateAction).GetObject().(*corev1.ConfigMap).DeepCopy()
+			return false, nil, nil
+		})
+
+		payload, err := json.Marshal(&corev1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{Kind: "ConfigMap", APIVersion: "v1"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "cfg", Namespace: "default",
+				Annotations: map[string]string{"team": "a", "meta.helm.sh/stale": "old"},
+			},
+			Data: map[string]string{"env": "dev"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var out bytes.Buffer
+		target := key("ConfigMap", "default", "cfg")
+		if err := rollbackConfigMap(ctx, &out, strings.NewReader(""), client, target, payload, true, false); err != nil {
+			t.Fatalf("rollbackConfigMap: %v", err)
+		}
+		if written == nil {
+			t.Fatal("no Update was sent")
+		}
+		if _, ok := written.Annotations["meta.helm.sh/stale"]; ok {
+			t.Error("wrote an unrecorded annotation from the payload that live does not have")
+		}
+
+		liveView, sent := live.DeepCopy(), written.DeepCopy()
+		stripServerOwned(&liveView.ObjectMeta)
+		stripServerOwned(&sent.ObjectMeta)
+		_, before, _ := agent.MarshalConfigMap(liveView)
+		_, after, _ := agent.MarshalConfigMap(sent)
+		if want := previewOf(target, before, after); !strings.Contains(out.String(), want) {
+			t.Errorf("preview is not the diff of live against the written object.\nwant:\n%s\ngot:\n%s", want, out.String())
+		}
+	})
+}
+
+// ADR-0006: the ResourceVersion comes from the one Get made before the
+// prompt. A second Get after it would silently absorb changes the user never
+// saw; a static fake returns the same RV either way, so count the Gets.
+func TestRollback_SingleGetBeforeUpdate(t *testing.T) {
+	ctx := context.Background()
+	countGets := func(client *fake.Clientset, resource string) *int {
+		n := 0
+		client.PrependReactor("get", resource, func(ktesting.Action) (bool, runtime.Object, error) {
+			n++
+			return false, nil, nil
+		})
+		return &n
+	}
+
+	t.Run("Deployment", func(t *testing.T) {
+		client := fake.NewSimpleClientset(makeDeployment("api", "nginx:1.27", "100"))
+		gets := countGets(client, "deployments")
+		if err := rollbackDeployment(ctx, &bytes.Buffer{}, strings.NewReader("y\n"), client,
+			key("Deployment", "default", "api"), deploymentSnapshotPayload(t, "api", "nginx:1.25"), false, false); err != nil {
+			t.Fatalf("rollbackDeployment: %v", err)
+		}
+		if *gets != 1 {
+			t.Errorf("rollback made %d Gets, want exactly 1", *gets)
+		}
+	})
+
+	t.Run("ConfigMap", func(t *testing.T) {
+		client := fake.NewSimpleClientset(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default", ResourceVersion: "55"},
+			Data:       map[string]string{"env": "prod"},
+		})
+		gets := countGets(client, "configmaps")
+		payload, _ := json.Marshal(&corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
+			Data:       map[string]string{"env": "dev"},
+		})
+		if err := rollbackConfigMap(ctx, &bytes.Buffer{}, strings.NewReader("y\n"), client,
+			key("ConfigMap", "default", "cfg"), payload, false, false); err != nil {
+			t.Fatalf("rollbackConfigMap: %v", err)
+		}
+		if *gets != 1 {
+			t.Errorf("rollback made %d Gets, want exactly 1", *gets)
+		}
+	})
 }

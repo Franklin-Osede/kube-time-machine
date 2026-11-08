@@ -152,33 +152,30 @@ func rollbackDeployment(
 	// informed consent.
 	previewRV := live.ResourceVersion
 
-	// Sanitise the live object through the SAME marshaller the agent uses
-	// to record snapshots (ADR-0005: strip .status, resourceVersion,
-	// managedFields, generation). Without this the preview diffs the raw
-	// live object — full of server-owned churn — against the sanitised
-	// snapshot payload, drowning the one hunk the user actually cares
-	// about in noise at the exact moment they give informed consent.
-	_, beforeBytes, err := agent.MarshalDeployment(live)
-	if err != nil {
-		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
-	}
-	if !showPreviewAndConfirm(out, in, target, beforeBytes, payload, autoYes) {
-		return nil
-	}
-
 	var targetDep appsv1.Deployment
 	if err := json.Unmarshal(payload, &targetDep); err != nil {
 		return fmt.Errorf("unmarshal target Deployment payload: %w", err)
 	}
-	// Strip server-owned metadata that the snapshot inherited. sanitiseMeta
-	// in the agent (ADR-0005) deliberately keeps UID and CreationTimestamp
-	// because they carry no per-flush noise; but on the Update path we MUST
-	// drop them. Concretely: if the user deleted and recreated this resource
-	// between snapshot time and now, the live UID is different, and an
-	// Update carrying the snapshot's old UID is rejected by the API server
-	// as an immutable-field violation. Stripping is symmetric with the
-	// create-on-404 path below.
-	stripServerOwned(&targetDep.ObjectMeta)
+	prepareForWrite(&targetDep.ObjectMeta, &live.ObjectMeta)
+
+	// The preview renders the object that will be written, not the raw
+	// payload, so what the user confirms is what the Update sends. Both
+	// sides go through the recorder's marshaller (ADR-0005) so server-owned
+	// churn does not bury the one hunk that matters.
+	liveView := live.DeepCopy()
+	stripServerOwned(&liveView.ObjectMeta)
+	_, beforeBytes, err := agent.MarshalDeployment(liveView)
+	if err != nil {
+		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
+	}
+	_, afterBytes, err := agent.MarshalDeployment(&targetDep)
+	if err != nil {
+		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
+	}
+	if !showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes) {
+		return nil
+	}
+
 	// Re-inject the RV captured at preview time (stripServerOwned cleared
 	// it along with the rest). The Kubernetes API server will reject the
 	// Update with 409 Conflict if the cluster-side value has moved since
@@ -219,24 +216,27 @@ func rollbackConfigMap(
 
 	previewRV := live.ResourceVersion
 
-	// Same sanitisation as in rollbackDeployment — diff the snapshot
-	// payload against a like-for-like sanitised view of the live object,
-	// not the raw server representation. See the comment there.
-	_, beforeBytes, err := agent.MarshalConfigMap(live)
-	if err != nil {
-		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
-	}
-	if !showPreviewAndConfirm(out, in, target, beforeBytes, payload, autoYes) {
-		return nil
-	}
-
 	var targetCM corev1.ConfigMap
 	if err := json.Unmarshal(payload, &targetCM); err != nil {
 		return fmt.Errorf("unmarshal target ConfigMap payload: %w", err)
 	}
-	// Same UID-stripping invariant as in rollbackDeployment — see the
-	// comment there for why this is load-bearing on delete+recreate.
-	stripServerOwned(&targetCM.ObjectMeta)
+	prepareForWrite(&targetCM.ObjectMeta, &live.ObjectMeta)
+
+	// Preview the object that will be written; see rollbackDeployment.
+	liveView := live.DeepCopy()
+	stripServerOwned(&liveView.ObjectMeta)
+	_, beforeBytes, err := agent.MarshalConfigMap(liveView)
+	if err != nil {
+		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
+	}
+	_, afterBytes, err := agent.MarshalConfigMap(&targetCM)
+	if err != nil {
+		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
+	}
+	if !showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes) {
+		return nil
+	}
+
 	targetCM.ResourceVersion = previewRV
 
 	if _, err := api.Update(ctx, &targetCM, metav1.UpdateOptions{}); err != nil {
@@ -261,14 +261,18 @@ func createDeployment(
 	autoYes bool,
 ) error {
 	fmt.Fprintf(out, "Deployment %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
-	if !showCreatePreviewAndConfirm(out, in, target, payload, autoYes) {
-		return nil
-	}
 	var dep appsv1.Deployment
 	if err := json.Unmarshal(payload, &dep); err != nil {
 		return fmt.Errorf("unmarshal Deployment payload: %w", err)
 	}
-	stripServerOwned(&dep.ObjectMeta)
+	prepareForWrite(&dep.ObjectMeta, nil)
+	_, view, err := agent.MarshalDeployment(&dep)
+	if err != nil {
+		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
+	}
+	if !showCreatePreviewAndConfirm(out, in, target, view, autoYes) {
+		return nil
+	}
 	if _, err := api.Create(ctx, &dep, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("create Deployment %s: %w", keyString(target), err)
 	}
@@ -288,14 +292,18 @@ func createConfigMap(
 	autoYes bool,
 ) error {
 	fmt.Fprintf(out, "ConfigMap %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
-	if !showCreatePreviewAndConfirm(out, in, target, payload, autoYes) {
-		return nil
-	}
 	var cm corev1.ConfigMap
 	if err := json.Unmarshal(payload, &cm); err != nil {
 		return fmt.Errorf("unmarshal ConfigMap payload: %w", err)
 	}
-	stripServerOwned(&cm.ObjectMeta)
+	prepareForWrite(&cm.ObjectMeta, nil)
+	_, view, err := agent.MarshalConfigMap(&cm)
+	if err != nil {
+		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
+	}
+	if !showCreatePreviewAndConfirm(out, in, target, view, autoYes) {
+		return nil
+	}
 	if _, err := api.Create(ctx, &cm, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("create ConfigMap %s: %w", keyString(target), err)
 	}
@@ -304,10 +312,11 @@ func createConfigMap(
 }
 
 // showPreviewAndConfirm renders a unified diff between the sanitised live
-// state (beforeBytes) and the target snapshot payload using the existing
-// printDelta machinery, then prompts the user. Both sides are sanitised
-// the same way (see callers), so the diff shows only the declarative
-// fields that actually differ. Returns true if the apply should proceed.
+// state (beforeBytes) and the sanitised object about to be written (payload)
+// using the printDelta machinery, then prompts the user. Both sides are
+// sanitised the same way (see callers), so the diff shows only the
+// declarative fields that actually differ. Returns true if the apply should
+// proceed.
 func showPreviewAndConfirm(
 	out io.Writer,
 	in io.Reader,
@@ -347,12 +356,50 @@ func promptConfirm(in io.Reader, out io.Writer) bool {
 	return false
 }
 
-// stripServerOwned removes metadata fields the API server assigns and
-// that would either be ignored or cause Create to fail if echoed back.
-// Most are already absent because the agent's marshaller sanitises
-// them, but stripping defensively keeps the Create path robust against
-// any future change to marshal.go.
+// prepareForWrite turns snapshot metadata into metadata safe to send to the
+// API server. live is the current object's metadata, or nil on create.
+//
+//   - Server-owned fields go; see stripServerOwned.
+//   - KTM's own annotations go: they describe the recording, not the
+//     resource.
+//   - Annotations the recorder never stores take their live value, or are
+//     absent if live has none. The snapshot is silent about them, so a full
+//     Update would otherwise delete them, including Helm and Argo CD
+//     ownership and sync settings. Any such key already in the payload is
+//     dropped first: the preview never shows these keys, so writing one
+//     from a payload recorded under an older noise list would be a change
+//     the user did not see.
+func prepareForWrite(m, live *metav1.ObjectMeta) {
+	stripServerOwned(m)
+	for k := range m.Annotations {
+		if strings.HasPrefix(k, types.AnnotationPrefix) || agent.IsUnrecordedAnnotation(k) {
+			delete(m.Annotations, k)
+		}
+	}
+	if live != nil {
+		for k, v := range live.Annotations {
+			if agent.IsUnrecordedAnnotation(k) {
+				if m.Annotations == nil {
+					m.Annotations = make(map[string]string)
+				}
+				m.Annotations[k] = v
+			}
+		}
+	}
+	if len(m.Annotations) == 0 {
+		m.Annotations = nil
+	}
+}
+
+// stripServerOwned clears the metadata the API server owns. A write ignores
+// or rejects these fields, so leaving them on either side of the preview
+// would show a change the write does not make: UID and CreationTimestamp
+// survive the recorder's sanitisation, and DeletionTimestamp is set on a
+// live object held by a finalizer. On Update a stale UID is rejected as an
+// immutable-field change; on Create all of them must be empty.
 func stripServerOwned(m *metav1.ObjectMeta) {
+	m.DeletionTimestamp = nil
+	m.DeletionGracePeriodSeconds = nil
 	m.ResourceVersion = ""
 	m.UID = ""
 	m.CreationTimestamp = metav1.Time{}

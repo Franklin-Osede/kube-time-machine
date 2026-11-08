@@ -30,6 +30,8 @@ If step 2 returns `404 Not Found`, the resource no longer exists. The rollback f
 
 > **Amendment (2026-08-25):** recreation on `404` is opt-in. Without `--allow-create` the rollback stops with an error instead of calling `Create`: deleting a resource is usually deliberate, and undoing a deletion is a different operation from rolling a resource back, so it must not happen as a side effect. With `--allow-create` the flow is as described above. The recreated object is new — it gets a fresh UID — so anything that referenced the old one, such as an ownerReference, does not reattach.
 
+> **Amendment (2026-11-08):** the object sent to the API server is no longer the raw snapshot payload. The recorder drops controller-owned annotations (Helm, Argo CD, Flux, `last-applied-configuration`; see `marshal.go`), so the snapshot says nothing about them, and a full `Update` with that payload deleted them from the live object without the preview showing it. Rollback now keeps the live value of every annotation the recorder does not store, strips KTM's own `ktm.io/*` annotations on both `Update` and `Create`, and renders the preview from the object it is about to send, so the user confirms exactly what is written.
+
 ## Alternatives considered
 
 1. **Stop stripping `ResourceVersion` in `marshal.go`.** Rejected: reintroduces the per-flush metadata churn that produced spurious "modified" deltas before sanitisation existed. ADR-0002 explicitly accepted this trade-off and we are not unwinding it.

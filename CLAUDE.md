@@ -33,8 +33,10 @@ reconstructs, blames and rolls back from that store. Architecture:
    informer caches synced; an empty cache must not become a full snapshot.
 6. **Rollback locking (ADR-0006).** Update with the `ResourceVersion` read at
    preview time — no second `Get` after the prompt. `404` refuses unless
-   `--allow-create` is set, which creates after `stripServerOwned`. `--yes`
-   skips the prompt, never the disclosure.
+   `--allow-create` is set. Every write goes through `prepareForWrite`:
+   server-owned fields and `ktm.io/*` are stripped, annotations the recorder
+   does not store keep their live value, and the preview renders that same
+   object. `--yes` skips the prompt, never the disclosure.
 7. **Retention keeps an anchor.** GC preserves the newest full snapshot before
    the cutoff so every delta in the window stays reconstructable.
 8. **Snapshots are sanitised.** `internal/agent/marshal.go` strips

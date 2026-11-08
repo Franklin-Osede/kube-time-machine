@@ -160,6 +160,11 @@ func extractManagers(mf []metav1.ManagedFieldsEntry) []string {
 	return out
 }
 
+// IsUnrecordedAnnotation reports whether the recorder drops annotation key
+// from snapshots. A snapshot therefore says nothing about such a key, and
+// rollback must keep the live value instead of deleting it.
+func IsUnrecordedAnnotation(key string) bool { return isNoiseAnnotationKey(key) }
+
 // isNoiseAnnotationKey reports whether key is controller-owned noise. The
 // typed and dynamic paths both use it, so they filter identically.
 func isNoiseAnnotationKey(key string) bool {

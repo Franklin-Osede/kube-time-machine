@@ -55,6 +55,13 @@ version to install.
 
 ### Fixed
 
+- `ktm rollback` no longer deletes annotations the recorder does not store.
+  Helm and Argo CD ownership and sync annotations, Flux markers and
+  `kubectl.kubernetes.io/last-applied-configuration` were removed from the
+  live object by the full Update, and the preview did not show it. They now
+  keep their live value. Rollback also stopped writing KTM's internal
+  `ktm.io/managers` annotation to the cluster, and the preview now renders
+  the exact object that is sent.
 - `ktm diff` and the `ktm rollback` preview printed each hunk as one long
   line with no `+`/`-` colouring. Every changed line now prints on its own.
 - The agent no longer persists an empty full snapshot when the informer caches
