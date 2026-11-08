@@ -6,16 +6,25 @@ Items move to issues or the CHANGELOG as they are picked up.
 ## Before v0.1.1
 
 - [ ] At the final tag: date the `[0.1.1]` CHANGELOG entry (now
-      "Unreleased") and drop the README "not published yet" notice.
-- [ ] Tag `v0.1.1-rc.2`: first run of the release `verify` job and of the
-      bumped release-only actions (buildx, build-push, upload/download-artifact).
-- [ ] Scan the published image, not just the one E2E builds.
-- [ ] Move `docs/launch.md` (post drafts) out of the repository.
+      "Unreleased"), set `VERSION` / `CHART_VERSION` to the stable release in
+      the README, `docs/install.md` and `docs/runbook.md`, and update the
+      README status table.
+- [ ] Tag `v0.1.1-rc.3` from the fixes made after rc.2 (rollback annotations,
+      writer lock, x/net, release assets limited to the binaries) and verify it
+      with the `release-gate` skill. rc.2 ran the pipeline end to end and is
+      verified; its release still carries a stray `.dockerbuild` asset.
+- [ ] Scan the published image, not just the binaries and the image E2E builds.
+- [ ] `docs/launch.md` stays marked PENDING until the stable release and the
+      demo link exist; move it out of the repository once the posts are out.
 
 ## Correctness
 
-- [ ] `idFromTime` has millisecond precision and no collision guard. Safe at
-      the 300 s default; reachable at short intervals.
+- [ ] Snapshot IDs have millisecond precision. A collision is detected:
+      `writeSnapshot` refuses an existing directory and the flush fails, so
+      nothing is overwritten. The next tick retries the same cadence slot and
+      includes the unwritten changes. A collision needs two flushes in the
+      same millisecond; flushes are serialised and each fsyncs, so in practice
+      it needs a clock step back.
 
 ## Operational
 

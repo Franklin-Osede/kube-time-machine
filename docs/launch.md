@@ -1,23 +1,29 @@
 # Launch draft
 
-This document is a working copy for the v0.1.1 public launch. Do not publish any
-post below until all of these are true:
+> **Status: PENDING. Do not post.** The text below is prepared, not
+> published. It waits for the stable `v0.1.1` release and a real demo video
+> link; every `[...]` placeholder must be replaced first.
 
-- The `v0.1.1-rc.1` release workflow has completed successfully.
-- The agent image, OCI Helm chart, and CLI binaries have been verified.
-- A real install from the published chart has completed successfully.
-- The `v0.1.1` final release is green.
-- The demo video is uploaded and its link is available.
-- README and install instructions point to artifacts that actually exist.
+Do not publish any post below until all of these are true:
+
+- `v0.1.1-rc.3` and then the stable `v0.1.1` release workflows have completed,
+  and their image, OCI chart, binaries and checksums have been verified with the
+  `release-gate` skill.
+- A clean install from the published stable chart has reached Ready.
+- The README quick start has been run as written against the stable version,
+  and `VERSION` in the README and `docs/install.md` points at it.
+- The demo video is uploaded and its link replaces `[demo URL]` below.
 
 ## Positioning
 
-KTM is a declarative-state recorder for incident response. It is not a backup
-tool, a GitOps source of truth, an observability stack, or an automatic rollback
-system.
+KTM records sampled declarative state of Deployments and ConfigMaps for
+incident response. It is not a backup tool, a GitOps source of truth, an
+observability stack, or an automatic rollback system.
 
-Lead with the product problem and the 3 AM incident-response workflow. Mention
-the learning-in-public story near the end, after the technical value is clear.
+Lead with the concrete workflow: a rollout is stuck, find what changed and the
+last known-good image, roll that one resource back, and confirm the rollout with
+`kubectl`. Mention the learning-in-public story near the end, after the
+technical value is clear.
 
 Recommended channel order:
 
@@ -25,106 +31,105 @@ Recommended channel order:
 2. Show HN a few days later, after early feedback is incorporated.
 3. Reddit `r/kubernetes` with a technical, non-promotional framing.
 
+## Demo
+
+Record the README quick start against the stable release, from a disposable
+kind cluster. Narration, in order:
+
+1. "A rollout is stuck. What changed?" `kubectl get pods` shows the new Pod in
+   `ErrImagePull` while the old Pod keeps serving. Do not call it an outage.
+2. `ktm blame` gives the resource timeline: when the change appeared in a
+   snapshot and which field managers were involved. It does not prove who made
+   the change.
+3. `ktm diff` shows the image line that changed between the last known-good
+   snapshot and the current one.
+4. `ktm rollback` names the target cluster, previews the exact object it will
+   write, and updates with the `resourceVersion` it read.
+5. `kubectl rollout status` confirms the rollout completes. KTM does not
+   record health; `kubectl` verifies it.
+
 ## LinkedIn short draft
 
-It's 3 AM. Your API is down. The first question is always: "what changed?"
+I built kube-time-machine to investigate Deployment and ConfigMap changes
+during Kubernetes incidents.
 
-Today that means stitching together ArgoCD history, CI logs, and cluster events
-that expired an hour ago. And if someone ran `kubectl edit` by hand? Invisible.
-No trail.
+It records sampled declarative state, shows diffs and a per-resource timeline,
+and rolls one resource back with a preview and an optimistic-concurrency check.
 
-So I built kube-time-machine: git blame and time-travel for your Kubernetes
-cluster.
+v0.1.1 keeps the scope small: an agent, a CLI and local storage. Querying
+in-cluster history currently means copying the volume to your machine.
 
-It records the declarative state of your Deployments and ConfigMaps over time,
-no matter who changed them: GitOps, `kubectl`, or an operator. Then you can diff,
-blame, and roll back a single resource in seconds.
+The most useful engineering lessons were defining filesystem commit points,
+keeping history reconstructable under retention, and treating the rollback
+preview as a contract: what you confirm is what gets written.
 
-It's not a backup tool; that's Velero. It's not GitOps history; that's ArgoCD.
-It fills the gap between them.
+Demo: [demo URL]
 
-v0.1.1 is out: agent and CLI, local-first, MIT licensed, built in Go, and
-developed in public.
+Repository: https://github.com/Franklin-Osede/kube-time-machine
 
-5-minute demo and repo in the comments. Direct technical feedback is welcome.
+Technical feedback is welcome.
 
-`#Kubernetes #SRE #PlatformEngineering #OpenSource #DevOps`
+`#Kubernetes #SRE #PlatformEngineering #OpenSource #Golang`
 
 ## LinkedIn long draft
 
-3 AM. The API is down. "What changed?"
+When a rollout gets stuck, the first question is "what changed?" If the change
+came through Git, the history is there. If someone ran `kubectl edit`, or an
+operator rewrote a field, there may be no record of the earlier value.
 
-Every SRE knows this moment. Answering it means stitching together ArgoCD
-history, if you use it, commits across repositories, CI logs, and cluster events
-that expire after about an hour. Thirty minutes can pass before you even have a
-hypothesis. If someone changed something with `kubectl edit`, that change is
-invisible in centralized GitOps history. There is no git blame for your cluster.
+kube-time-machine (KTM) keeps one. An agent watches Deployments and ConfigMaps
+through the API server and writes their declarative state to local storage at a
+fixed interval, as full snapshots plus deltas. A CLI then lets you:
 
-So I built one.
+- `ktm diff`: compare the state at two snapshots.
+- `ktm blame`: see one resource's timeline and the field managers involved.
+- `ktm rollback`: put one resource back to an earlier snapshot, after a preview
+  of the exact object it will write, with the API server rejecting the update
+  if the resource changed since the preview.
 
-kube-time-machine (KTM) records the declarative state that lived in your
-Kubernetes API server over time: Deployment specs and ConfigMap data, regardless
-of whether the change came from GitOps, `kubectl`, or an operator. Then it lets
-you:
+What it does not do matters as much. The history is sampled: a change reverted
+within one interval does not appear, and timestamps are flush times. It records
+no `.status`, so it does not know whether a rollout was healthy; Prometheus and
+kube-state-metrics answer that. It is not a backup tool like Velero, and it does
+not replace Argo CD or Flux, which detect drift from Git.
 
-- `ktm diff`: see what changed between any two points in time.
-- `ktm blame`: inspect the full timeline of one resource.
-- `ktm rollback`: undo a single resource, with a preview and native optimistic
-  locking.
+The decisions I learned most from are written up as ADRs in the repository:
+atomic writes with `meta.json` as the commit point, a versioned on-disk format,
+and a rollback that preserves annotations it never recorded instead of deleting
+them.
 
-What it is not matters. KTM is not a backup tool; Velero owns disaster recovery.
-It is not GitOps history; ArgoCD and Flux own that. It is not observability;
-Prometheus and kube-state-metrics own runtime status. KTM deliberately records
-only the declarative surface, stripping `.status`, and fills the gap those tools
-leave open: a queryable, per-resource, ground-truth change log.
+I am a backend engineer moving into platform engineering and learning Go in
+public. I would value critique from people who have run this kind of tool in
+production.
 
-The demo is simple: install the agent, break a Deployment with a bad image tag,
-use `ktm blame` to find when it last looked healthy, use `ktm diff` to show the
-one line that changed, then use `ktm rollback` and watch the Pods recover.
+Demo: [demo URL]
 
-v0.1.1 ships an agent (`ktm-agent`) and a CLI (`ktm`). It is local-first, MIT
-licensed, and built in Go.
-
-Full disclosure: I am a backend engineer transitioning into Platform
-Engineering and learning Go in public. The architecture decisions, including
-incremental deltas, declarative-state framing, and optimistic-locking rollback,
-are documented as ADRs in the repository. I would value critique from people
-who have run this kind of system at scale.
-
-Demo: `[video link]`
-
-Repository: `github.com/Franklin-Osede/kube-time-machine`
-
-What would you want before trusting this during a real incident? Tell me where
-it breaks.
+Repository: https://github.com/Franklin-Osede/kube-time-machine
 
 `#Kubernetes #SRE #PlatformEngineering #OpenSource #DevOps #Golang`
 
 ## Required assets
 
-- Screenshot of `ktm diff` showing one clean image-change hunk without status
-  noise.
-- GIF of `ktm rollback` followed by `kubectl rollout status` recovering.
-- Link to the five-minute demo video.
-- Optional green release badge in the README, only after the final release is
-  verified.
+- Screenshot of `ktm diff` showing the image-change hunk.
+- Recording of `ktm rollback` followed by `kubectl rollout status` completing.
+- The demo video link, replacing every `[demo URL]`.
 
 ## Prepared responses
 
 ### Why not use ArgoCD history?
 
-ArgoCD only sees what ArgoCD manages, and its source of truth is Git. If someone
-uses `kubectl edit` or an operator mutates the resource, that change is invisible
-to GitOps history. KTM observes the API server, so it captures the change
-regardless of who made it. The tools are complementary; see
-[comparison.md](comparison.md).
+Argo CD detects drift on the resources it manages: a `kubectl edit` marks the
+Application OutOfSync and shows the live-versus-desired diff. It does not keep
+the sequence of live states, and it does not track resources outside an
+Application. KTM samples the live state of every watched resource, whoever
+changed it. The tools are complementary; see [comparison.md](comparison.md).
 
 ### Is this not Velero?
 
-Velero handles disaster recovery for clusters and persistent volumes, usually
-with object storage. KTM handles per-resource forensics and selective rollback.
-It does not restore your cluster; it shows which declarative line changed and
-can help undo that specific change.
+Velero backs up and restores clusters, namespaces or selected resources,
+including volumes, usually to object storage. KTM keeps a sampled history of
+declarative state for diffing, a per-resource timeline, and putting one
+resource back. It is not a backup: its storage is a single local volume.
 
 ### Why does KTM not capture `.status`?
 
@@ -135,6 +140,14 @@ intent, not observed state. Controller-owned status is noise for the question
 and runtime signals.
 
 ## Claims to avoid
+
+- That KTM records every change, or records it as it happens. It samples at
+  the flush interval.
+- That `blame` shows who made a change. It shows field managers involved.
+- That KTM knows when a resource "last looked healthy". It records no status.
+- That the demo's bad image takes the service down. The old Pod keeps serving.
+- Timing claims such as "in seconds" or "half an hour saved" that were not
+  measured.
 
 - Web UI, multi-cluster support, cloud storage, or Slack alerts.
 - Automatic rollback or unqualified production-safety claims.

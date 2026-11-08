@@ -20,31 +20,34 @@ kubectl -n ktm-system logs -l app.kubernetes.io/name=kube-time-machine --tail=10
 - `/readyz` returns HTTP 503 with the plain-text body `not ready`
 - `/healthz` returns 200 (liveness unaffected)
 
-**Most likely cause — invalid `--watch-resources`**
+**Most likely cause — the agent cannot list Deployments or ConfigMaps**
 
-If `agent.watchResources` in values.yaml names a GVR that doesn't exist in the cluster (CRD not installed, typo, RBAC denied), `WaitForCacheSync` blocks forever. The pod stays `Running` because liveness is independent of sync.
+The typed informers wait for their first list with no timeout. If RBAC denies `list` or `watch` on `deployments.apps` or `configmaps` (ClusterRole or binding missing, edited, or bound to the wrong ServiceAccount), the agent never becomes Ready and never writes a snapshot, but the process keeps running, so the Pod stays `Running` with `READY 0/1`.
 
 _Diagnosis:_
 ```bash
-kubectl -n ktm-system logs <pod> | grep "dynamic"
-# Look for: "agent: dynamic: informer cache sync timed out"
-# or sustained absence of: "agent: dynamic informer caches synced"
+kubectl -n ktm-system logs deploy/ktm-kube-time-machine | grep -i forbidden
+SA=system:serviceaccount:ktm-system:ktm-kube-time-machine
+kubectl auth can-i list deployments.apps --as="$SA" -A
+kubectl auth can-i list configmaps --as="$SA" -A
 ```
 
-_Resolution:_
+_Resolution:_ restore the chart's ClusterRole and ClusterRoleBinding, for example with `helm upgrade` to the installed chart version, then wait for `agent: informer caches synced` in the logs.
+
+**Not this cause — invalid `--watch-resources`**
+
+A GVR in `agent.watchResources` that does not exist in the cluster, or that RBAC denies, does not leave the Pod hanging: after 2 minutes the agent exits with `agent: dynamic: informer cache sync timed out after 2m0s` and the Pod restarts. See [Scenario 6](#scenario-6-agent-crash-loop-crashloopbackoff). To remove all extra resources:
+
 ```bash
-# Check current watchResources
-kubectl -n ktm-system get deploy -o jsonpath='{.items[0].spec.template.spec.containers[0].args}'
-
-# Remove the offending GVR or ensure the CRD and RBAC exist:
-helm upgrade ktm deploy/helm -n ktm-system --set 'agent.watchResources='
-
-# Or add the missing RBAC rule and redeploy
+CHART_VERSION=0.1.1-rc.2   # the installed version; `helm list -n ktm-system` shows it
+helm upgrade ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
+  --version "$CHART_VERSION" -n ktm-system --reuse-values \
+  --set-json 'agent.watchResources=[]'
 ```
 
-**Alternative cause — no GVR issue but informer slow**
+**Alternative cause — slow initial list**
 
-On very large clusters, initial list/watch can take 60-90s. Wait 2 minutes before acting. If still not ready after 5 minutes, check API server latency.
+On very large clusters the initial list can take 60–90 s. Wait 2 minutes before acting. If the agent is still not Ready after 5 minutes and the logs show no `forbidden` errors, check API server latency.
 
 ---
 
@@ -77,8 +80,8 @@ helm get values ktm -n ktm-system | grep retainDays
 ```
 
 GC runs on the next flush tick even if the subsequent write fails. After a
-restart, the first flush is a full snapshot (`flushNum==0 % fullEvery == 0`),
-but it still waits for informer sync and the configured interval. If the PVC is
+restart, the first flush is a full snapshot, written as soon as the informer
+caches sync rather than after a full interval. If the PVC is
 still full after GC, there may be no history older than the safe anchor to
 delete; reduce `retainDays` or expand the PVC through a StorageClass that
 supports volume expansion.
@@ -176,8 +179,11 @@ Common causes:
 |---|---|---|
 | `build kube client: ...` | Invalid kubeconfig or in-cluster credentials | Check ServiceAccount binding |
 | `open storage: ...` | PVC not mounted / permissions | Check PVC status, fsGroup |
-| `parse --watch-resources: malformed GVR` | Syntax error in watchResources | Fix values.yaml GVR format |
-| `register handler for <resource>: ...` | Programming error (should not happen in released builds) | Check image tag / file a bug |
+| `parse --watch-resources: agent: malformed GVR ...` | Syntax error in watchResources | Fix values.yaml GVR format |
+| `agent: dynamic: register handler for <resource>: ...` | Programming error (should not happen in released builds) | Check image tag / file a bug |
+| `agent: dynamic: informer cache sync timed out after 2m0s` | A GVR in `agent.watchResources` does not exist or RBAC denies it | Install the CRD and add `rbac.extraRules`, or remove it with `--set-json 'agent.watchResources=[]'` |
+| `open storage: storage: another process holds the writer lock` | A second agent is using the same volume | Run one agent per volume; the chart's `Recreate` strategy prevents this during upgrades |
+| `storage: unsupported store format` | The volume was written by a newer KTM | Upgrade the agent; see [ADR-0008](adr/0008-store-format-version.md) |
 
 ---
 

@@ -7,53 +7,85 @@ KTM has two operating modes. Both share the same agent and CLI binaries and the 
 
 ## Prerequisites
 
-- A Kubernetes cluster (≥ 1.27 tested; OrbStack K8s 1.33 is the development target).
+- A Kubernetes cluster. Tested on kind with its default node image (Kubernetes v1.36.1 on the test run); the version is not pinned and others are untested.
 - `kubectl` configured against the target cluster.
-- For Mode B: `helm` v3.x.
-- The CLI binary (`ktm`) and the agent binary (`ktm-agent`). Release binaries are not published yet; build them from source with `make build` from the repo root.
+- For Mode B: Helm 3.
+- The CLI binary (`ktm`) and the agent binary (`ktm-agent`), installed as below.
+
+## Installing the binaries
+
+Published builds are attached to each [GitHub release](https://github.com/Franklin-Osede/kube-time-machine/releases) with a `checksums.txt`. Until the stable `v0.1.1` is released, the newest verified build is the `v0.1.1-rc.2` prerelease.
+
+```bash
+VERSION=v0.1.1-rc.2
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
+BASE=https://github.com/Franklin-Osede/kube-time-machine/releases/download/$VERSION
+
+mkdir -p "$HOME/.local/ktm" && cd "$HOME/.local/ktm"
+curl -fsSL -O "$BASE/ktm-$OS-$ARCH" -O "$BASE/ktm-agent-$OS-$ARCH" -O "$BASE/checksums.txt"
+shasum -a 256 -c --ignore-missing checksums.txt
+mv "ktm-$OS-$ARCH" ktm && mv "ktm-agent-$OS-$ARCH" ktm-agent && chmod +x ktm ktm-agent
+export PATH="$HOME/.local/ktm:$PATH"
+```
+
+Builds exist for Linux and macOS on amd64 and arm64, and for Windows on amd64 (`ktm-windows-amd64.exe`, `ktm-agent-windows-amd64.exe`). On Linux without `shasum`, use `sha256sum -c --ignore-missing checksums.txt`.
+
+To build from source instead, run `make build` from the repository root; it writes `bin/ktm` and `bin/ktm-agent`.
 
 ## Mode A — local-first agent
 
 The agent runs as a regular process; `--kubeconfig` selects the cluster.
 
 ```bash
-# In one terminal — agent records continuously.
-./bin/ktm-agent \
-  --kubeconfig ~/.kube/config \
-  --storage-dir /tmp/ktm \
-  --interval 10s \
-  --full-every 3
+# In one terminal — the agent records until you stop it.
+STORE="$HOME/ktm-store"
+ktm-agent --kubeconfig ~/.kube/config --storage-dir "$STORE" \
+  --interval 10s --full-every 3
 ```
 
 `--interval 10s` and `--full-every 3` are demo-friendly defaults; for longer sessions the production defaults are `5m` and `12`. See [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md) for the cadence trade-offs.
 
 ```bash
-# In another terminal — CLI queries the same dir the agent writes to.
-./bin/ktm --storage-dir /tmp/ktm snapshot list
-./bin/ktm --storage-dir /tmp/ktm diff --from <id> --to <id>
-./bin/ktm --storage-dir /tmp/ktm blame deployment/<namespace>/<name>
-./bin/ktm --storage-dir /tmp/ktm rollback deployment/<namespace>/<name> --to <id>
+# In another terminal — the CLI reads the directory the agent writes to.
+STORE="$HOME/ktm-store"
+ktm --storage-dir "$STORE" snapshot list
+
+# Pick two IDs from the list, oldest first, and a resource to inspect.
+FROM=20261108T205130467Z
+TO=20261108T205135497Z
+ktm --storage-dir "$STORE" diff --from "$FROM" --to "$TO"
+ktm --storage-dir "$STORE" blame deployment/default/api
+ktm --storage-dir "$STORE" rollback deployment/default/api --to "$FROM"
 ```
 
-Stop the agent with `Ctrl-C`; it performs a 5-second best-effort final flush before exiting.
+The IDs above are examples; use the ones `snapshot list` prints. The [README quick start](../README.md#quick-start) captures them into variables automatically.
 
-This is the path the launch demo uses — see [examples/demo-scenario/](../examples/demo-scenario/).
+Stop the agent with `Ctrl-C`; it performs a 5-second best-effort final flush before exiting, and skips it if the informer caches never synced, so an empty cache never becomes a snapshot.
+
+A scripted walkthrough with a Deployment and a ConfigMap is in [examples/demo-scenario/](../examples/demo-scenario/).
 
 ## Mode B — continuous in-cluster recording (Helm chart)
 
-For longer-running deployments where you want history captured even when no laptop is attached, install the chart from the repository. The OCI chart and agent image are not published yet, so first build the image and make it available to your cluster:
+For longer-running deployments where you want history captured even when no laptop is attached, install the published OCI chart. It pulls the matching multi-arch image from GHCR:
+
+```bash
+CHART_VERSION=0.1.1-rc.2
+helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
+  --version "$CHART_VERSION" -n ktm-system --create-namespace
+```
+
+To run an image built from source on kind, load it into the cluster and point the chart from the repository at it:
 
 ```bash
 docker build -t ktm-agent:dev .
-
-helm install ktm deploy/helm \
-  --namespace ktm-system --create-namespace \
-  --set image.repository=ktm-agent \
-  --set image.tag=dev \
-  --set image.pullPolicy=Never
+kind load docker-image ktm-agent:dev --name <your-kind-cluster>
+helm install ktm deploy/helm -n ktm-system --create-namespace \
+  --set image.repository=ktm-agent --set image.tag=dev --set image.pullPolicy=Never
 ```
 
-`image.pullPolicy=Never` works for local clusters whose container runtime can see the locally built image. For a remote cluster, push the image to a registry the cluster can access and set `image.repository`, `image.tag`, and `image.pullPolicy` accordingly.
+The Dockerfile uses BuildKit syntax; with a Docker that has no BuildKit, `test/e2e/e2e.sh` shows the fallback. For a remote cluster, push the image to a registry the cluster can reach and set `image.repository` and `image.tag`.
 
 Verify:
 
@@ -63,34 +95,36 @@ kubectl get clusterrole,clusterrolebinding | grep ktm
 kubectl -n ktm-system logs deploy/ktm-kube-time-machine
 ```
 
-The agent logs `informer caches synced`, immediately persists its first full snapshot, and then becomes Ready. From that moment, every Add/Update/Delete on a watched Deployment or ConfigMap reaches the local buffer and is flushed to the PVC at the configured cadence (`snapshot.intervalSeconds`, default 300 s).
+The agent logs `informer caches synced`, immediately persists its first full snapshot, and then becomes Ready. From then on it keeps the latest state of every watched Deployment and ConfigMap in memory and writes it to the PVC every `snapshot.intervalSeconds` (default 300 s), and early when `snapshot.burstThreshold` changes (default 50) are pending. The history is sampled at those flushes: a change that is reverted between two flushes does not appear, and a snapshot's timestamp is the flush time, not the time of the change.
 
 ### Querying history from Mode B (CLI ↔ PVC)
 
 The CLI reads directly from the local `--storage-dir`; it does **not** speak to the agent or to the API server for the read commands (`snapshot list/show`, `diff`, `blame`). To query a history that lives in an in-cluster PVC, you currently have to copy the contents to your machine.
 
-The base image is `gcr.io/distroless/static-debian12:nonroot` — no shell, no `tar`, no package manager. The supported recipe is `kubectl debug` with a busybox ephemeral container that shares the agent's mount namespace, plus `kubectl cp` to pull the directory:
+The base image is `gcr.io/distroless/static-debian12:nonroot` — no shell, no `tar`, no package manager. The supported recipe attaches a named busybox ephemeral container that shares the agent's process namespace, streams the store out with `tar`, and unpacks it into a fresh private directory:
 
 ```bash
+set -o pipefail
 POD=$(kubectl -n ktm-system get pod -l app.kubernetes.io/name=kube-time-machine -o jsonpath='{.items[0].metadata.name}')
+EXPORT="ktm-export-$(date +%s)"   # ephemeral container names cannot be reused
 
-# Attach an ephemeral container that can see the agent's PVC mount.
-kubectl -n ktm-system debug "$POD" \
-  --image=busybox:latest \
-  --target=agent \
-  --profile=general \
-  -- sh -c "sleep 600" >/dev/null 2>&1 &
+kubectl -n ktm-system debug "$POD" --image=busybox:1.36 --target=agent \
+  --profile=general --container="$EXPORT" -- sh -c "sleep 600" >/dev/null
+kubectl -n ktm-system wait "pod/$POD" --timeout=90s \
+  --for=jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"$EXPORT\")].state.running}"
 
-DEBUG=$(kubectl -n ktm-system get pod "$POD" -o jsonpath='{.spec.ephemeralContainers[*].name}' | tr ' ' '\n' | tail -1)
+STORE=$(mktemp -d)                # a new, private (0700) directory per export
+kubectl -n ktm-system exec "$POD" -c "$EXPORT" -- \
+  tar -C /proc/1/root/var/lib/ktm -cf - . | tar -xf - -C "$STORE"
 
-# Tar the snapshots directory into a local file via `kubectl exec`.
-mkdir -p /tmp/ktm
-kubectl -n ktm-system exec "$POD" -c "$DEBUG" -- \
-  tar -C /proc/1/root/var/lib/ktm -cf - . | tar -xf - -C /tmp/ktm
-
-# Query with the local CLI.
-./bin/ktm --storage-dir /tmp/ktm snapshot list
+# The agent may write while tar runs. Drop the copied index so the CLI
+# rebuilds it from meta.json files, which the agent writes last: the copy then
+# lists only snapshots whose files were complete when they were copied.
+rm -f "$STORE/index.json"
+ktm --storage-dir "$STORE" snapshot list
 ```
+
+Use a new directory for every export. Unpacking into a directory that already holds another store mixes the two histories. The ephemeral container stays attached to the Pod until the Pod is replaced; it exits after the `sleep`.
 
 For routine inspection this is operationally awkward; it is good enough for v0.1.1 forensics on a real incident. A `ktm proxy` subcommand that talks to the agent over the API server is a Phase 2 candidate, gated on real-world traction.
 
@@ -100,7 +134,7 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 
 | Value | Default | Notes |
 |---|---|---|
-| `snapshot.intervalSeconds` | `300` | Flush cadence in seconds. Smaller = lower MTTR for forensic queries, more storage. |
+| `snapshot.intervalSeconds` | `300` | Flush cadence in seconds. Smaller keeps shorter-lived states and timestamps closer to the change, at the cost of more snapshots. |
 | `snapshot.fullEvery` | `12` | Every Nth flush is a full reference snapshot. Bounds chain-reconstruction cost (see [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md)). |
 | `snapshot.retainDays` | `30` | Deletes history before the safe full-snapshot anchor. Set `0` to retain everything. |
 | `storage.size` | `10Gi` | PVC size. Storage scales with change rate, not snapshot rate. |
@@ -116,7 +150,7 @@ There is no `replicaCount` value. The agent writes to a `ReadWriteOnce` PVC and 
 
 The Deployment uses `strategy.type: Recreate`, not the default rolling update. This is deliberate and load-bearing: a rolling update would briefly run two pods sharing the same RWO PVC, both racing to write the same files. `Recreate` guarantees the old pod terminates before the new one starts, at the cost of a ~30-second gap during upgrades where no events are captured.
 
-If a change happens to the cluster during that gap it will surface in the next full reference snapshot regardless — KTM detects deletions and additions by comparing the set of keys across consecutive full snapshots, so the data is not lost, only the precise moment of the change is. For routine production use this is acceptable; for incident response while debugging KTM itself, schedule upgrades during quiet windows.
+Changes made during that gap are not recorded as they happen. When the new Pod starts it writes a full snapshot of the state at that moment, so the net result of the gap is captured, but intermediate states are lost, and the snapshot's timestamp is the restart time, not the time of the change. A value that was set and reverted during the gap does not appear at all. Schedule upgrades for quiet windows if that matters.
 
 ### RBAC: what the agent can and cannot do
 
@@ -140,7 +174,7 @@ node→pod traffic (Cilium among them). A restriction that fails this way presen
 as a crash-looping agent, which is a worse outcome than the exposure.
 
 None of the three endpoints serve snapshot data. `/metrics` does reveal
-operational shape — how many resources are watched, flush counts and timings —
+operational shape — how many resources are buffered, how many changes are pending, and flush counts —
 so treat it as you would any unauthenticated metrics endpoint. A
 `networkPolicy.healthIngressFrom` value to narrow the source is a candidate for
 a later release, gated on testing against the CNIs we support.
@@ -152,7 +186,7 @@ The PVC (Mode B) and the `--storage-dir` (Mode A) hold the full declarative stat
 - **ConfigMaps often carry sensitive configuration** even though they are not Secrets — connection strings, internal hostnames, feature flags, tokens that should have been Secrets but weren't. All of it is recorded verbatim in the snapshots.
 - **Secrets are *not* captured.** The bundled `ClusterRole` grants no access to `secrets`, so the agent cannot read them and they never reach storage. This is by design (see [ADR-0007](adr/0007-packaging-defaults.md)).
 - **Use a StorageClass that encrypts at rest** for the PVC (`storage.storageClassName`). On managed clusters this usually means an encrypted EBS/PD/Disk class.
-- **Restrict access to the data.** Anyone who can read the PVC — or the `kubectl debug` + `kubectl cp` extraction path documented above — can read the recorded state. Limit who can exec into the `ktm-system` namespace, and treat any copy extracted to a laptop as confidential: delete it once the incident is closed.
+- **Restrict access to the data.** Anyone who can read the PVC — or the `kubectl debug` + `kubectl exec ... tar` extraction path documented above — can read the recorded state. Limit who can exec into the `ktm-system` namespace, and treat any copy extracted to a laptop as confidential: delete it once the incident is closed.
 - **Retention defaults to 30 days.** GC preserves the latest full snapshot at
   or before the cutoff as a reconstruction anchor, so actual retained history
   can be slightly longer. Set `snapshot.retainDays=0` to keep all history.
@@ -175,7 +209,7 @@ helm uninstall ktm -n ktm-system
 - To attach a kept PVC to a fresh install:
   ```bash
   helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
-    --version 0.1.1 -n ktm-system \
+    --version "$CHART_VERSION" -n ktm-system \
     --set storage.existingClaim=ktm-kube-time-machine-data
   ```
 - For ephemeral or CI installs where leftover PVCs are noise, set `--set storage.retain=false` to get the old behaviour.
@@ -184,7 +218,7 @@ Retention is not a backup: a single ReadWriteOnce volume is one storage-class fa
 
 ## Troubleshooting
 
-- **`ImagePullBackOff`.** Either the image tag is not published yet or your cluster cannot reach GHCR. For local development pass `--set image.repository=ktm-agent --set image.tag=dev --set image.pullPolicy=Never` after `docker build`-ing locally.
+- **`ImagePullBackOff`.** Either the chart version has no matching image or your cluster cannot reach GHCR. For an image built from source, load it into the cluster (`kind load docker-image`) and pass `--set image.repository=ktm-agent --set image.tag=dev --set image.pullPolicy=Never`.
 - **Pod `Running` but no logs / no snapshots.** Check that the agent has watch permission: `kubectl -n ktm-system describe pod ...` for events, `kubectl auth can-i list deployments --as=system:serviceaccount:ktm-system:ktm-kube-time-machine`.
 - **`kubectl exec` returns "no such file or directory"** for `ls`, `cat`, etc. Expected — distroless has no shell or coreutils. Use the `kubectl debug` recipe above.
 - **Two installs collide on `ClusterRole`.** Shouldn't happen — the name includes the release namespace. If it does, check that you used `helm install` with `--namespace` set, not just `kubectl apply`-d the rendered chart with a namespace overlay.
