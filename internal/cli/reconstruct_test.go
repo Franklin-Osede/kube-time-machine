@@ -17,7 +17,7 @@ import (
 
 // White-box test (package cli, not cli_test) so we can call the
 // unexported reconstruct helper directly. The function is intentionally
-// unexported — it's an implementation detail of show, diff, and (Etapa 5)
+// unexported — it's an implementation detail of show, diff and
 // blame.
 
 func key(kind, ns, name string) delta.Key {

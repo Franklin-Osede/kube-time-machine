@@ -154,8 +154,9 @@ func computeBlame(ctx context.Context, store storage.Store, target delta.Key) ([
 		// entire running state — skipping one would leave `running` based
 		// on a stale full that predates the skipped one.
 		//
-		// When Kinds is empty (snapshots written before Phase 3.3 or empty
-		// payloads) we conservatively load to avoid false negatives.
+		// When Kinds is empty (snapshots written before meta.json recorded
+		// Kinds, or empty payloads) we conservatively load to avoid false
+		// negatives.
 		if meta.Kind == types.KindDelta && len(meta.Kinds) > 0 && !kindsContain(meta.Kinds, target.Kind) {
 			// The delta is guaranteed not to touch target — no state change.
 			continue
@@ -208,7 +209,7 @@ func kindsContain(kinds []string, kind string) bool {
 // managersFromState decodes the synthetic "ktm.io/managers" annotation that
 // the marshal layer injects into every stored state. Returns an empty string
 // when the annotation is absent or the state cannot be parsed (e.g. for
-// older snapshots written before Phase 3.1).
+// snapshots written before the annotation was introduced).
 //
 // What this returns is the set of field managers that owned SOME field on the
 // object when the snapshot was taken. It is not proof that any of them made the

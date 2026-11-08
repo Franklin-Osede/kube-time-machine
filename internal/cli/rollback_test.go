@@ -279,12 +279,11 @@ func TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
 	}
 }
 
-// TestRollbackDeployment_PreviewIsSanitised pins the C3 fix: the rollback
-// preview must diff a SANITISED view of the live object against the
-// snapshot payload, so server-owned churn (resourceVersion, managedFields,
-// status) never appears in the diff the user confirms. Before the fix the
-// preview marshalled the raw live object and drowned the one meaningful
-// hunk in noise.
+// TestRollbackDeployment_PreviewIsSanitised: the rollback preview must diff a
+// SANITISED view of the live object against the snapshot payload, so
+// server-owned churn (resourceVersion, managedFields, status) never appears in
+// the diff the user confirms. Diffing the raw live object would bury the one
+// meaningful hunk in noise.
 func TestRollbackDeployment_PreviewIsSanitised(t *testing.T) {
 	live := makeDeployment("api", "nginx:1.27", "100")
 	live.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl"}}
@@ -314,7 +313,7 @@ func TestRollbackDeployment_PreviewIsSanitised(t *testing.T) {
 	}
 	for _, noise := range []string{"resourceVersion", "managedFields", "observedGeneration"} {
 		if strings.Contains(preview, noise) {
-			t.Errorf("preview leaked server-owned field %q (C3 regression):\n%s", noise, preview)
+			t.Errorf("preview leaked server-owned field %q (unsanitised preview):\n%s", noise, preview)
 		}
 	}
 }

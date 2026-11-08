@@ -198,7 +198,7 @@ func TestSnapshotter_FlushPropagatesStoreErrors(t *testing.T) {
 
 // flakyFullStore wraps a real Store and fails the first PutFull, then
 // delegates. Used to prove a failed full write does not advance the
-// Snapshotter's cadence (the C2 regression).
+// Snapshotter's cadence.
 type flakyFullStore struct {
 	storage.Store
 	fullCalls int
@@ -389,10 +389,10 @@ func (putFullFailStore) PutFull(_ context.Context, _ time.Time, _ delta.Snapshot
 	return types.SnapshotMeta{}, errBoom
 }
 
-// TestSnapshotter_GCRunsBeforeFailedFullFlush pins the fix for R-03: when
-// every full-flush attempt fails (simulating ENOSPC), GC must still run
-// proactively so old snapshots are freed before the flush is retried.
-// Without this, a full PVC deadlocks the agent forever.
+// TestSnapshotter_GCRunsBeforeFailedFullFlush: when every full-flush attempt
+// fails (simulating ENOSPC), GC must still run proactively so old snapshots are
+// freed before the flush is retried. Without this, a full PVC deadlocks the
+// agent forever.
 func TestSnapshotter_GCRunsBeforeFailedFullFlush(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -436,7 +436,7 @@ func TestSnapshotter_GCRunsBeforeFailedFullFlush(t *testing.T) {
 	// Despite all flush failures, GC must have deleted the pre-anchor snapshot.
 	ids := idsSet(mustList(t, realStore))
 	if ids[oldMeta.ID] {
-		t.Error("GC must delete old snapshots even when full flush always fails (R-03: ENOSPC deadlock)")
+		t.Error("GC must delete old snapshots even when full flush always fails (ENOSPC deadlock)")
 	}
 }
 

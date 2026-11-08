@@ -176,9 +176,7 @@ func TestDynamicInformers_ExcludeNamespaceFiltersUpserts(t *testing.T) {
 	}
 }
 
-// -- WithSyncTimeout (P0-2) --
-// These tests will fail to compile until WithSyncTimeout is implemented,
-// which is the correct RED state.
+// -- WithSyncTimeout --
 
 // TestDynamicInformers_WithSyncTimeoutReturnsReceiver verifies the method exists
 // and returns the same *DynamicInformers for fluent chaining.
@@ -191,11 +189,11 @@ func TestDynamicInformers_WithSyncTimeoutReturnsReceiver(t *testing.T) {
 	}
 }
 
-// TestDynamicInformers_SyncTimeoutFiresBeforeParentContextCancel is the key
-// behavioural test for P0-2: when informer sync does not complete within the
-// configured timeout, Start() returns a descriptive error WITHOUT cancelling
-// or waiting for the parent context. This guards against the silent hang when
-// --watch-resources names a GVR that doesn't exist in the cluster.
+// TestDynamicInformers_SyncTimeoutFiresBeforeParentContextCancel: when informer
+// sync does not complete within the configured timeout, Start() returns a
+// descriptive error WITHOUT cancelling or waiting for the parent context. This
+// guards against the silent hang when --watch-resources names a GVR that
+// doesn't exist in the cluster.
 //
 // NewSimpleDynamicClientWithCustomListKinds is used instead of
 // NewSimpleDynamicClient because the reflector panics at list time when the

@@ -640,7 +640,7 @@ func TestKindsPopulatedOnPutDelta(t *testing.T) {
 	}
 }
 
-// TestPutFull_OrphanCleanedUpOnIndexFailure verifies R-05: if writeSnapshot
+// TestPutFull_OrphanCleanedUpOnIndexFailure: if writeSnapshot
 // succeeds but appendIndex cannot update index.json (e.g. out of disk space),
 // PutFull must roll back the snapshot directory so no orphan is left behind,
 // AND the in-memory index must remain unchanged.

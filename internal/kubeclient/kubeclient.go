@@ -142,7 +142,7 @@ func NewClient(explicit string) (kubernetes.Interface, error) {
 
 // NewDynamicClient runs BuildConfig and returns a dynamic client that can
 // work with any Kubernetes resource, including CRDs, without requiring
-// generated typed structs. Used by DynamicInformers in Phase 2.
+// generated typed structs. Used by DynamicInformers.
 func NewDynamicClient(explicit string) (dynamic.Interface, error) {
 	cfg, err := BuildConfig(explicit)
 	if err != nil {
