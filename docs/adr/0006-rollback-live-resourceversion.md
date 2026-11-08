@@ -28,6 +28,8 @@ Step 5 deliberately reuses the `ResourceVersion` from step 2 rather than re-fetc
 
 If step 2 returns `404 Not Found`, the resource no longer exists. The rollback falls back to `Create`. Before calling `Create` we strip server-owned fields the snapshot may still carry indirectly (none today, given sanitisation, but defensively: `ResourceVersion`, `UID`, `CreationTimestamp`, `Generation`, `ManagedFields`). Note: with [ADR-0005](0005-declarative-state-recorder.md), `.status` is also stripped upstream in `internal/agent/marshal.go`, so the create path no longer has to deal with it.
 
+> **Amendment (2026-08-25):** recreation on `404` is opt-in. Without `--allow-create` the rollback stops with an error instead of calling `Create`: deleting a resource is usually deliberate, and undoing a deletion is a different operation from rolling a resource back, so it must not happen as a side effect. With `--allow-create` the flow is as described above. The recreated object is new — it gets a fresh UID — so anything that referenced the old one, such as an ownerReference, does not reattach.
+
 ## Alternatives considered
 
 1. **Stop stripping `ResourceVersion` in `marshal.go`.** Rejected: reintroduces the per-flush metadata churn that produced spurious "modified" deltas before sanitisation existed. ADR-0002 explicitly accepted this trade-off and we are not unwinding it.

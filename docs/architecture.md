@@ -81,7 +81,7 @@ The `<id>` is a sortable UTC timestamp at millisecond precision: `20260518T14053
 4. Prompt for confirmation.
 5. `Update` using the `ResourceVersion` captured in step 2 — no second `Get`.
 
-Step 5 deliberately does not re-fetch after the prompt: a re-fetch would silently absorb any change made between the preview and the apply, undermining the user's informed consent. The full reasoning, including the `Create`-on-404 fallback, is in [ADR-0006](adr/0006-rollback-live-resourceversion.md).
+Step 5 deliberately does not re-fetch after the prompt: a re-fetch would silently absorb any change made between the preview and the apply, undermining the user's informed consent. If step 2 returns `404`, rollback stops; recreating the resource requires `--allow-create`, so a deliberate deletion is never undone silently. The full reasoning is in [ADR-0006](adr/0006-rollback-live-resourceversion.md).
 
 ## Out of scope for MVP
 

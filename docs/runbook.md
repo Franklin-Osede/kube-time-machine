@@ -102,14 +102,17 @@ If the node's underlying disk is failing, the only safe option is to move the PV
 
 **Self-healing behavior**
 
-The store auto-rebuilds `index.json` from `snapshots/*/meta.json` on every `storage.NewLocal()` call (including agent restart and every CLI invocation). This is the designed recovery path (ADR-0004).
+`index.json` is a cache rebuilt from `snapshots/*/meta.json` (ADR-0004). Who rebuilds it depends on who opens the store:
+
+- The CLI opens it read-only (`storage.OpenForRead`). It rebuilds the index in memory for that one command and writes nothing, so `ktm` output is correct even while `index.json` on disk stays broken.
+- The agent opens it for writing (`storage.NewLocal`) and rewrites `index.json` on disk. Restarting the agent is what repairs the file.
 
 _Manual trigger:_
 ```bash
 # Mount the PVC locally (Mode A) or use a debug pod, then:
 rm /var/lib/ktm/index.json
 ktm --storage-dir=/var/lib/ktm snapshot list
-# The CLI calls storage.NewLocal which triggers rebuildIndex automatically.
+# Rebuilt in memory only; index.json is rewritten on the next agent start.
 ```
 
 If `rebuildIndex` produces an empty index but `snapshots/` has directories, check whether `meta.json` is present in each snapshot directory — directories without `meta.json` are skipped.
@@ -120,8 +123,8 @@ If `rebuildIndex` produces an empty index but `snapshots/` has directories, chec
 
 **Symptoms**
 ```
-Error: rollback failed: 409 Conflict — the resource was modified between preview and apply.
-Re-run `ktm rollback` to preview the current live state.
+Error: rollback rejected: Deployment/default/api changed in the cluster between preview
+and apply. Re-run `ktm rollback` to see the new state and confirm again
 ```
 
 **Cause and resolution**
