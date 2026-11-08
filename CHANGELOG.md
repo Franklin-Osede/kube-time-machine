@@ -110,8 +110,10 @@ version to install.
   workflow inferred its version from `go.mod`, whose `go 1.26.0` directive names
   an exact patch, so published binaries would have shipped the vulnerable
   standard library.
-- Bumped `golang.org/x/net` to v0.60.0 and `golang.org/x/text` to v0.42.0 for
-  advisories reachable from `ktm rollback`.
+- Bumped `golang.org/x/net` to v0.62.0 and `golang.org/x/text` to v0.43.0.
+  Earlier advisories were reachable from `ktm rollback`; v0.62.0 also clears
+  GO-2026-6860 and GO-2026-6866, which a binary scan finds linked in although
+  the code never calls them.
 - Removed the unused `resources.watch` chart value, which collided with the
   conventional Helm `resources` key and silently did nothing when set.
 - The NetworkPolicy now admits kubelet probe traffic, so liveness and readiness
