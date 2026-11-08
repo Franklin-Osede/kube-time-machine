@@ -55,6 +55,8 @@ version to install.
 
 ### Fixed
 
+- `ktm diff` and the `ktm rollback` preview printed each hunk as one long
+  line with no `+`/`-` colouring. Every changed line now prints on its own.
 - The agent no longer persists an empty full snapshot when the informer caches
   never sync. Previously a CrashLoopBackOff under bad RBAC would append an
   empty reference snapshot on every restart, producing a history whose newest

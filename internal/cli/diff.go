@@ -123,11 +123,11 @@ func printDelta(out io.Writer, d delta.Delta, prev delta.Snapshot) {
 		fmt.Fprintln(out, bold(fmt.Sprintf("==== Modified (%d) ====", len(d.Modified))))
 		for _, k := range sortedKeysFromMap(d.Modified) {
 			fmt.Fprintln(out, yellow("~ "+keyString(k)))
-			beforeText := strings.Join(prettyLines(prev[k]), "\n")
-			afterText := strings.Join(prettyLines(d.Modified[k]), "\n")
+			// difflib emits each input line verbatim, so lines must keep their
+			// "\n"; SplitLines does that, strings.Split strips it.
 			diff := difflib.UnifiedDiff{
-				A:        strings.Split(beforeText, "\n"),
-				B:        strings.Split(afterText, "\n"),
+				A:        difflib.SplitLines(strings.Join(prettyLines(prev[k]), "\n")),
+				B:        difflib.SplitLines(strings.Join(prettyLines(d.Modified[k]), "\n")),
 				FromFile: "before",
 				ToFile:   "after",
 				Context:  3,

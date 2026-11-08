@@ -84,6 +84,18 @@ func TestRunDiff_ModifiedShowsUnifiedDiff(t *testing.T) {
 			t.Errorf("expected %q in diff output:\n%s", want, out)
 		}
 	}
+	// Each changed line must be a line of its own. difflib needs
+	// newline-terminated input; without it hunks run together on one line,
+	// which Contains alone would not catch.
+	lines := map[string]bool{}
+	for _, l := range strings.Split(out, "\n") {
+		lines[strings.TrimSpace(l)] = true
+	}
+	for _, want := range []string{`-  "image": "nginx:1.25",`, `+  "image": "nginx:1.27",`, `"replicas": 2`} {
+		if !lines[want] {
+			t.Errorf("expected %q as a line of its own:\n%s", want, out)
+		}
+	}
 }
 
 func TestRunDiff_RemovedOnly(t *testing.T) {
