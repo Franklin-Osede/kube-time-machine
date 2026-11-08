@@ -93,7 +93,7 @@ version to install.
   `--allow-create`.
 - The health server sets read, read-header, write, and idle timeouts; it
   previously had none while the NetworkPolicy admits kubelet to its port.
-- Released binaries are built with a pinned Go 1.26.9 toolchain. The release
+- Released binaries are built with a pinned Go 1.26.10 toolchain. The release
   workflow inferred its version from `go.mod`, whose `go 1.26.0` directive names
   an exact patch, so published binaries would have shipped the vulnerable
   standard library.
@@ -108,6 +108,10 @@ version to install.
 
 ### Security
 
+- Build with Go 1.26.10 for GO-2026-6809 (`crypto/x509` trusted compromised
+  intermediate certificates). `govulncheck` traces it from the health server;
+  that server is plain HTTP, but the toolchain moves rather than arguing
+  reachability.
 - Snapshot directories and files are now created `0700`/`0600` rather than
   `0755`/`0644`.
 

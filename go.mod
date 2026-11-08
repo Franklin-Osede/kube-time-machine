@@ -7,7 +7,7 @@ go 1.26.0
 // work. The toolchain is the 1.26 patch that fixes the stdlib advisories
 // govulncheck reports as reachable. Raise this, not the 'go' line, for future
 // stdlib CVEs, and move the Dockerfile and release.yml pins in the same change.
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	github.com/fatih/color v1.19.0
