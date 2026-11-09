@@ -60,6 +60,8 @@ The `values.yaml` documents that `replicas` must remain `1` until a storage back
 
 > **Amendment (2026-11-08):** `release.yml` shipped. A `v*` tag runs a `verify` job, then pushes the `linux/amd64` + `linux/arm64` image to GHCR, builds `ktm` and `ktm-agent` for five platforms, pushes the OCI chart, and attaches the binaries with SHA-256 checksums to the GitHub release. It authenticates with the built-in `GITHUB_TOKEN`, so no `GHCR_TOKEN` secret was needed. It does not produce provenance attestations, signatures or an SBOM; that is tracked in `TODO.md`.
 
+> **Amendment (2026-11-09):** the previous amendment was wrong about provenance. `docker/build-push-action` attaches a BuildKit SLSA provenance attestation by default, and for a public repository it uses `mode=max`. The published image index (inspected on 0.1.1-rc.3) carries one unsigned `https://slsa.dev/provenance/v1` attestation manifest per architecture. It records the build request, the Dockerfile frontend, the build args (only `VERSION`), the image labels and the GitHub Actions context, including the public push-event payload. No secrets reach it. It comes from the action's default, not from a setting in `release.yml`, so a bump of the action could change it; the post-release check inspects the image index. It is deliberately not disabled. It is not a signature: nothing in it is verifiable against a key, so it does not replace signing. There is still no SBOM.
+
 ## Consequences
 
 **Easier**
