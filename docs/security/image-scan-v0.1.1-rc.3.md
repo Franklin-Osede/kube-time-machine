@@ -1,7 +1,9 @@
 # Image scan: ktm-agent 0.1.1-rc.3
 
-Status: **scan done; acceptance proposed, pending owner sign-off.** Nothing
-below is accepted until the release owner approves it in review.
+Status: **scan done; findings accepted for v0.1.1** by the release owner,
+Franklin Osede, on 2026-11-09, for the supported configuration and under the
+review conditions below ([sign-off](https://github.com/Franklin-Osede/kube-time-machine/pull/24#issuecomment-6738416187)). The stable image is to be scanned
+again before the public announcement.
 
 ## What was scanned
 
@@ -72,7 +74,7 @@ calls `time.LoadLocation`, and the chart sets no `TZ`. Only log-line
 timestamps use local time, so stale rules could only shift those, and only
 if an operator set `TZ` to one of the affected zones.
 
-**Proposed decision:** accept for v0.1.1. Neither package is on a path the
+**Decision:** accepted for v0.1.1 (see Status). Neither package is on a path the
 agent uses in its supported configuration, and no fixed base exists to move
 to.
 
