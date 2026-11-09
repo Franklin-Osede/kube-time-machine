@@ -50,6 +50,7 @@ agent:
   # Extra kinds to record via dynamic informers (experimental), as
   # "resource[.group]/version"; the version is required because the dynamic
   # client does no discovery. Each needs a matching rule in rbac.extraRules.
+  # Deployments and ConfigMaps are refused: they are always recorded.
   watchResources: []
   resources:
     requests:

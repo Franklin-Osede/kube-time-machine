@@ -180,6 +180,7 @@ Common causes:
 | `build kube client: ...` | Invalid kubeconfig or in-cluster credentials | Check ServiceAccount binding |
 | `open storage: ...` | PVC not mounted / permissions | Check PVC status, fsGroup |
 | `parse --watch-resources: agent: malformed GVR ...` | Syntax error in watchResources | Fix values.yaml GVR format |
+| `parse --watch-resources: agent: "..." is already recorded by the built-in watches` | `agent.watchResources` lists Deployments or ConfigMaps | Remove the entry; those kinds are always recorded |
 | `agent: dynamic: register handler for <resource>: ...` | Programming error (should not happen in released builds) | Check image tag / file a bug |
 | `agent: dynamic: informer cache sync timed out after 2m0s` | A GVR in `agent.watchResources` does not exist or RBAC denies it | Install the CRD and add `rbac.extraRules`, or remove it with `--set-json 'agent.watchResources=[]'` |
 | `open storage: storage: another process holds the writer lock` | A second agent is using the same volume | Run one agent per volume; the chart's `Recreate` strategy prevents this during upgrades |

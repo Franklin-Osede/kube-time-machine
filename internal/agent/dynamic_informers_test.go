@@ -221,3 +221,19 @@ func TestDynamicInformers_SyncTimeoutFiresBeforeParentContextCancel(t *testing.T
 	default:
 	}
 }
+
+func TestParseGVRList_RefusesTypedKinds(t *testing.T) {
+	for _, in := range []string{
+		"deployments.apps/v1",
+		"configmaps/v1",
+		"services/v1, deployments.apps/v1beta2",
+	} {
+		if _, err := ParseGVRList(in); err == nil {
+			t.Errorf("ParseGVRList(%q): want error for a kind the typed informers record", in)
+		}
+	}
+	got, err := ParseGVRList("services/v1, statefulsets.apps/v1")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("ParseGVRList of other kinds: got %v, %v", got, err)
+	}
+}

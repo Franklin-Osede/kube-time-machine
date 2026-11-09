@@ -19,18 +19,10 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
-// DefaultDynamicGVRs is the default set of resources watched by
-// DynamicInformers.
-var DefaultDynamicGVRs = []schema.GroupVersionResource{
-	{Group: "apps", Version: "v1", Resource: "statefulsets"},
-	{Group: "", Version: "v1", Resource: "services"},
-	{Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
-	{Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"},
-}
-
 // DynamicInformers watches a configurable set of GroupVersionResources,
 // including CRDs, and writes sanitised state into the Buffer shared with the
-// typed Informers; Keys are disjoint by Kind. It is the Phase 2 extension
+// typed Informers. ParseGVRList refuses the typed kinds, so the two never
+// write the same Key. It is the Phase 2 extension
 // point: blame and rollback support only the typed kinds.
 type DynamicInformers struct {
 	factory     dynamicinformer.DynamicSharedInformerFactory
@@ -264,8 +256,18 @@ func ParseGVR(s string) (schema.GroupVersionResource, error) {
 	return schema.GroupVersionResource{Group: group, Version: version, Resource: resource}, nil
 }
 
+// typedGroupResources are recorded by the typed Informers. Watching them
+// dynamically too would write the same Key from two serialisations that
+// differ in field order and defaults, so every event would flip the stored
+// state and show up as a change.
+var typedGroupResources = map[schema.GroupResource]bool{
+	{Group: "apps", Resource: "deployments"}: true,
+	{Group: "", Resource: "configmaps"}:      true,
+}
+
 // ParseGVRList parses a comma-separated list of GVR strings. Whitespace
-// around each entry is trimmed and empty entries are ignored.
+// around each entry is trimmed and empty entries are ignored. Deployments
+// and ConfigMaps are refused: the typed Informers already record them.
 func ParseGVRList(s string) ([]schema.GroupVersionResource, error) {
 	var out []schema.GroupVersionResource
 	for _, part := range strings.Split(s, ",") {
@@ -276,6 +278,9 @@ func ParseGVRList(s string) ([]schema.GroupVersionResource, error) {
 		gvr, err := ParseGVR(part)
 		if err != nil {
 			return nil, err
+		}
+		if typedGroupResources[gvr.GroupResource()] {
+			return nil, fmt.Errorf("agent: %q is already recorded by the built-in watches; remove it from --watch-resources", part)
 		}
 		out = append(out, gvr)
 	}

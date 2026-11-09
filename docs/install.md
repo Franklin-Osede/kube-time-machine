@@ -140,7 +140,7 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 | `storage.size` | `10Gi` | PVC size. Storage scales with change rate, not snapshot rate. |
 | `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
 | `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes liveness/readiness probes. |
-| `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. |
+| `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. Deployments and ConfigMaps are refused: they are always recorded. |
 | `agent.resources.*` | conservative | The agent's working set is dominated by the informer cache; tune up if you watch large clusters. |
 | `networkPolicy.enabled` | `true` | Turn off only on clusters whose CNI does not enforce NetworkPolicy. |
 
