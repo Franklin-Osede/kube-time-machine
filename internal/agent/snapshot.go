@@ -12,30 +12,15 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
-// Snapshotter periodically takes the current state from a Buffer and
-// persists it to a storage.Store, alternating between full reference
-// snapshots and incremental deltas.
+// Snapshotter periodically persists the Buffer's state to a storage.Store.
+// Every fullEvery-th successful flush, starting with the first, is a full
+// snapshot and the rest are deltas, so reconstruction needs at most one full
+// snapshot plus fullEvery-1 deltas.
 //
-// Cadence:
-//   - Every `interval`, Flush is called.
-//   - Flush #0 and every Flush whose count is a multiple of `fullEvery`
-//     produce a full reference snapshot.
-//   - All other flushes produce a delta against the most recent
-//     persisted snapshot.
-//
-// This bounds reconstruction cost: replaying any historical state needs
-// at most one full snapshot + `fullEvery-1` deltas.
-//
-// Reactive flush: when `burstThreshold` > 0, Run also polls the buffer's
-// pending-change counter every `burstPollInterval`. If the counter reaches
-// `burstThreshold` before the normal tick fires, an early flush is triggered.
-// This keeps a deploy storm from collapsing into one delta without altering
-// the normal cadence. A threshold or poll interval of 0 disables it.
-//
-// Retention / GC: when `retainDays` > 0, a GC pass runs before every flush
-// attempt. Running it before the write allows eligible old snapshots to free
-// space even when the subsequent Put fails with ENOSPC. The anchor algorithm
-// guarantees that every retained delta remains reconstructable.
+// When burst flushing is enabled, Run polls the buffer's pending-change count
+// and flushes early once it reaches the threshold, so a deploy storm does not
+// collapse into one delta. When retainDays > 0, a GC pass runs before every
+// flush attempt; see gc.
 type Snapshotter struct {
 	buf               *Buffer
 	store             storage.Store
@@ -68,10 +53,9 @@ type FlushHealth struct {
 	ConsecutiveFailures int
 }
 
-// NewSnapshotter constructs a Snapshotter with the given cadence policy.
-// `interval` is how often Run flushes; `fullEvery` is how many flushes
-// pass between full reference snapshots (a value of 1 means every flush
-// is a full snapshot; a value of 12 yields 1 full + 11 deltas per cycle).
+// NewSnapshotter constructs a Snapshotter. interval is how often Run
+// flushes; fullEvery is how many flushes make one full-plus-deltas cycle
+// (1 means every flush is full).
 func NewSnapshotter(buf *Buffer, store storage.Store, interval time.Duration, fullEvery int) *Snapshotter {
 	if fullEvery < 1 {
 		fullEvery = 1
@@ -96,9 +80,8 @@ func (s *Snapshotter) WithBurstFlush(threshold int, pollInterval time.Duration) 
 	return s
 }
 
-// WithRetention sets the snapshot retention policy. Snapshots older than
-// days days are eligible for deletion before each flush attempt.
-// Setting days to 0 (the default) disables GC and keeps all snapshots.
+// WithRetention makes snapshots older than days eligible for deletion before
+// each flush attempt. 0, the default, disables GC.
 func (s *Snapshotter) WithRetention(days int) *Snapshotter {
 	if days < 0 {
 		days = 0
@@ -107,27 +90,21 @@ func (s *Snapshotter) WithRetention(days int) *Snapshotter {
 	return s
 }
 
-// WithClock injects a custom time source. Production code uses the
-// default (time.Now); tests use this to produce deterministic IDs.
+// WithClock injects a custom time source, for deterministic IDs in tests.
 func (s *Snapshotter) WithClock(now func() time.Time) *Snapshotter {
 	s.now = now
 	return s
 }
 
-// Flush takes the current buffer state and persists it, returning the
-// metadata of the snapshot written (full or delta). It is safe to call
-// concurrently with itself. Run calls it on schedule; main.go calls it once
-// more at shutdown.
+// Flush persists the current buffer state as a full snapshot or a delta and
+// returns its metadata. It is safe to call concurrently with itself.
 func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Drained with the copy, deliberately, even though a failed write then
-	// forgets the burst. The changes themselves are not lost: prevState is
-	// untouched on failure, so the next successful flush includes them.
-	// Restoring the count instead would re-trigger a burst every poll
-	// interval for as long as storage keeps failing, turning one ENOSPC into
-	// a retry loop; the periodic tick is the back-off.
+	// The pending count is drained even if the write then fails. The changes
+	// are not lost, because prevState is untouched on failure; restoring the
+	// count would re-trigger a burst every poll while storage keeps failing.
 	curr, _ := s.buf.SnapshotAndDrain()
 	ts := s.now()
 
@@ -138,12 +115,8 @@ func (s *Snapshotter) Flush(ctx context.Context) (types.SnapshotMeta, error) {
 		if err != nil {
 			return types.SnapshotMeta{}, fmt.Errorf("agent: put full: %w", err)
 		}
-		// Advance internal state ONLY after the write succeeds. If the
-		// write failed and we had already incremented flushNum, the next
-		// Flush would emit a delta anchored to a snapshot that was never
-		// persisted (prevID still "" or stale) — an unreconstructable
-		// chain. Keeping the position pinned means a failed flush simply
-		// retries the same cadence slot (here: another full) next tick.
+		// Advance only after the write succeeds, or the next delta would be
+		// anchored to a snapshot that was never persisted.
 		s.prevState = curr
 		s.prevID = meta.ID
 		s.flushNum++
@@ -171,9 +144,8 @@ func (s *Snapshotter) FlushCounts() (full, delta int) {
 	return s.flushFull, s.flushDelta
 }
 
-// FlushHealth returns the latest persistence outcome recorded by Run.
-// Direct calls to Flush do not update this status because they do not represent
-// the agent's scheduled recording loop.
+// FlushHealth returns the latest persistence outcome recorded by Run. Direct
+// calls to Flush do not update it.
 func (s *Snapshotter) FlushHealth() FlushHealth {
 	s.healthMu.RLock()
 	defer s.healthMu.RUnlock()
@@ -209,28 +181,15 @@ func (s *Snapshotter) recordFlushOutcome(err error) {
 	s.consecutiveFailures = 0
 }
 
-// GC runs the retention pass immediately and blocks until it completes. It
-// is the same pass Run makes before every flush attempt; tests call it
-// directly. A no-op when retainDays is 0.
+// GC runs the retention pass Run makes before every flush attempt. A no-op
+// when retainDays is 0.
 func (s *Snapshotter) GC(ctx context.Context) { s.gc(ctx) }
 
-// gc runs the snapshot retention / garbage-collection algorithm.
+// gc deletes every snapshot older than the anchor: the newest full snapshot
+// at or before now-retainDays. Keeping the anchor keeps every delta in the
+// window reconstructable; with no anchor, nothing is safe to delete.
 //
-// Algorithm — anchor-based GC:
-//
-//  1. Compute the cutoff time: now - retainDays.
-//  2. Walk the index in chronological order to find the "anchor" — the
-//     most-recent full snapshot whose timestamp is at or before the cutoff.
-//     This is the oldest full snapshot we must keep so that all deltas
-//     in the retention window remain reconstructable.
-//  3. Delete every snapshot strictly before the anchor (full and delta alike).
-//     The anchor itself is preserved.
-//
-// If no anchor exists (i.e. the oldest full snapshot is still within the
-// retention window) we do nothing — there is nothing safe to delete.
-//
-// gc takes no lock of its own: callers do not hold s.mu, and each store
-// Delete is protected by the store.
+// gc takes no lock of its own; the store serialises each Delete.
 func (s *Snapshotter) gc(ctx context.Context) {
 	if s.retainDays <= 0 {
 		return
@@ -271,20 +230,12 @@ func (s *Snapshotter) gc(ctx context.Context) {
 	}
 }
 
-// Run starts the periodic flush loop. It blocks until ctx is cancelled
-// and then returns ctx.Err(). Errors during individual flushes are
-// logged but do not stop the loop — losing one snapshot is better than
-// losing the agent.
+// Run flushes periodically until ctx is cancelled, then returns ctx.Err().
+// A failed flush is logged and does not stop the loop.
 //
-// ready gates the first flush: Run waits for it to be closed before taking
-// an immediate full snapshot and starting the ticker. That snapshot captures
-// a complete cluster view rather than the partial buffer that exists
-// before the informer caches finish their initial sync. Pass nil to
-// skip the gate (used by tests that drive Flush directly). If ctx is
-// cancelled while waiting, Run returns without ever flushing.
-//
-// Reactive flush: see the type comment. After a burst flush the periodic
-// ticker is reset, so a tick does not follow it moments later.
+// ready gates the first flush, so it is taken only after the informer caches
+// have synced instead of from a partial buffer. nil skips the gate. If ctx is
+// cancelled while waiting, Run returns without flushing.
 func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 	if ready != nil {
 		select {
@@ -298,8 +249,7 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 	}
 
 	doFlush := func(reason string) {
-		// GC before the write, so a full volume (ENOSPC) can free space for
-		// the very flush that needs it.
+		// GC first, so a full volume can free space for this flush.
 		s.gc(ctx)
 		if _, err := s.Flush(ctx); err != nil {
 			s.recordFlushOutcome(err)
@@ -309,16 +259,13 @@ func (s *Snapshotter) Run(ctx context.Context, ready <-chan struct{}) error {
 		s.recordFlushOutcome(nil)
 	}
 
-	// Prove that storage is writable before readiness can become true. This
-	// also removes the up-to-one-interval gap between informer sync and the
-	// first persisted cluster state.
+	// Prove storage is writable before readiness can become true.
 	doFlush("initial")
 
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
-	// With burst flushing disabled burstC stays nil, and a nil channel never
-	// fires in a select.
+	// A nil burstC never fires in the select.
 	var burstC <-chan time.Time
 	if s.burstThreshold > 0 && s.burstPollInterval > 0 {
 		burstTicker := time.NewTicker(s.burstPollInterval)

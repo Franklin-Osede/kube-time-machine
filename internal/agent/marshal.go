@@ -34,9 +34,8 @@ func KeyForConfigMap(cm *corev1.ConfigMap) delta.Key {
 	return delta.Key{Kind: KindConfigMap, Namespace: cm.Namespace, Name: cm.Name}
 }
 
-// MarshalDeployment converts d into a (Key, State) pair suitable for
-// Buffer.Upsert. The object is DeepCopied before sanitisation, so the
-// informer's shared cache is never mutated.
+// MarshalDeployment converts d into a sanitised (Key, State) pair. It works
+// on a DeepCopy, so the informer's shared cache is never mutated.
 func MarshalDeployment(d *appsv1.Deployment) (delta.Key, delta.State, error) {
 	if d == nil {
 		return delta.Key{}, nil, fmt.Errorf("agent: MarshalDeployment: nil object")
@@ -54,9 +53,8 @@ func MarshalDeployment(d *appsv1.Deployment) (delta.Key, delta.State, error) {
 	return KeyForDeployment(d), delta.State(payload), nil
 }
 
-// MarshalConfigMap converts cm into a (Key, State) pair suitable for
-// Buffer.Upsert. The object is DeepCopied before sanitisation, so the
-// informer's shared cache is never mutated.
+// MarshalConfigMap converts cm into a sanitised (Key, State) pair. It works
+// on a DeepCopy, so the informer's shared cache is never mutated.
 func MarshalConfigMap(cm *corev1.ConfigMap) (delta.Key, delta.State, error) {
 	if cm == nil {
 		return delta.Key{}, nil, fmt.Errorf("agent: MarshalConfigMap: nil object")
@@ -76,56 +74,31 @@ func MarshalConfigMap(cm *corev1.ConfigMap) (delta.Key, delta.State, error) {
 	return KeyForConfigMap(cm), delta.State(payload), nil
 }
 
-// noiseAnnotationKeys is the set of annotation keys that are owned by
-// controllers or tooling and change without user intent. Keeping them
-// produces spurious MODIFIED deltas in the blame timeline for every
-// automated touch (e.g. every Helm upgrade bumps
-// "meta.helm.sh/release-revision"; every kubectl apply rewrites
-// "kubectl.kubernetes.io/last-applied-configuration").
-//
-// Rule for adding a key here: the annotation's value changes as a side-
-// effect of a tool operation, not because a human set it. If the content
-// itself is meaningful (e.g. an annotation recording the last deploy
-// actor), it should NOT be in this list.
+// noiseAnnotationKeys are annotations whose value changes as a side effect
+// of a tool operation, not because a human set it. Recording them would make
+// every automated touch a spurious MODIFIED delta.
 var noiseAnnotationKeys = map[string]struct{}{
-	// kubectl: full object JSON, regenerated on every `kubectl apply`.
+	// Rewritten by every `kubectl apply`.
 	"kubectl.kubernetes.io/last-applied-configuration": {},
-	// Deployment controller: monotonically increments on each rollout.
+	// Bumped by the Deployment controller on each rollout.
 	"deployment.kubernetes.io/revision": {},
-	// DaemonSet controller: increments on template changes.
+	// Bumped by the DaemonSet controller on template changes.
 	"deprecated.daemonset.template.generation": {},
 }
 
-// noiseAnnotationPrefixes lists annotation key prefixes that are wholly
-// controller-owned. Any annotation whose key starts with one of these
-// prefixes is considered noise and stripped.
+// noiseAnnotationPrefixes are annotation key prefixes that are wholly
+// controller-owned (Argo CD, Flux, Helm).
 var noiseAnnotationPrefixes = []string{
-	// Argo CD: sync status, health, revision, managed-by markers — all
-	// set by the controller, not by a human.
 	"argocd.argoproj.io/",
-	// Flux CD: revision, checksum, last-applied markers.
 	"fluxcd.io/",
 	"kustomize.toolkit.fluxcd.io/",
-	// Helm: release name, namespace, revision — change on every upgrade.
 	"meta.helm.sh/",
 }
 
-// sanitiseMeta strips fields that mutate without user intent and would
-// otherwise produce spurious "modified" deltas:
-//
-//   - ResourceVersion bumps on every server-side touch, including
-//     no-op resyncs by other controllers.
-//   - ManagedFields is large and tracks SSA owners, not user intent.
-//     The manager names are extracted first and preserved as
-//     types.ManagersAnnotation, so blame can show which tools touched it.
-//   - Generation increments on every spec change — but the spec change
-//     itself is the signal, so the generation field is redundant noise.
-//   - Known controller-owned annotations (see noiseAnnotationKeys and
-//     noiseAnnotationPrefixes) change as side-effects of tool operations
-//     and would produce spurious MODIFIED blame entries.
-//
-// CreationTimestamp, UID, Labels, and user-intent annotations are kept.
-// The full .status block is removed downstream by stripStatus — see ADR-0005.
+// sanitiseMeta strips metadata that changes without user intent:
+// ResourceVersion, ManagedFields (its manager names are kept as
+// types.ManagersAnnotation), Generation, and noise annotations. stripStatus
+// removes .status. See ADR-0002 and ADR-0005.
 func sanitiseMeta(m *metav1.ObjectMeta) {
 	managers := extractManagers(m.ManagedFields)
 	m.ResourceVersion = ""
@@ -179,8 +152,8 @@ func isNoiseAnnotationKey(key string) bool {
 	return false
 }
 
-// stripNoiseAnnotations removes controller-owned annotations in-place.
-// Called only on a DeepCopy, so the informer cache is never mutated.
+// stripNoiseAnnotations removes controller-owned annotations in place. Call
+// it only on a DeepCopy.
 func stripNoiseAnnotations(m *metav1.ObjectMeta) {
 	if len(m.Annotations) == 0 {
 		return
@@ -190,25 +163,16 @@ func stripNoiseAnnotations(m *metav1.ObjectMeta) {
 			delete(m.Annotations, key)
 		}
 	}
-	// Normalise: if stripping left an empty map, nil it so two objects
-	// that originally had only noise annotations produce identical JSON
-	// (encoding/json encodes nil map as null / omits with omitempty,
-	// while an empty map encodes as "{}").
+	// nil, not empty, so the JSON matches an object that had no annotations.
 	if len(m.Annotations) == 0 {
 		m.Annotations = nil
 	}
 }
 
-// stripStatus removes the top-level "status" key from the JSON encoding
-// of any Kubernetes object. See ADR-0005: KTM records the declarative
-// surface of supported resources; controller-owned status is not part
-// of the recorded contract.
-//
-// Implemented via map round-trip because Go's encoding/json `omitempty`
-// tag does not apply to non-pointer struct values: setting Status to
-// its zero value would still serialise as `"status":{}`. Re-marshalling
-// from a map sorts keys alphabetically (a documented guarantee of
-// encoding/json), so the output is deterministic for a given input.
+// stripStatus removes the top-level "status" key from a JSON object (see
+// ADR-0005). It round-trips through a map because omitempty does not apply
+// to struct values, so a zeroed Status would still encode as "status":{}.
+// encoding/json sorts map keys, so the output is deterministic.
 func stripStatus(payload []byte) ([]byte, error) {
 	var asMap map[string]json.RawMessage
 	if err := json.Unmarshal(payload, &asMap); err != nil {

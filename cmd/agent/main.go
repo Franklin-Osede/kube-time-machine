@@ -1,7 +1,7 @@
 // Command ktm-agent watches Deployments and ConfigMaps through client-go
 // informers and persists periodic snapshots (full + deltas) to a local
-// directory. It runs in-cluster with a PersistentVolume (Mode B) or on a
-// laptop against a kubeconfig (Mode A). Flags: ktm-agent -help.
+// directory, in-cluster on a PersistentVolume or locally against a
+// kubeconfig. Flags: ktm-agent -help.
 package main
 
 import (
@@ -97,8 +97,7 @@ func run() error {
 		dynInf = dynInf.WithSyncTimeout(2 * time.Minute)
 	}
 
-	// allReady closes once both the typed and the dynamic informers have
-	// listed the whole cluster. Nothing is persisted before that: a partial
+	// Nothing is persisted before both informer sets have synced: a partial
 	// cache must never become a full snapshot.
 	allReady := agent.CombinedReady(inf.Ready(), dynInf.Ready())
 
@@ -126,10 +125,8 @@ func run() error {
 
 	runErr := g.Wait()
 
-	// Final flush: keep the changes made since the last periodic one. Same
-	// allReady rule as above; the select's default branch tells "never
-	// synced" apart without blocking. ctx is already cancelled, so the
-	// flush gets its own 5-second budget.
+	// Final flush, skipped unless the caches synced. ctx is already cancelled,
+	// so it gets its own budget.
 	select {
 	case <-allReady:
 		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -192,8 +189,8 @@ func agentMetrics(buf *agent.Buffer, snap *agent.Snapshotter) string {
 	return b.String()
 }
 
-// splitTrimmed splits a comma-separated string and trims each element.
-// Empty elements (from trailing commas or empty input) are omitted.
+// splitTrimmed splits a comma-separated string, trims each element and
+// drops empty ones.
 func splitTrimmed(s string) []string {
 	parts := strings.Split(s, ",")
 	out := make([]string, 0, len(parts))

@@ -1,20 +1,5 @@
 package agent
 
-// DynamicInformers extends the typed Informers with support for any
-// Kubernetes resource kind, including CRDs, without requiring generated
-// typed structs. It is the Phase 2 extension point: typed informers cover
-// Deployments and ConfigMaps with full type safety; DynamicInformers covers
-// everything else (StatefulSets, Services, Ingresses, HPAs, etc.) generically.
-//
-// Both share the same Buffer — their Keys are disjoint by Kind, so there is
-// no collision risk.
-//
-// Usage:
-//
-//	dynInf := agent.NewDynamicInformers(dynClient, buf, resync, gvrs, excludeNS)
-//	go dynInf.Start(ctx)
-//	<-dynInf.Ready()
-
 import (
 	"context"
 	"encoding/json"
@@ -35,8 +20,7 @@ import (
 )
 
 // DefaultDynamicGVRs is the default set of resources watched by
-// DynamicInformers. These complement the Deployments and ConfigMaps covered
-// by typed Informers and represent the next tier of operational importance.
+// DynamicInformers.
 var DefaultDynamicGVRs = []schema.GroupVersionResource{
 	{Group: "apps", Version: "v1", Resource: "statefulsets"},
 	{Group: "", Version: "v1", Resource: "services"},
@@ -44,20 +28,21 @@ var DefaultDynamicGVRs = []schema.GroupVersionResource{
 	{Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"},
 }
 
-// DynamicInformers watches a configurable set of GroupVersionResources and
-// writes sanitised snapshots into a shared Buffer.
+// DynamicInformers watches a configurable set of GroupVersionResources,
+// including CRDs, and writes sanitised state into the Buffer shared with the
+// typed Informers; Keys are disjoint by Kind. It is the Phase 2 extension
+// point: blame and rollback support only the typed kinds.
 type DynamicInformers struct {
 	factory     dynamicinformer.DynamicSharedInformerFactory
 	gvrs        []schema.GroupVersionResource
 	buf         *Buffer
 	excludeNS   map[string]struct{}
-	ready       chan struct{} // closed once all informer caches are synced
+	ready       chan struct{}
 	syncTimeout time.Duration
 }
 
-// NewDynamicInformers constructs a DynamicInformers. gvrs is the list of
-// resources to watch; pass DefaultDynamicGVRs for the standard set.
-// excludeNamespaces mirrors the same parameter on typed Informers.
+// NewDynamicInformers constructs a DynamicInformers watching gvrs.
+// excludeNamespaces behaves as on NewInformers.
 func NewDynamicInformers(
 	client dynamic.Interface,
 	buf *Buffer,
@@ -82,31 +67,26 @@ func NewDynamicInformers(
 }
 
 // Ready returns a channel closed once all informer caches have synced.
-// Mirrors the contract on typed Informers so callers can gate snapshots on
-// both.
 func (d *DynamicInformers) Ready() <-chan struct{} {
 	return d.ready
 }
 
-// WithSyncTimeout sets the maximum duration to wait for all informer caches
-// to sync before Start() returns an error. When zero (the default), Start()
-// waits until ctx is cancelled. Set this when watchResources may name GVRs
-// that don't exist in the cluster — without a timeout, WaitForCacheSync
-// blocks the agent indefinitely while the pod stays Running-but-not-Ready.
+// WithSyncTimeout bounds the wait for the initial cache sync; Start returns
+// an error when it expires. Zero, the default, waits until ctx is cancelled.
+// Without it, a GVR missing from the cluster blocks the sync forever.
 func (d *DynamicInformers) WithSyncTimeout(timeout time.Duration) *DynamicInformers {
 	d.syncTimeout = timeout
 	return d
 }
 
-// Start wires event handlers for every GVR, starts the factory, waits for
-// all caches to sync, and then blocks until ctx is cancelled. Returns
-// ctx.Err() on clean shutdown or an error if initial sync fails.
+// Start runs the informers and blocks until ctx is cancelled, returning
+// ctx.Err(), or returns an error if the initial sync times out.
 func (d *DynamicInformers) Start(ctx context.Context) error {
 	hasSynced := make([]cache.InformerSynced, 0, len(d.gvrs))
 
 	for _, gvr := range d.gvrs {
 		inf := d.factory.ForResource(gvr).Informer()
-		gvrCopy := gvr // capture for closure
+		gvrCopy := gvr
 
 		handler := cache.ResourceEventHandlerFuncs{
 			AddFunc: func(obj any) {
@@ -127,9 +107,6 @@ func (d *DynamicInformers) Start(ctx context.Context) error {
 
 	d.factory.Start(ctx.Done())
 
-	// When a syncTimeout is configured, use a derived context so that a
-	// non-existent or RBAC-denied GVR surfaces a loud error quickly instead
-	// of blocking WaitForCacheSync until the parent context (SIGTERM) fires.
 	syncCtx := ctx
 	var syncCancel context.CancelFunc
 	if d.syncTimeout > 0 {
@@ -139,7 +116,7 @@ func (d *DynamicInformers) Start(ctx context.Context) error {
 
 	if !cache.WaitForCacheSync(syncCtx.Done(), hasSynced...) {
 		if err := ctx.Err(); err != nil {
-			return err // parent cancelled (SIGTERM) — not a timeout
+			return err // cancelled, not timed out
 		}
 		return fmt.Errorf("agent: dynamic: informer cache sync timed out after %s (GVR not found or RBAC denied?)", d.syncTimeout)
 	}
@@ -203,19 +180,16 @@ func (d *DynamicInformers) resourceNames() []string {
 	return names
 }
 
-// toUnstructured casts obj to *unstructured.Unstructured, which is what
-// dynamic informers deliver.
+// toUnstructured casts obj to the type dynamic informers deliver.
 func toUnstructured(obj any) (*unstructured.Unstructured, bool) {
 	u, ok := obj.(*unstructured.Unstructured)
 	return u, ok
 }
 
-// marshalUnstructured sanitises and serialises a dynamic Kubernetes object
-// into the (Key, State) pair the Buffer expects. The sanitisation mirrors
-// sanitiseMeta on the typed path: strips resourceVersion, managedFields,
-// generation, status, and known noise annotations.
+// marshalUnstructured sanitises a dynamic object exactly as the typed path
+// does, including .status, and serialises it. It works on a DeepCopy, so the
+// informer's shared object is never mutated.
 func marshalUnstructured(u *unstructured.Unstructured) (delta.Key, delta.State, error) {
-	// DeepCopy so we never mutate the informer's shared object.
 	clean := u.DeepCopy()
 	sanitiseUnstructuredMeta(clean)
 	delete(clean.Object, "status")
@@ -232,21 +206,15 @@ func marshalUnstructured(u *unstructured.Unstructured) (delta.Key, delta.State, 
 	return key, delta.State(b), nil
 }
 
-// sanitiseUnstructuredMeta removes noise fields from the metadata section of
-// an unstructured object, applying the same rules as sanitiseMeta on the
-// typed path. Manager names are extracted from managedFields before it is
-// cleared and preserved as types.ManagersAnnotation.
+// sanitiseUnstructuredMeta applies sanitiseMeta's rules to an unstructured
+// object.
 func sanitiseUnstructuredMeta(u *unstructured.Unstructured) {
-	// Extract manager names before clearing managedFields.
-	// GetManagedFields() is implemented by Unstructured and returns
-	// []metav1.ManagedFieldsEntry, so we can reuse the typed-path helper.
 	managers := extractManagers(u.GetManagedFields())
 
 	u.SetResourceVersion("")
 	u.SetManagedFields(nil)
 	u.SetGeneration(0)
 
-	// Strip noise annotations inline on the unstructured annotations map.
 	anns := u.GetAnnotations()
 	if anns == nil {
 		anns = make(map[string]string)
@@ -256,8 +224,7 @@ func sanitiseUnstructuredMeta(u *unstructured.Unstructured) {
 			delete(anns, k)
 		}
 	}
-	// Inject manager names AFTER stripping so the synthetic annotation
-	// is never accidentally removed by isNoiseAnnotationKey.
+	// After stripping, so the synthetic annotation can never be removed.
 	if len(managers) > 0 {
 		anns[types.ManagersAnnotation] = strings.Join(managers, ",")
 	}
@@ -268,15 +235,9 @@ func sanitiseUnstructuredMeta(u *unstructured.Unstructured) {
 	}
 }
 
-// ParseGVR parses a "resource[.group]/version" string into a
-// GroupVersionResource. The format is:
-//
-//	"services/v1"                           → {Group:"", Version:"v1", Resource:"services"}
-//	"statefulsets.apps/v1"                  → {Group:"apps", Version:"v1", Resource:"statefulsets"}
-//	"ingresses.networking.k8s.io/v1"        → {Group:"networking.k8s.io", Version:"v1", Resource:"ingresses"}
-//
+// ParseGVR parses a "resource[.group]/version" string, such as
+// "statefulsets.apps/v1" or "services/v1", into a GroupVersionResource.
 // Version is required because the dynamic client does not perform discovery.
-// Returns an error if the string is empty or malformed.
 func ParseGVR(s string) (schema.GroupVersionResource, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -321,9 +282,8 @@ func ParseGVRList(s string) ([]schema.GroupVersionResource, error) {
 	return out, nil
 }
 
-// CombinedReady returns a channel that is closed once BOTH a and b are
-// closed. Used in main.go to gate the Snapshotter on both typed and dynamic
-// informers being ready.
+// CombinedReady returns a channel that is closed once both a and b are
+// closed.
 func CombinedReady(a, b <-chan struct{}) <-chan struct{} {
 	out := make(chan struct{})
 	go func() {

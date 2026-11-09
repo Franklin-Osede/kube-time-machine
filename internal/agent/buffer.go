@@ -10,21 +10,12 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
 )
 
-// Buffer holds the current known state of every watched resource.
+// Buffer holds the current known state of every watched resource. It is
+// safe for concurrent use by the informer handlers and the Snapshotter.
 //
-// It is safe for concurrent use: informer event handlers call Upsert and
-// Delete from multiple goroutines (one per informer), while the
-// Snapshotter calls Snapshot from its single flush goroutine.
-//
-// Locking: a sync.RWMutex protects state. Writes (Upsert, Delete) take
-// the write lock; reads (Snapshot, Len) take the read lock. The pattern
-// fits our workload — many small writes, infrequent but bulky reads.
-//
-// Change counter: pendingChanges counts Upserts and Deletes that changed the
-// state. An Upsert with byte-identical State — a rollout's status-only
-// updates, after sanitisation — does not count, so noise alone cannot trigger
-// a burst flush or inflate ktm_buffer_pending_changes. The Snapshotter
-// reads it with PendingChanges and resets it with SnapshotAndDrain.
+// pendingChanges counts only Upserts and Deletes that changed the state, so
+// status-only updates, identical after sanitisation, cannot trigger a burst
+// flush.
 type Buffer struct {
 	mu             sync.RWMutex
 	state          delta.Snapshot
@@ -66,10 +57,9 @@ func (b *Buffer) PendingChanges() int {
 	return b.pendingChanges
 }
 
-// SnapshotAndDrain returns a copy of the state, as Snapshot does, and resets
-// the change counter under the same lock, returning the count it cleared.
-// Taken together, a change is either in this copy and not counted, or
-// counted and not yet in any copy, so no change is counted twice.
+// SnapshotAndDrain returns a copy of the state and resets the change counter
+// under the same lock, returning the count it cleared, so no change is
+// counted twice.
 func (b *Buffer) SnapshotAndDrain() (delta.Snapshot, int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -82,13 +72,8 @@ func (b *Buffer) SnapshotAndDrain() (delta.Snapshot, int) {
 	return out, n
 }
 
-// Snapshot returns a copy of the current state. The returned map is
-// owned by the caller — mutating it does not affect the buffer.
-//
-// The State byte slices are NOT deep-copied. By convention, informer
-// handlers always Upsert a freshly-marshalled payload rather than
-// mutating one in place, so the slices are effectively immutable. If a
-// future caller needs to mutate State bytes it must copy them first.
+// Snapshot returns a copy of the current state. The map is the caller's, but
+// the State byte slices are shared and must not be mutated.
 func (b *Buffer) Snapshot() delta.Snapshot {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -99,8 +84,7 @@ func (b *Buffer) Snapshot() delta.Snapshot {
 	return out
 }
 
-// Len returns the current number of buffered entries, exported as
-// ktm_buffer_entries on /metrics.
+// Len returns the current number of buffered entries.
 func (b *Buffer) Len() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

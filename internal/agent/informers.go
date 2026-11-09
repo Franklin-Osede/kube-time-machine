@@ -13,10 +13,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
-// Informers wires Kubernetes shared informers for Deployments and
-// ConfigMaps into a Buffer. Every Add / Update event is marshalled and
-// upserted; every Delete event removes the corresponding Key. Other kinds
-// are recorded by DynamicInformers.
+// Informers wires shared informers for Deployments and ConfigMaps into a
+// Buffer. Other kinds are recorded by DynamicInformers.
 type Informers struct {
 	factory   informers.SharedInformerFactory
 	deployInf cache.SharedIndexInformer
@@ -57,12 +55,8 @@ func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration
 }
 
 // Start runs the informers and blocks until ctx is cancelled, returning
-// ctx.Err().
-//
-// There is no sync timeout. If the initial list never completes — RBAC
-// denies it, or the API server is unreachable — the informers retry
-// forever, Ready never closes, and the failure surfaces as /readyz failing
-// plus client-go's own list errors in the log.
+// ctx.Err(). There is no sync timeout: if the initial list never completes,
+// Ready never closes and /readyz keeps failing.
 func (i *Informers) Start(ctx context.Context) error {
 	i.factory.Start(ctx.Done())
 	// WaitForCacheSync returns false only when ctx is done.
@@ -77,16 +71,14 @@ func (i *Informers) Start(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// Ready returns a channel closed once the initial cache sync completes. The
-// Snapshotter waits on it before its first flush. It never closes if ctx is
-// cancelled first.
+// Ready returns a channel closed once the initial cache sync completes. It
+// never closes if ctx is cancelled first.
 func (i *Informers) Ready() <-chan struct{} {
 	return i.ready
 }
 
-// isExcluded reports whether ns is in the exclude list. The informers still
-// list and cache excluded namespaces; their events are dropped here, before
-// the buffer.
+// isExcluded reports whether ns is in the exclude list. Excluded namespaces
+// are still listed and cached; only their events are dropped.
 func (i *Informers) isExcluded(ns string) bool {
 	_, ok := i.excludeNS[ns]
 	return ok

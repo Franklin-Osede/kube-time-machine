@@ -1,6 +1,5 @@
-// Package health exposes minimal HTTP liveness/readiness endpoints for
-// the in-cluster agent. Kubernetes probes hit these directly; no Service
-// is required.
+// Package health exposes HTTP liveness and readiness endpoints for the
+// agent.
 package health
 
 import (
@@ -20,14 +19,13 @@ import (
 type Server struct {
 	addr      string
 	readyFn   func() bool
-	metricsFn func() string // nil = no /metrics endpoint
+	metricsFn func() string // nil disables /metrics
 
 	mu sync.RWMutex
 	ln net.Listener
 }
 
-// New constructs a health server bound to addr. Pass an empty addr to
-// disable the server (useful for local-first laptop runs).
+// New constructs a health server bound to addr. An empty addr disables it.
 func New(addr string, readyFn func() bool) *Server {
 	return &Server{
 		addr:    addr,
@@ -35,16 +33,15 @@ func New(addr string, readyFn func() bool) *Server {
 	}
 }
 
-// WithMetrics enables a /metrics endpoint. fn is called on every request
-// and must return a valid Prometheus text-format string. Keeping the
-// formatter outside the health package avoids pulling agent types into it.
+// WithMetrics enables /metrics. fn is called on every request and must
+// return Prometheus text format.
 func (s *Server) WithMetrics(fn func() string) *Server {
 	s.metricsFn = fn
 	return s
 }
 
-// Run listens until ctx is cancelled. It returns listener/server failures
-// so the agent fails loudly if Kubernetes probes cannot bind.
+// Run serves until ctx is cancelled. It returns listen and serve failures so
+// the agent fails loudly if the probes cannot bind.
 func (s *Server) Run(ctx context.Context) error {
 	if s.addr == "" {
 		<-ctx.Done()
@@ -100,23 +97,18 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 }
 
-// handleHealthz is the liveness probe: if the process can answer HTTP,
-// it is alive.
+// handleHealthz is the liveness probe.
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-// handleMetrics serves Prometheus-format metrics. The body is generated
-// by the metricsFn provided via WithMetrics — the health package has no
-// dependency on the agent or Prometheus client library.
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = io.WriteString(w, s.metricsFn())
 }
 
-// handleReadyz is the readiness probe. The caller decides the concrete
-// readiness contract; the agent requires synced caches and a successful flush.
+// handleReadyz is the readiness probe; readyFn defines readiness.
 func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	if s.readyFn != nil && s.readyFn() {
 		w.WriteHeader(http.StatusOK)
