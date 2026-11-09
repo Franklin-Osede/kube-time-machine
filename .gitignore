@@ -22,3 +22,7 @@ kubeconfig
 *.kubeconfig
 .env
 .env.*
+
+# Claude Code: per-machine settings and agent worktrees (full repo copies)
+.claude/settings.local.json
+.claude/worktrees/
