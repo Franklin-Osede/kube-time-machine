@@ -256,11 +256,14 @@ func createDeployment(
 	payload delta.State,
 	autoYes bool,
 ) error {
-	fmt.Fprintf(out, "Deployment %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
 	var dep appsv1.Deployment
 	if err := json.Unmarshal(payload, &dep); err != nil {
 		return fmt.Errorf("unmarshal Deployment payload: %w", err)
 	}
+	if err := refuseLifecycleOnCreate(target, &dep.ObjectMeta); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Deployment %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
 	prepareForWrite(&dep.ObjectMeta, nil)
 	_, view, err := agent.MarshalDeployment(&dep)
 	if err != nil {
@@ -287,11 +290,14 @@ func createConfigMap(
 	payload delta.State,
 	autoYes bool,
 ) error {
-	fmt.Fprintf(out, "ConfigMap %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
 	var cm corev1.ConfigMap
 	if err := json.Unmarshal(payload, &cm); err != nil {
 		return fmt.Errorf("unmarshal ConfigMap payload: %w", err)
 	}
+	if err := refuseLifecycleOnCreate(target, &cm.ObjectMeta); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "ConfigMap %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
 	prepareForWrite(&cm.ObjectMeta, nil)
 	_, view, err := agent.MarshalConfigMap(&cm)
 	if err != nil {
@@ -368,9 +374,19 @@ func promptConfirm(in io.Reader, out io.Writer) error {
 // It strips server-owned fields and ktm.io/* annotations. Annotations the
 // recorder does not store take their live value, never the payload's: the
 // snapshot is silent about them, so a full Update would otherwise delete them,
-// and the preview never shows them. See ADR-0006.
+// and the preview never shows them.
+//
+// ownerReferences and finalizers also take their live value. They tie the
+// object to other objects' lifecycles: an owner UID from the snapshot may no
+// longer exist, which makes the garbage collector delete the object, and an
+// old finalizer list drops or re-adds protections that other controllers
+// manage. See ADR-0006.
 func prepareForWrite(m, live *metav1.ObjectMeta) {
 	stripServerOwned(m)
+	if live != nil {
+		m.OwnerReferences = live.OwnerReferences
+		m.Finalizers = live.Finalizers
+	}
 	for k := range m.Annotations {
 		if strings.HasPrefix(k, types.AnnotationPrefix) || agent.IsUnrecordedAnnotation(k) {
 			delete(m.Annotations, k)
@@ -389,6 +405,25 @@ func prepareForWrite(m, live *metav1.ObjectMeta) {
 	if len(m.Annotations) == 0 {
 		m.Annotations = nil
 	}
+}
+
+// refuseLifecycleOnCreate refuses to recreate an object whose snapshot has
+// ownerReferences or finalizers. Kept, they point at owner UIDs that may be
+// gone and protections nobody will release; dropped, the object is detached
+// from its owner. Neither is a faithful rollback, so the user decides.
+func refuseLifecycleOnCreate(target delta.Key, m *metav1.ObjectMeta) error {
+	var held []string
+	for _, o := range m.OwnerReferences {
+		held = append(held, fmt.Sprintf("ownerReference %s/%s (uid %s)", o.Kind, o.Name, o.UID))
+	}
+	for _, f := range m.Finalizers {
+		held = append(held, "finalizer "+f)
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	return fmt.Errorf("refusing to recreate %s: the snapshot has %s. Recreating it would reuse references to objects that may no longer exist, or leave protections no controller will release. Nothing was written. Recreate the owner instead, or create the object by hand from `ktm snapshot show`",
+		keyString(target), strings.Join(held, ", "))
 }
 
 // stripServerOwned clears the metadata the API server owns. A write ignores

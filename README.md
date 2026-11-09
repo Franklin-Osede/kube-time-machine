@@ -176,6 +176,7 @@ Rollback safety checks:
 | Deleted resource | Refuses unless `--allow-create` is passed |
 | Declined or unanswered prompt | Writes nothing and exits non-zero; `--yes` is required without a terminal |
 | Unrecorded annotations | Keeps their live values instead of deleting them; never writes KTM's own `ktm.io/` annotations |
+| Owners and finalizers | Update keeps the live `ownerReferences` and `finalizers`; `--allow-create` refuses a snapshot that has either |
 
 ## How it compares
 

@@ -71,6 +71,12 @@ version to install.
   completes it, including retries and the repair on startup; a power loss
   could otherwise keep the index change but not the rename, and a later index
   rebuild would bring the snapshot back.
+- `ktm rollback` wrote the snapshot's `ownerReferences` and `finalizers`
+  back to the cluster. An owner UID from the snapshot may no longer exist,
+  and the Kubernetes garbage collector deletes objects whose owners are
+  gone; an old finalizer list drops or re-adds protections other
+  controllers manage. Update now keeps the live values, and
+  `--allow-create` refuses, before the preview, a snapshot that has either.
 - `--watch-resources` refuses Deployments and ConfigMaps. Watching them
   dynamically as well as through the built-in watches wrote the same
   resource from two serialisations, producing spurious changes.

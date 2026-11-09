@@ -32,6 +32,8 @@ If step 2 returns `404 Not Found`, the resource no longer exists. The rollback f
 
 > **Amendment (2026-11-08):** the object sent to the API server is no longer the raw snapshot payload. The recorder drops controller-owned annotations (Helm, Argo CD, Flux, `last-applied-configuration`; see `marshal.go`), so the snapshot says nothing about them, and a full `Update` with that payload deleted them from the live object without the preview showing it. Rollback now keeps the live value of every annotation the recorder does not store, strips KTM's own `ktm.io/*` annotations on both `Update` and `Create`, and renders the preview from the object it is about to send, so the user confirms exactly what is written.
 
+> **Amendment (2026-11-09):** `ownerReferences` and `finalizers` are no longer taken from the snapshot. They tie the object to other objects' lifecycles: an owner UID from the snapshot may belong to an owner that has since been deleted or recreated, and the garbage collector deletes objects whose owners no longer exist; an old finalizer list removes protections that controllers added since, or re-adds ones nobody will release. `Update` keeps the live values. `Create` with `--allow-create` refuses, before the preview, a snapshot that has either, because neither keeping nor dropping them is a faithful recreation; the error lists them and tells the user to recreate the owner or create the object by hand.
+
 ## Alternatives considered
 
 1. **Stop stripping `ResourceVersion` in `marshal.go`.** Rejected: reintroduces the per-flush metadata churn that produced spurious "modified" deltas before sanitisation existed. `sanitiseMeta` (`internal/agent/marshal.go`) strips it on purpose (ADR-0005), and we are not unwinding that.
