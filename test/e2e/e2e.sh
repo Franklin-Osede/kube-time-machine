@@ -166,11 +166,13 @@ done
 ok "rolling back to $TARGET"
 
 log "rollback (dry check: refuses without confirmation)"
+RC=0
 echo "n" | "$KTM" --storage-dir "$STORE" rollback Deployment/demo/api \
-  --to "$TARGET" --kubeconfig "$KUBECONFIG_FILE" > "$WORK/abort.txt" 2>&1 || true
+  --to "$TARGET" --kubeconfig "$KUBECONFIG_FILE" > "$WORK/abort.txt" 2>&1 || RC=$?
 grep -q 'cluster:' "$WORK/abort.txt" || fail "rollback did not print the target cluster"
 grep -q 'rollback aborted' "$WORK/abort.txt" || fail "answering 'n' did not abort"
-ok "target cluster displayed, and 'n' aborts"
+[[ $RC -ne 0 ]] || fail "an aborted rollback exited 0"
+ok "target cluster displayed, and 'n' aborts with a non-zero exit"
 
 log "rollback --yes"
 "$KTM" --storage-dir "$STORE" rollback Deployment/demo/api \

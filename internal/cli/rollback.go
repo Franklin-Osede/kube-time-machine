@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -55,6 +56,11 @@ func newRollbackCmd(opts *Options) *cobra.Command {
 			target, err := parseKeyFilter(args[0])
 			if err != nil {
 				return err
+			}
+			// Refuse before opening storage or the cluster, so the error
+			// names the real problem rather than a missing resource.
+			if target.Kind != agent.KindDeployment && target.Kind != agent.KindConfigMap {
+				return fmt.Errorf("rollback supports only Deployment and ConfigMap (got %q)", target.Kind)
 			}
 			return runRollback(cmd.OutOrStdout(), os.Stdin,
 				opts.StorageDir, kubeconfig, kubeContext, target,
@@ -112,7 +118,7 @@ func runRollback(
 	case agent.KindConfigMap:
 		return rollbackConfigMap(ctx, out, in, client, target, payload, autoYes, allowCreate)
 	default:
-		return fmt.Errorf("rollback supports only Deployment and ConfigMap in MVP (got %q)", target.Kind)
+		return fmt.Errorf("rollback supports only Deployment and ConfigMap (got %q)", target.Kind)
 	}
 }
 
@@ -164,8 +170,8 @@ func rollbackDeployment(
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if !showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes) {
-		return nil
+	if err := showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes); err != nil {
+		return err
 	}
 
 	// stripServerOwned cleared it. The API server answers 409 Conflict if the
@@ -223,8 +229,8 @@ func rollbackConfigMap(
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if !showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes) {
-		return nil
+	if err := showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes); err != nil {
+		return err
 	}
 
 	targetCM.ResourceVersion = previewRV
@@ -260,8 +266,8 @@ func createDeployment(
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if !showCreatePreviewAndConfirm(out, in, target, view, autoYes) {
-		return nil
+	if err := showCreatePreviewAndConfirm(out, in, target, view, autoYes); err != nil {
+		return err
 	}
 	if _, err := api.Create(ctx, &dep, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("create Deployment %s: %w", keyString(target), err)
@@ -291,8 +297,8 @@ func createConfigMap(
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if !showCreatePreviewAndConfirm(out, in, target, view, autoYes) {
-		return nil
+	if err := showCreatePreviewAndConfirm(out, in, target, view, autoYes); err != nil {
+		return err
 	}
 	if _, err := api.Create(ctx, &cm, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("create ConfigMap %s: %w", keyString(target), err)
@@ -301,8 +307,13 @@ func createConfigMap(
 	return nil
 }
 
+// errAborted means the user did not confirm and nothing was written. It is
+// an error so that a declined or unanswered prompt exits non-zero and a
+// script cannot mistake it for an applied rollback.
+var errAborted = errors.New("rollback aborted: nothing was written")
+
 // showPreviewAndConfirm prints the diff from the sanitised live state to the
-// object about to be written, then prompts. It reports whether to proceed.
+// object about to be written, then prompts. It returns nil to proceed.
 func showPreviewAndConfirm(
 	out io.Writer,
 	in io.Reader,
@@ -310,36 +321,45 @@ func showPreviewAndConfirm(
 	beforeBytes delta.State,
 	payload delta.State,
 	autoYes bool,
-) bool {
+) error {
 	d := delta.Delta{
 		Modified: map[delta.Key]delta.State{target: payload},
 	}
 	prev := delta.Snapshot{target: beforeBytes}
 	fmt.Fprintln(out, "--- preview (apply will Update with the ResourceVersion read above) ---")
 	printDelta(out, d, prev)
-	return autoYes || promptConfirm(in, out)
+	if autoYes {
+		return nil
+	}
+	return promptConfirm(in, out)
 }
 
-func showCreatePreviewAndConfirm(out io.Writer, in io.Reader, target delta.Key, payload delta.State, autoYes bool) bool {
+func showCreatePreviewAndConfirm(out io.Writer, in io.Reader, target delta.Key, payload delta.State, autoYes bool) error {
 	fmt.Fprintln(out, "--- preview of resource to be created ---")
 	for _, line := range prettyLines(payload) {
 		fmt.Fprintln(out, "  + "+line)
 	}
-	return autoYes || promptConfirm(in, out)
+	if autoYes {
+		return nil
+	}
+	return promptConfirm(in, out)
 }
 
 // promptConfirm prints a [y/N] prompt and reads one line from in. Only "y"
-// or "yes", in any case, confirms.
-func promptConfirm(in io.Reader, out io.Writer) bool {
+// or "yes", in any case, confirms; anything else returns errAborted.
+func promptConfirm(in io.Reader, out io.Writer) error {
 	fmt.Fprint(out, "Apply rollback? [y/N]: ")
-	reader := bufio.NewReader(in)
-	line, _ := reader.ReadString('\n')
+	line, err := bufio.NewReader(in).ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	if answer == "y" || answer == "yes" {
-		return true
+		return nil
 	}
-	fmt.Fprintln(out, "rollback aborted")
-	return false
+	if err != nil && answer == "" {
+		// No terminal, or stdin closed: nobody answered.
+		fmt.Fprintln(out)
+		return fmt.Errorf("%w (no answer on stdin; pass --yes to apply without a prompt)", errAborted)
+	}
+	return errAborted
 }
 
 // prepareForWrite turns snapshot metadata into metadata safe to send to the

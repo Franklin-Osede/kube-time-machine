@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -98,19 +99,21 @@ func TestRollbackDeployment_AbortedAtPrompt(t *testing.T) {
 	client := fake.NewSimpleClientset(makeDeployment("api", "nginx:1.27", "100"))
 	payload := deploymentSnapshotPayload(t, "api", "nginx:1.25")
 
-	var out bytes.Buffer
-	if err := rollbackDeployment(
-		context.Background(), &out, strings.NewReader("n\n"),
-		client, key("Deployment", "default", "api"), payload, false, false,
-	); err != nil {
-		t.Fatalf("rollbackDeployment: %v", err)
-	}
-	got, _ := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
-	if got.Spec.Template.Spec.Containers[0].Image != "nginx:1.27" {
-		t.Errorf("cluster should be untouched after abort; got %q", got.Spec.Template.Spec.Containers[0].Image)
-	}
-	if !strings.Contains(out.String(), "rollback aborted") {
-		t.Errorf("expected 'rollback aborted', got:\n%s", out.String())
+	for name, input := range map[string]string{"declined": "n\n", "no terminal": ""} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := rollbackDeployment(
+				context.Background(), &out, strings.NewReader(input),
+				client, key("Deployment", "default", "api"), payload, false, false,
+			)
+			if !errors.Is(err, errAborted) {
+				t.Fatalf("rollbackDeployment: got %v, want errAborted so the exit code is non-zero", err)
+			}
+			got, _ := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
+			if got.Spec.Template.Spec.Containers[0].Image != "nginx:1.27" {
+				t.Errorf("cluster should be untouched after abort; got %q", got.Spec.Template.Spec.Containers[0].Image)
+			}
+		})
 	}
 }
 
@@ -272,8 +275,8 @@ func TestRollbackDeployment_PreviewIsSanitised(t *testing.T) {
 	if err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader("n\n"),
 		client, key("Deployment", "default", "api"), []byte(payload), false, false,
-	); err != nil {
-		t.Fatalf("rollbackDeployment: %v", err)
+	); !errors.Is(err, errAborted) {
+		t.Fatalf("rollbackDeployment: got %v, want errAborted", err)
 	}
 
 	preview := out.String()
@@ -389,15 +392,20 @@ func TestPromptConfirm(t *testing.T) {
 		{"y\n", true},
 		{"yes\n", true},
 		{"Y\n", true},
+		{"y", true}, // answer without a newline before EOF
 		{"n\n", false},
 		{"\n", false},
 		{"maybe\n", false},
+		{"", false}, // EOF: stdin closed or not a terminal
 	} {
 		t.Run(strings.TrimSpace(tc.input)+"_"+boolStr(tc.want), func(t *testing.T) {
 			var out bytes.Buffer
-			got := promptConfirm(strings.NewReader(tc.input), &out)
-			if got != tc.want {
-				t.Errorf("input %q: want %v, got %v", tc.input, tc.want, got)
+			err := promptConfirm(strings.NewReader(tc.input), &out)
+			if tc.want && err != nil {
+				t.Errorf("input %q: want confirmation, got %v", tc.input, err)
+			}
+			if !tc.want && !errors.Is(err, errAborted) {
+				t.Errorf("input %q: want errAborted, got %v", tc.input, err)
 			}
 		})
 	}

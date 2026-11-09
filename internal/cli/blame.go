@@ -47,9 +47,8 @@ func newBlameCmd(opts *Options) *cobra.Command {
 			"scan of delta `removed` entries, this algorithm reconstructs the full snapshot\n" +
 			"state at each step and compares against the previous step — which is the only\n" +
 			"way to detect deletes that happen to land on a full-snapshot tick.\n\n" +
-			"Use --namespace to restrict the blame scan to a single namespace. When\n" +
-			"provided, only events for resources in that namespace are considered,\n" +
-			"mirroring the --namespace behaviour of `ktm diff`.\n\n" +
+			"--namespace only fills in the namespace when the argument leaves it\n" +
+			"empty (Kind//Name); a namespace in the argument always wins.\n\n" +
 			"The MANAGERS column lists the Kubernetes field managers observed on the\n" +
 			"resource at that point — every manager owning any field, taken from\n" +
 			"managedFields. It is a set of candidates, NOT proof that one of them made\n" +
@@ -63,7 +62,7 @@ func newBlameCmd(opts *Options) *cobra.Command {
 			return runBlame(cmd.OutOrStdout(), opts.StorageDir, target, namespace)
 		},
 	}
-	cmd.Flags().StringVar(&namespace, "namespace", "", "limit blame to resources in this namespace (overridden by namespace in positional arg)")
+	cmd.Flags().StringVar(&namespace, "namespace", "", "namespace to use when the argument leaves it empty (Kind//Name)")
 	return cmd
 }
 
