@@ -32,7 +32,7 @@ flowchart TD
     cliRollback -- "Get + Update (live ResourceVersion)" --> api
 ```
 
-The diagram reflects the code as of Etapa 6:
+The diagram reflects the current code:
 
 - The agent uses typed informers (see [ADR-0003](adr/0003-typed-informers.md)); the typed→delta boundary lives in `internal/agent/marshal.go`.
 - Every captured object is `DeepCopy`-ed before sanitisation so the informer's shared cache is never mutated.
@@ -40,7 +40,7 @@ The diagram reflects the code as of Etapa 6:
 
 ## What gets recorded
 
-KTM records the **persisted declarative surface** of supported Kubernetes resources: user/tool-owned `metadata` (labels, annotations, name/namespace) plus `spec` or spec-equivalent fields (notably ConfigMap `data` and `binaryData`), after API-server admission/defaulting, **excluding** server-owned metadata (`resourceVersion`, `managedFields`, `generation`) and the top-level `.status` block.
+KTM records the **persisted declarative surface** of supported Kubernetes resources: user/tool-owned `metadata` (labels, annotations, name/namespace) plus `spec` or spec-equivalent fields (notably ConfigMap `data` and `binaryData`), after API-server admission/defaulting, **excluding** server-owned metadata (`resourceVersion`, `managedFields`, `generation`), annotations that tools rewrite on every operation (Helm, Argo CD, Flux, `last-applied-configuration` and similar), and the top-level `.status` block. Field-manager names are kept as a synthetic `ktm.io/managers` annotation.
 
 The detailed contract and its consequences are in [ADR-0005](adr/0005-declarative-state-recorder.md). Everything downstream of the marshal boundary operates on this sanitised view.
 

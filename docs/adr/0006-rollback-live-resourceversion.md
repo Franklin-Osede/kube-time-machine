@@ -10,7 +10,7 @@ Accepted.
 
 `ktm rollback <kind>/<namespace>/<name> --to <snapshot-id>` must apply the historical state of a resource back to the cluster. Kubernetes enforces optimistic concurrency control via `metadata.resourceVersion`: every `Update` call must carry the resourceVersion the client expects the resource to be at, and the API server rejects the update with `409 Conflict` if the server-side value has since moved.
 
-Our snapshots intentionally do **not** carry `resourceVersion` — the marshaller in `internal/agent/marshal.go` strips it as part of sanitisation (see ADR-0002 and the inline rationale in `sanitiseMeta`). That gives us deterministic, low-noise snapshots, but it also means the snapshot alone cannot construct a safe rollback `Update`.
+Our snapshots intentionally do **not** carry `resourceVersion` — the marshaller in `internal/agent/marshal.go` strips it as part of sanitisation (see ADR-0005 and `sanitiseMeta`). That gives us deterministic, low-noise snapshots, but it also means the snapshot alone cannot construct a safe rollback `Update`.
 
 Three options were considered to bridge the gap.
 
@@ -34,7 +34,7 @@ If step 2 returns `404 Not Found`, the resource no longer exists. The rollback f
 
 ## Alternatives considered
 
-1. **Stop stripping `ResourceVersion` in `marshal.go`.** Rejected: reintroduces the per-flush metadata churn that produced spurious "modified" deltas before sanitisation existed. ADR-0002 explicitly accepted this trade-off and we are not unwinding it.
+1. **Stop stripping `ResourceVersion` in `marshal.go`.** Rejected: reintroduces the per-flush metadata churn that produced spurious "modified" deltas before sanitisation existed. ADR-0005 explicitly accepted this trade-off and we are not unwinding it.
 
 2. **Persist `ResourceVersion` in a separate metadata field on each `SnapshotMeta`.** Rejected for MVP: forces a change to the on-disk and wire formats (every snapshot dir now carries a `map[Key]ResourceVersion`), and the stored value is potentially stale by hours by the time a rollback runs — the rollback would still need a live read to validate it. The cost of the format change buys no real safety.
 
@@ -55,5 +55,5 @@ If step 2 returns `404 Not Found`, the resource no longer exists. The rollback f
 ## Related
 
 - [ADR-0001](0001-record-architecture-decisions.md) — established ADR practice.
-- [ADR-0002](0002-incremental-deltas-with-reference-snapshots.md) — the sanitisation that makes step 2 (live `ResourceVersion`) necessary.
+- [ADR-0002](0002-incremental-deltas-with-reference-snapshots.md) — the snapshot format the rollback payload is reconstructed from.
 - [ADR-0005](0005-declarative-state-recorder.md) — strips `.status` upstream in `marshal.go`, so the rollback apply path doesn't need to filter it.

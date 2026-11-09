@@ -8,7 +8,9 @@
 
 image:
   # Pinned rather than following the chart's appVersion, so a chart upgrade
-  # never changes the running agent without an explicit edit here.
+  # never changes the running agent without an explicit edit here. 0.1.1
+  # does not exist until the stable release; until then use the rc you
+  # install (for example 0.1.1-rc.3).
   tag: "0.1.1"
 
 snapshot:

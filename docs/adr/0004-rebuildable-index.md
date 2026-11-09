@@ -63,6 +63,8 @@ Write paths maintain the invariant that the per-snapshot files are durable befor
 - Two writes per snapshot persist (per-snapshot files + index). Each is atomic on its own; the pair is not. A crash between writes leaves the index one entry short of the directory listing; startup rebuild repairs it.
 - `atomicWriteJSON` fsyncs the temporary file and parent directory after rename. This improves durability across node crashes on filesystems that honor fsync, at the cost of extra IO per snapshot.
 
+> **Amendment (2026-11-09):** the startup rebuild runs only when `index.json` is missing or fails to parse (`loadIndex`). It does not close the "one entry short" gap described above: a snapshot directory written just before a crash, but not yet indexed, stays on disk unindexed and is not listed. Nothing references it, because the next snapshot after a restart is built from the indexed history, and deleting or corrupting `index.json` makes the next open pick it up. If the index write fails while the agent is running, `PutFull` and `PutDelta` remove the new directory instead.
+
 ## Related
 
 - [ADR-0002](0002-incremental-deltas-with-reference-snapshots.md) — defines `Snapshot` and `Delta`, the payloads each snapshot directory holds.

@@ -67,7 +67,7 @@ POD=$(kubectl -n ktm-system get pod \
   -l app.kubernetes.io/name=kube-time-machine \
   -o jsonpath='{.items[0].metadata.name}')
 kubectl -n ktm-system debug "$POD" \
-  --image=busybox:1.36.1 \
+  --image=busybox:1.36 \
   --target=agent \
   --profile=general \
   -- sh -c 'df -h /proc/1/root/var/lib/ktm'
@@ -224,7 +224,7 @@ agent repairs the index on its next start.
 
 ## Scenario 8: ConfigMap contains sensitive data — restrict namespace
 
-The agent records all ConfigMaps in watched namespaces by design (Secrets are never captured). If a namespace contains ConfigMaps with sensitive values (database passwords, API keys stored in plaintext configs), exclude it:
+The agent records all ConfigMaps in watched namespaces by design. Secrets are not captured by default; they could be only if you added them to `agent.watchResources` with matching RBAC. If a namespace contains ConfigMaps with sensitive values (database passwords, API keys stored in plaintext configs), exclude it:
 
 ```bash
 helm upgrade ktm deploy/helm -n ktm-system \

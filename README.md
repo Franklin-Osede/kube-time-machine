@@ -174,6 +174,7 @@ Rollback safety checks:
 | Preview | Shows the diff between the live object and the exact object to be written |
 | Concurrent change | Updates with the `resourceVersion` read for the preview; if the resource changed since, the API server rejects it and nothing is written |
 | Deleted resource | Refuses unless `--allow-create` is passed |
+| Declined or unanswered prompt | Writes nothing and exits non-zero; `--yes` is required without a terminal |
 | Unrecorded annotations | Keeps their live values instead of deleting them; never writes KTM's own `ktm.io/` annotations |
 
 ## How it compares

@@ -57,6 +57,27 @@ version to install.
 
 ### Fixed
 
+- Retention could delete the base of a delta inside the retention window.
+  GC chose its anchor by timestamp, and a clock step back across an agent
+  restart can sort a new full snapshot between a delta and its base. GC now
+  never deletes a snapshot that a kept one reaches through `PrevID`, and a
+  failed delete no longer leaves a delta without its base.
+- Retrying the deletion of a snapshot whose earlier deletion half-failed
+  destroyed its tombstone and left an index entry with no data, which made
+  `ktm blame` fail for every resource. The retry now completes the deletion.
+- `--watch-resources` refuses Deployments and ConfigMaps. Watching them
+  dynamically as well as through the built-in watches wrote the same
+  resource from two serialisations, producing spurious changes.
+- The chart ignored `agent.excludeNamespaces: []` and kept excluding
+  `kube-system`, `kube-public` and `kube-node-lease`. An empty list now
+  excludes nothing.
+- `ktm rollback` exits non-zero when nothing is written: when the prompt is
+  declined, or when there is no terminal and no `--yes`. It exited 0 before.
+  **Breaking for scripts that relied on that.**
+- Argument errors from `ktm blame` and `ktm rollback` no longer name a
+  `--key` flag those commands do not have, rollback refuses an unsupported
+  kind before reading storage or contacting the cluster, and the help for
+  `blame --namespace` describes what it does: fill in an empty namespace.
 - A second agent pointed at a store already in use could rebuild its index
   and clear staged deletions before being refused, because the writer lock
   was taken after the store was opened and repaired. `NewLocal` now takes

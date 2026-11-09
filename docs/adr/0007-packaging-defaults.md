@@ -42,6 +42,8 @@ The agent exposes no ports, so `Ingress: []` (deny-all) is unconditionally corre
 
 Egress is trickier: a strict "only kube-apiserver" rule is portable in theory but brittle in practice — the apiserver endpoint moves between cluster types (ClusterIP in kind/OrbStack, external LB in EKS/GKE), and the chart cannot derive it generically. The MVP ships an explicit allow-DNS + allow-all-egress rule with a comment in the template explaining the trade-off, so the policy is a clear signal-of-intent without breaking on any cluster.
 
+> **Amendment (2026-11-09):** two statements in this section no longer hold. Egress is not "allow all": the rule allows `0.0.0.0/0` except `169.254.169.254/32`, the cloud metadata service, which the agent never needs (`templates/networkpolicy.yaml`). And the health port also serves `/metrics`, a few counters and gauges about the buffer and flushes, never snapshot data.
+
 The flag `networkPolicy.enabled` lets users opt out on clusters whose CNI doesn't support NetworkPolicy (vanilla kindnet, flannel without the extension). Tightening egress is a Phase 2 task once we have real deployment data.
 
 ### 5. Workload: `Deployment`, `replicas: 1`, `strategy.type: Recreate`, PVC `ReadWriteOnce`

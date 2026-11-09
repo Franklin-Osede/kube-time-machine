@@ -26,6 +26,8 @@ state(t) = Apply(referenceSnapshot, delta₁, delta₂, ..., deltaₖ)
 
 where the reference snapshot is the most recent full snapshot at or before `t`, and `k ≤ snapshot.fullEvery`. This bounds reconstruction cost by configuration rather than by elapsed time.
 
+> **Amendment (2026-11-09):** the bound above is off by one. Every Nth flush is a full snapshot (`flushNum % fullEvery == 0` in `internal/agent/snapshot.go`), so a reconstruction applies at most `fullEvery − 1` deltas, and "every N deltas" means every Nth flush.
+
 ## Alternatives considered
 
 1. **Full snapshots every interval.** Rejected: storage scales with snapshot rate, not change rate.
