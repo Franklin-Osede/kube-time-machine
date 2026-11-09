@@ -35,3 +35,8 @@ KTM does not request access to Kubernetes Secrets by default. Reports about
 unexpected Secret access, privilege escalation, unsafe rollback behavior,
 snapshot disclosure, path traversal, or tampering with persisted history are
 in scope.
+
+## Image scans
+
+Scan records for published agent images, including findings that were
+assessed rather than fixed, are in [docs/security/](docs/security/).

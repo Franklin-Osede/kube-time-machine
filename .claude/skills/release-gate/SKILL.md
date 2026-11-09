@@ -71,3 +71,12 @@ Then confirm:
   `helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine --version $V -n ktm-system --create-namespace`
   on a fresh kind cluster, agent reaches Ready.
 - `0.1.0` is no longer pullable (the withdrawn release must stay gone).
+- The image index still carries one `attestation-manifest` per architecture
+  (BuildKit provenance, ADR-0007). `docker manifest inspect` hides the
+  annotations; fetch the raw index from the registry API to see them.
+- `govulncheck -mode=binary` on the downloaded binaries is clean.
+- Scan the published image on both architectures, by digest
+  (`trivy image --platform linux/amd64|linux/arm64 <image>@<digest>`), and
+  add a record under `docs/security/` in the format of
+  `image-scan-v0.1.1-rc.3.md`. A finding is never "accepted" without its
+  advisory text, a reachability assessment and owner sign-off.

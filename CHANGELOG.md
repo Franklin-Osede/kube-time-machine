@@ -27,6 +27,8 @@ version to install.
 - Publish the multi-architecture agent image and the OCI Helm chart, with
   SHA-256 checksums attached to the release and source/version/revision
   labels on the image.
+  Each image index also carries BuildKit's SLSA provenance attestation
+  (`mode=max`, unsigned). There is no signature and no SBOM.
 - Snapshot retention (`--retain-days`) with garbage collection that keeps the
   most-recent full snapshot before the cutoff as an anchor, so every delta in
   the retention window stays reconstructable.
@@ -123,6 +125,10 @@ version to install.
 
 ### Security
 
+- The published 0.1.1-rc.3 agent image was scanned with Trivy, by hand,
+  after publication; the release workflow does not scan. The record, with
+  digests, scanner and DB version, findings and their assessment, is in
+  `docs/security/image-scan-v0.1.1-rc.3.md`.
 - Build with Go 1.26.10 for GO-2026-6809 (`crypto/x509` trusted compromised
   intermediate certificates). `govulncheck` traces it from the health server;
   that server is plain HTTP, but the toolchain moves rather than arguing
