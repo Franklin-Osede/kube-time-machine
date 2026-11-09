@@ -745,3 +745,20 @@ func TestGC_FailedDeleteKeepsItsBase(t *testing.T) {
 
 	reconstructAll(t, inner)
 }
+
+// A clock step back without a restart can date a delta before its own base.
+// Deleting by timestamp would remove the base first; if the delta's delete
+// then fails, it is left with nothing to apply to.
+func TestGC_FailedDeleteOfDeltaDatedBeforeItsBase(t *testing.T) {
+	inner := newFSStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	day := func(d int) time.Time { return now.AddDate(0, 0, d) }
+
+	base := putFull(t, inner, day(-39))
+	child := putDelta(t, inner, day(-40), base) // stepped back
+	putFull(t, inner, day(-31))
+
+	runGC(failDeleteStore{Store: inner, fail: child.ID}, now, 30)
+
+	reconstructAll(t, inner)
+}

@@ -84,7 +84,7 @@ Items move to issues or the CHANGELOG as they are picked up.
       `govulncheck@latest`, not the shipped toolchain (go1.26.10), so a
       stdlib advisory fixed in a newer patch can pass CI while the binaries
       carry it.
-- [ ] CI jobs have no `timeout-minutes` and no `concurrency` group.
+- [ ] The `ci.yml` jobs have no `timeout-minutes` and no `concurrency` group.
 
 ## CLI and chart polish
 

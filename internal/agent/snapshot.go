@@ -214,37 +214,57 @@ func (s *Snapshotter) gc(ctx context.Context) {
 		return
 	}
 
-	// Timestamp order is not chain order: a clock step back across a restart
-	// can sort a full between a delta and its base. So nothing that a kept
-	// snapshot reaches through PrevID is deleted, and deletion runs newest
-	// first so a failed Delete protects its own base.
+	// Timestamp order is not chain order: a clock step back can sort a full
+	// between a delta and its base, or date a delta before its own base. So
+	// nothing a kept snapshot reaches through PrevID is deleted, and a
+	// snapshot is deleted only once no remaining candidate names it as
+	// PrevID. A failed Delete therefore leaves its base in place.
 	byID := make(map[types.SnapshotID]types.SnapshotMeta, len(metas))
 	for _, m := range metas {
 		byID[m.ID] = m
 	}
 	keep := make(map[types.SnapshotID]bool, len(metas))
-	markChain := func(id types.SnapshotID) {
-		for id != "" && !keep[id] {
+	for _, m := range metas[anchorIdx:] {
+		for id := m.ID; id != "" && !keep[id]; id = byID[id].PrevID {
 			keep[id] = true
-			id = byID[id].PrevID
 		}
 	}
-	for _, m := range metas[anchorIdx:] {
-		markChain(m.ID)
+
+	var candidates []types.SnapshotMeta
+	pending := make(map[types.SnapshotID]bool, anchorIdx)
+	for _, m := range metas[:anchorIdx] {
+		if !keep[m.ID] {
+			candidates = append(candidates, m)
+			pending[m.ID] = true
+		}
+	}
+	dependents := make(map[types.SnapshotID]int, len(candidates))
+	for _, m := range candidates {
+		if pending[m.PrevID] {
+			dependents[m.PrevID]++
+		}
 	}
 
 	deleted := 0
-	for i := anchorIdx - 1; i >= 0; i-- {
-		m := metas[i]
-		if keep[m.ID] {
-			continue
+	for progress := true; progress; {
+		progress = false
+		for i := len(candidates) - 1; i >= 0; i-- {
+			m := candidates[i]
+			if !pending[m.ID] || dependents[m.ID] > 0 {
+				continue
+			}
+			delete(pending, m.ID)
+			progress = true
+			if err := s.store.Delete(ctx, m.ID); err != nil {
+				// Best-effort; its base keeps a dependent and stays.
+				slog.Error("snapshotter: gc: delete snapshot", "id", m.ID, "err", err)
+				continue
+			}
+			deleted++
+			if pending[m.PrevID] {
+				dependents[m.PrevID]--
+			}
 		}
-		if err := s.store.Delete(ctx, m.ID); err != nil {
-			slog.Error("snapshotter: gc: delete snapshot", "id", m.ID, "err", err)
-			markChain(m.ID) // best-effort, but never strand what is left
-			continue
-		}
-		deleted++
 	}
 	if deleted > 0 {
 		slog.Info("snapshotter: gc: deleted old snapshots",

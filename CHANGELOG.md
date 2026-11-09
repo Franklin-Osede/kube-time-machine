@@ -60,11 +60,15 @@ version to install.
 - Retention could delete the base of a delta inside the retention window.
   GC chose its anchor by timestamp, and a clock step back across an agent
   restart can sort a new full snapshot between a delta and its base. GC now
-  never deletes a snapshot that a kept one reaches through `PrevID`, and a
-  failed delete no longer leaves a delta without its base.
+  never deletes a snapshot that a kept one reaches through `PrevID`, and it
+  deletes a snapshot only after everything built on it, so a failed delete
+  no longer leaves a delta without its base.
 - Retrying the deletion of a snapshot whose earlier deletion half-failed
   destroyed its tombstone and left an index entry with no data, which made
   `ktm blame` fail for every resource. The retry now completes the deletion.
+  Staging a deletion is also fsynced before the index commit; a power loss
+  could otherwise keep the index change but not the rename, and a later index
+  rebuild would bring the snapshot back.
 - `--watch-resources` refuses Deployments and ConfigMaps. Watching them
   dynamically as well as through the built-in watches wrote the same
   resource from two serialisations, producing spurious changes.

@@ -34,7 +34,7 @@ If step 2 returns `404 Not Found`, the resource no longer exists. The rollback f
 
 ## Alternatives considered
 
-1. **Stop stripping `ResourceVersion` in `marshal.go`.** Rejected: reintroduces the per-flush metadata churn that produced spurious "modified" deltas before sanitisation existed. ADR-0005 explicitly accepted this trade-off and we are not unwinding it.
+1. **Stop stripping `ResourceVersion` in `marshal.go`.** Rejected: reintroduces the per-flush metadata churn that produced spurious "modified" deltas before sanitisation existed. `sanitiseMeta` (`internal/agent/marshal.go`) strips it on purpose (ADR-0005), and we are not unwinding that.
 
 2. **Persist `ResourceVersion` in a separate metadata field on each `SnapshotMeta`.** Rejected for MVP: forces a change to the on-disk and wire formats (every snapshot dir now carries a `map[Key]ResourceVersion`), and the stored value is potentially stale by hours by the time a rollback runs — the rollback would still need a live read to validate it. The cost of the format change buys no real safety.
 

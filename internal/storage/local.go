@@ -508,6 +508,15 @@ func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
 		if err := os.Rename(dir, tombstone); err != nil {
 			return fmt.Errorf("storage: stage snapshot deletion %s: %w", id, err)
 		}
+		// The rename must be durable before the index commit. Otherwise a
+		// power loss can persist an index without the entry while the
+		// directory is still in snapshots/ with no tombstone, and a later
+		// rebuildIndex would bring the snapshot back.
+		for _, d := range []string{filepath.Join(l.root, snapshotsDirName), deletingDir} {
+			if err := syncDir(d); err != nil {
+				return fmt.Errorf("storage: sync staged deletion %s: %w", id, err)
+			}
+		}
 	}
 
 	old := l.index
