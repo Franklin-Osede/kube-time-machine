@@ -55,6 +55,17 @@ version to install.
   than as a CrashLoopBackOff. It also rejects non-read-only verbs in
   `rbac.extraRules`, which would otherwise silently widen a cluster-scoped role.
 
+### Changed
+
+- The chart's default memory is now a `256Mi` request and a `512Mi` limit
+  (was `64Mi` and `256Mi`). With about 20 MB of ConfigMap data the agent was
+  OOMKilled under the old limit while writing full snapshots.
+  `docs/install.md` § Sizing memory has the measured runs and their limits.
+- The agent sets the Go garbage collector's soft limit to 90% of its
+  container's memory limit, which the chart passes in as `KTM_MEMORY_LIMIT`.
+  It is a collection target, not a cap. An explicit `GOMEMLIMIT` takes
+  precedence.
+
 ### Fixed
 
 - Retention could delete the base of a delta inside the retention window.

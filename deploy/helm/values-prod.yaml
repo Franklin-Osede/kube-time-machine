@@ -29,8 +29,8 @@ storage:
   storageClassName: REPLACE_WITH_ENCRYPTED_STORAGE_CLASS
 
 agent:
-  # A starting point for clusters above ~500 Deployments and ConfigMaps.
-  # Confirm with a representative load test and adjust from observed RSS/CPU.
+  # 1Gi held a tested workload of about 50 MB of ConfigMap data on kind; see
+  # docs/install.md, "Sizing memory". Measure your own before relying on it.
   resources:
     requests:
       cpu: 250m

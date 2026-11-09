@@ -189,6 +189,11 @@ Common causes:
 | `open storage: storage: another process holds the writer lock` | A second agent is using the same volume | Run one agent per volume; the chart's `Recreate` strategy prevents this during upgrades |
 | `storage: unsupported store format` | The volume was written by a newer KTM | Upgrade the agent; see [ADR-0008](adr/0008-store-format-version.md) |
 
+If `describe pod` shows `Last State: Terminated, Reason: OOMKilled`, the
+recorded state no longer fits the memory limit; full snapshots need several
+times the state in memory. Raise `agent.resources.limits.memory` using
+[Sizing memory](install.md#sizing-memory).
+
 ---
 
 ## Scenario 7: `ktm` CLI hangs on `blame` or `diff`

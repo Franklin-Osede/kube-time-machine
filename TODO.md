@@ -20,7 +20,9 @@ Items move to issues or the CHANGELOG as they are picked up.
 - [ ] Tag `v0.1.1-rc.4` from the comment trim (PR #25) and the fixes after
       rc.3 (Delete tombstone retry, GC chain under a clock step back,
       `--watch-resources` refusing the typed kinds, `excludeNamespaces: []`,
-      rollback exit code), run the full gate and E2E on that exact commit,
+      rollback exit code, rollback keeping live owners and finalizers,
+      `--watch-resources` Kind and Secrets checks, the first snapshot
+      waiting for the handlers, the memory defaults), run the full gate and E2E on that exact commit,
       and verify it with `release-gate`. After rc.4 the scope is frozen:
       only security, data-loss or installation defects reopen it.
 - [ ] Rescan the stable image after it is published and before the public
@@ -66,6 +68,18 @@ Items move to issues or the CHANGELOG as they are picked up.
       the agent could not reach the API server. Untested; verify before
       claiming IPv6 support.
 - [ ] No warning when the storage volume passes 80% full.
+- [ ] A full snapshot allocates about 6.5–7× the recorded state, mostly
+      `json.MarshalIndent` buffers in `atomicWriteJSON`, and stores each
+      object base64 encoded. Benchmark dropping the indentation first; the
+      saving is unmeasured. Verify any format change against rc.3 in both
+      directions: rc.3 reads the new store, the new build reads rc.3's.
+      Evidence: `docs/install.md` § Sizing memory.
+- [ ] Memory was measured for minutes on one kind node: no soak test, and
+      nothing above ~50 MB of ConfigMap data.
+- [ ] `--watch-resources` collisions are checked only against the current
+      list. A guard that walks the stored history's `meta.Kinds` would catch
+      a list changed on an existing PVC; until then the docs require a new
+      PVC.
 - [ ] A `networkPolicy.healthIngressFrom` value to narrow who can reach the
       health port, once tested against the CNIs we support: an untested
       selector can block kubelet probes and look like a crash-looping agent.

@@ -141,10 +141,66 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 | `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
 | `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes liveness/readiness probes. |
 | `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. Refused: Deployments and ConfigMaps (always recorded), Secrets, and any two entries with the same Kind. See [Changing watched resources](#changing-watched-resources). |
-| `agent.resources.*` | conservative | The agent's working set is dominated by the informer cache; tune up if you watch large clusters. |
+| `agent.resources.*` | memory: request `256Mi`, limit `512Mi` | The agent holds every recorded object in memory, and each full snapshot briefly needs several times that. See [Sizing memory](#sizing-memory). |
 | `networkPolicy.enabled` | `true` | Turn off only on clusters whose CNI does not enforce NetworkPolicy. |
 
 There is no `replicaCount` value. The agent writes to a `ReadWriteOnce` PVC and `replicas` is hardcoded to `1` in the template. Two writers would corrupt the storage (see [ADR-0007](adr/0007-packaging-defaults.md)).
+
+### Sizing memory
+
+The agent keeps the latest state of every recorded object in memory, and
+writing a full snapshot allocates several times that state again. It sets the
+Go garbage collector's soft limit to 90% of `agent.resources.limits.memory`
+(not when `GOMEMLIMIT` is set). The runtime grows toward that target before it
+collects, so container memory close to the limit is expected and is not by
+itself a problem. The signals that matter are restarts with reason
+`OOMKilled` and `ktm_flushes_total` no longer increasing.
+
+The defaults, a `512Mi` limit and a `256Mi` request, were chosen from the runs
+below. The request is what the scheduler reserves. It is not a promise that it
+covers the agent's steady-state memory: in the 20 MB run the container used
+about 390 MiB of anonymous memory.
+
+Measured runs, all on the same setup:
+
+- kind v0.32.0, Kubernetes v1.36.1, one node in a colima VM (aarch64, 6 CPUs,
+  10 GiB) on macOS.
+- Agent from commit `525aafb` with diagnostic logging added (Go runtime memory
+  every 5 s, flush durations, pprof). That build also had the first-snapshot
+  bug fixed later in this release, so its first full snapshot was partial;
+  every later one was complete.
+- The objects existed before the agent started, in one namespace. Each
+  ConfigMap has one key holding random base64 text, which does not compress.
+  The Deployments have `replicas: 0`, one container and ten 64-byte
+  environment variables.
+- `snapshot.intervalSeconds=30` and `snapshot.fullEvery=2`, so a full snapshot
+  every minute; the defaults write one every hour. The ~2 MB run lasted
+  5 minutes. The others were sampled every 5 s for about 7 minutes, which
+  covered 8 full snapshots each.
+
+| Workload | ConfigMap data | Limit | Result |
+|---|---|---|---|
+| 500 ConfigMaps × 4 KiB, 100 Deployments | ~2 MB | `256Mi` | Passed. No restarts, container peak 62 MiB. Build before the soft limit was added. |
+| 2,000 ConfigMaps × 10 KiB, 300 Deployments | ~20 MB | `256Mi` | **Failed.** OOMKilled with and without the soft limit: 4 restarts in about 4 minutes without it, and with it 1 restart in 6 minutes and only 4 flushes recorded. |
+| same | ~20 MB | `512Mi` | Passed. No restarts, no OOM or `memory.high` events, no memory pressure. 16 flushes (8 full, 8 delta), full snapshots 340–558 ms. Go live heap at most 209 MiB; container anonymous memory at most 397 MiB. |
+| 2,000 ConfigMaps × 25 KiB, 300 Deployments | ~50 MB | `512Mi` | Completed with no restarts, OOM events or memory pressure. 15 flushes (8 full, 7 delta), full snapshots 1,164–1,568 ms. But the Go live heap was 310 MiB and the collector ran about 25 cycles in the window, so a capacity margin was **not** established. |
+| same | ~50 MB | `1Gi` | Completed with no restarts, OOM events or memory pressure. 15 flushes (8 full, 7 delta), full snapshots 963–1,739 ms. Go live heap at most 417 MiB, about 5 collector cycles. |
+
+What this supports:
+
+- About 20 MB of ConfigMap data: the default `512Mi`.
+- The tested ~50 MB scenario: use `1Gi`. It ran with fewer collector cycles,
+  which supports the recommendation, but it does not prove additional
+  capacity beyond that workload.
+- Larger workloads were not tested and need their own measurement.
+- The results come from one machine and windows of minutes, not a long soak
+  test.
+
+ConfigMap data is not the same as the recorded state. The state also includes
+metadata and the Deployments. On disk each object's JSON is stored base64
+encoded inside the snapshot file, so in the ~50 MB run a full snapshot was
+66.6 MiB for 48.8 MiB of ConfigMap data. To size from a running agent, use
+the size of one full snapshot (`du -sh` of a `full` entry under `snapshots/`).
 
 ### The 30-second capture gap during `helm upgrade`
 
