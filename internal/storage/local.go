@@ -315,6 +315,10 @@ func (l *Local) reconcileDeletions() error {
 		return nil
 	}
 	if len(filtered) != len(before) {
+		// Same ordering as Delete: the staging renames are durable first.
+		if err := syncStaging(l.root); err != nil {
+			return fmt.Errorf("storage: reconcile staged deletions: %w", err)
+		}
 		if err := l.writeIndexLocked(); err != nil {
 			return fmt.Errorf("storage: reconcile staged deletions: %w", err)
 		}
@@ -490,6 +494,9 @@ func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
 	if err := os.MkdirAll(deletingDir, 0o700); err != nil {
 		return fmt.Errorf("storage: create deletion staging directory: %w", err)
 	}
+	if err := syncDir(l.root); err != nil {
+		return fmt.Errorf("storage: sync deletion staging directory: %w", err)
+	}
 	tombstone := filepath.Join(deletingDir, string(id))
 
 	// An indexed snapshot whose directory is gone is either already staged
@@ -508,15 +515,14 @@ func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
 		if err := os.Rename(dir, tombstone); err != nil {
 			return fmt.Errorf("storage: stage snapshot deletion %s: %w", id, err)
 		}
-		// The rename must be durable before the index commit. Otherwise a
-		// power loss can persist an index without the entry while the
-		// directory is still in snapshots/ with no tombstone, and a later
-		// rebuildIndex would bring the snapshot back.
-		for _, d := range []string{filepath.Join(l.root, snapshotsDirName), deletingDir} {
-			if err := syncDir(d); err != nil {
-				return fmt.Errorf("storage: sync staged deletion %s: %w", id, err)
-			}
-		}
+	}
+	// The staging rename must be durable before the index commit, also on a
+	// retry: an earlier sync may have failed, and a failed fsync can report
+	// success the next time. Otherwise a power loss can keep the index change
+	// but not the rename, and a later rebuildIndex would resurrect the
+	// snapshot.
+	if err := syncStaging(l.root); err != nil {
+		return fmt.Errorf("storage: sync staged deletion %s: %w", id, err)
 	}
 
 	old := l.index
@@ -534,7 +540,7 @@ func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
 	if err := os.RemoveAll(tombstone); err != nil {
 		return fmt.Errorf("storage: remove deleted snapshot %s: %w", id, err)
 	}
-	return syncDir(filepath.Join(l.root, snapshotsDirName))
+	return syncDir(deletingDir)
 }
 
 // List returns a copy of the in-memory index, sorted by Timestamp.
@@ -646,6 +652,16 @@ func atomicWriteJSON(path string, v any) error {
 		return err
 	}
 	return syncDir(filepath.Dir(path))
+}
+
+// syncStaging fsyncs both directories a deletion's staging rename touches.
+func syncStaging(root string) error {
+	for _, d := range []string{filepath.Join(root, snapshotsDirName), filepath.Join(root, ".deleting")} {
+		if err := syncDir(d); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // syncDir fsyncs a directory so a rename into it is durable across crashes.

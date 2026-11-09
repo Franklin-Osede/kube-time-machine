@@ -224,8 +224,11 @@ func (s *Snapshotter) gc(ctx context.Context) {
 		byID[m.ID] = m
 	}
 	keep := make(map[types.SnapshotID]bool, len(metas))
-	for _, m := range metas[anchorIdx:] {
-		for id := m.ID; id != "" && !keep[id]; id = byID[id].PrevID {
+	s.mu.Lock()
+	head := s.prevID // the next delta is built on it, whatever its timestamp
+	s.mu.Unlock()
+	for _, root := range append([]types.SnapshotID{head}, idsOf(metas[anchorIdx:])...) {
+		for id := root; id != "" && !keep[id]; id = byID[id].PrevID {
 			keep[id] = true
 		}
 	}
@@ -273,6 +276,14 @@ func (s *Snapshotter) gc(ctx context.Context) {
 			"retainDays", s.retainDays,
 		)
 	}
+}
+
+func idsOf(metas []types.SnapshotMeta) []types.SnapshotID {
+	ids := make([]types.SnapshotID, len(metas))
+	for i, m := range metas {
+		ids[i] = m.ID
+	}
+	return ids
 }
 
 // Run flushes periodically until ctx is cancelled, then returns ctx.Err().

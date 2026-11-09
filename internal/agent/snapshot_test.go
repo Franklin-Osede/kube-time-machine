@@ -762,3 +762,24 @@ func TestGC_FailedDeleteOfDeltaDatedBeforeItsBase(t *testing.T) {
 
 	reconstructAll(t, inner)
 }
+
+// The snapshot the next delta will be built on must survive GC even when a
+// clock error dates it before the cutoff, or that delta has no base.
+func TestGC_KeepsTheHeadTheNextDeltaBuildsOn(t *testing.T) {
+	store := newFSStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	s := agent.NewSnapshotter(agent.NewBuffer(), store, time.Minute, 3).WithRetention(30)
+
+	s.WithClock(func() time.Time { return now.AddDate(0, 0, -40) }) // clock far behind
+	if _, err := s.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	putFull(t, store, now.AddDate(0, 0, -31))
+
+	s.WithClock(func() time.Time { return now })
+	s.GC(context.Background())
+	if _, err := s.Flush(context.Background()); err != nil { // a delta on the head
+		t.Fatalf("Flush: %v", err)
+	}
+	reconstructAll(t, store)
+}

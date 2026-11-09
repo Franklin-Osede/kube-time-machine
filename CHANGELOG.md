@@ -62,11 +62,13 @@ version to install.
   restart can sort a new full snapshot between a delta and its base. GC now
   never deletes a snapshot that a kept one reaches through `PrevID`, and it
   deletes a snapshot only after everything built on it, so a failed delete
-  no longer leaves a delta without its base.
+  no longer leaves a delta without its base. The snapshot the agent's next
+  delta builds on is always kept.
 - Retrying the deletion of a snapshot whose earlier deletion half-failed
   destroyed its tombstone and left an index entry with no data, which made
   `ktm blame` fail for every resource. The retry now completes the deletion.
-  Staging a deletion is also fsynced before the index commit; a power loss
+  Staging a deletion is also fsynced before every index commit that
+  completes it, including retries and the repair on startup; a power loss
   could otherwise keep the index change but not the rename, and a later index
   rebuild would bring the snapshot back.
 - `--watch-resources` refuses Deployments and ConfigMaps. Watching them
