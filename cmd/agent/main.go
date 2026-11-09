@@ -87,6 +87,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("parse --watch-resources: %w", err)
 	}
+	if len(gvrs) > 0 {
+		if err := agent.CheckDynamicKinds(client.Discovery(), gvrs); err != nil {
+			return fmt.Errorf("check --watch-resources: %w", err)
+		}
+	}
 
 	buf := agent.NewBuffer()
 	snap := agent.NewSnapshotter(buf, store, *interval, *fullEvery).

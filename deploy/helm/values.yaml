@@ -48,9 +48,11 @@ agent:
     - kube-public
     - kube-node-lease
   # Extra kinds to record via dynamic informers (experimental), as
-  # "resource[.group]/version"; the version is required because the dynamic
-  # client does no discovery. Each needs a matching rule in rbac.extraRules.
-  # Deployments and ConfigMaps are refused: they are always recorded.
+  # "resource[.group]/version"; the version is required. Each needs a
+  # matching rule in rbac.extraRules.
+  # Refused: Deployments and ConfigMaps (always recorded), Secrets, and two
+  # entries with the same Kind. Changing this list needs a new PVC; see
+  # docs/install.md, "Changing watched resources".
   watchResources: []
   resources:
     requests:

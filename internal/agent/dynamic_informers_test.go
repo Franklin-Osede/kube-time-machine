@@ -7,9 +7,11 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	discoveryfake "k8s.io/client-go/discovery/fake"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	ktesting "k8s.io/client-go/testing"
 )
@@ -232,6 +234,11 @@ func TestParseGVRList_RefusesTypedKinds(t *testing.T) {
 			t.Errorf("ParseGVRList(%q): want error for a kind the typed informers record", in)
 		}
 	}
+	for _, in := range []string{"secrets/v1", "services/v1,secrets/v1"} {
+		if _, err := ParseGVRList(in); err == nil || !strings.Contains(err.Error(), "Secrets are not recorded") {
+			t.Errorf("ParseGVRList(%q): err = %v, want Secrets refused", in, err)
+		}
+	}
 	got, err := ParseGVRList("services/v1, statefulsets.apps/v1")
 	if err != nil || len(got) != 2 {
 		t.Fatalf("ParseGVRList of other kinds: got %v, %v", got, err)
@@ -257,5 +264,65 @@ func TestMarshalUnstructured_StripsStatus(t *testing.T) {
 	_, s2, _ := marshalUnstructured(obj(1))
 	if string(s1) != string(s2) || strings.Contains(string(s1), "status") {
 		t.Errorf("status leaked into state:\n%s\n%s", s1, s2)
+	}
+}
+
+func fakeDiscovery(lists ...*metav1.APIResourceList) *discoveryfake.FakeDiscovery {
+	return &discoveryfake.FakeDiscovery{Fake: &ktesting.Fake{Resources: lists}}
+}
+
+var testAPIs = []*metav1.APIResourceList{
+	{GroupVersion: "apps/v1", APIResources: []metav1.APIResource{
+		{Name: "statefulsets", Kind: "StatefulSet"}, {Name: "statefulsets/scale", Kind: "Scale"},
+	}},
+	{GroupVersion: "v1", APIResources: []metav1.APIResource{{Name: "services", Kind: "Service"}}},
+	{GroupVersion: "cert-manager.io/v1", APIResources: []metav1.APIResource{{Name: "certificates", Kind: "Certificate"}}},
+	{GroupVersion: "cert-manager.io/v1beta1", APIResources: []metav1.APIResource{{Name: "certificates", Kind: "Certificate"}}},
+	{GroupVersion: "networking.internal.knative.dev/v1alpha1", APIResources: []metav1.APIResource{{Name: "certificates", Kind: "Certificate"}}},
+	{GroupVersion: "example.io/v1", APIResources: []metav1.APIResource{
+		{Name: "deployments", Kind: "Deployment"}, {Name: "configs", Kind: "ConfigMap"},
+	}},
+}
+
+// Keys carry no API group, so a configuration in which two sources write the
+// same Kind must stop the agent before it records anything.
+func TestCheckDynamicKinds(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want string // "" means accepted
+	}{
+		{"statefulsets.apps/v1, services/v1, certificates.cert-manager.io/v1", ""},
+		{"certificates.cert-manager.io/v1, certificates.networking.internal.knative.dev/v1alpha1", `both have Kind "Certificate"`},
+		{"certificates.cert-manager.io/v1, certificates.cert-manager.io/v1beta1", `both have Kind "Certificate"`},
+		{"deployments.example.io/v1", `apps/v1 (built-in watch) and deployments.example.io/v1 both have Kind "Deployment"`},
+		{"configs.example.io/v1", `both have Kind "ConfigMap"`},
+		{"widgets.example.io/v1", `does not serve "widgets"`},
+		{"widgets.missing.io/v1", "discover"},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			gvrs, err := ParseGVRList(tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = CheckDynamicKinds(fakeDiscovery(testAPIs...), gvrs)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Errorf("want accepted, got %v", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Errorf("err = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A discovery failure must stop startup, not skip the check.
+func TestCheckDynamicKinds_DiscoveryErrorStops(t *testing.T) {
+	d := fakeDiscovery(testAPIs...)
+	d.PrependReactor("*", "*", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("connection refused")
+	})
+	gvrs, _ := ParseGVRList("services/v1")
+	if err := CheckDynamicKinds(d, gvrs); err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("err = %v, want the discovery error", err)
 	}
 }

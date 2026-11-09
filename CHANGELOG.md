@@ -80,6 +80,12 @@ version to install.
 - `--watch-resources` refuses Deployments and ConfigMaps. Watching them
   dynamically as well as through the built-in watches wrote the same
   resource from two serialisations, producing spurious changes.
+- `--watch-resources` refuses Secrets, and refuses at startup two entries,
+  or an entry and a built-in watch, with the same Kind. Snapshots key a
+  resource by Kind without its API group, so cert-manager and Knative
+  `Certificate`s would have overwritten each other. The Kind comes from API
+  discovery, and a discovery error stops the agent. History recorded under a
+  different list is not checked: change the list only with a new PVC.
 - The chart ignored `agent.excludeNamespaces: []` and kept excluding
   `kube-system`, `kube-public` and `kube-node-lease`. An empty list now
   excludes nothing.

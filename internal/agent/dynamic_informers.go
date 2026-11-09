@@ -11,6 +11,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/tools/cache"
@@ -21,9 +22,10 @@ import (
 
 // DynamicInformers watches a configurable set of GroupVersionResources,
 // including CRDs, and writes sanitised state into the Buffer shared with the
-// typed Informers. ParseGVRList refuses the typed kinds, so the two never
-// write the same Key. It is the Phase 2 extension
-// point: blame and rollback support only the typed kinds.
+// typed Informers. ParseGVRList and CheckDynamicKinds refuse any GVR whose
+// Kind another source already writes, so no two sources write the same Key.
+// It is the Phase 2 extension point: blame and rollback support only the
+// typed kinds.
 type DynamicInformers struct {
 	factory     dynamicinformer.DynamicSharedInformerFactory
 	gvrs        []schema.GroupVersionResource
@@ -265,9 +267,16 @@ var typedGroupResources = map[schema.GroupResource]bool{
 	{Group: "", Resource: "configmaps"}:      true,
 }
 
+// refusedGroupResources are never recorded: snapshots are stored unencrypted
+// on the PVC and read by anyone with access to it.
+var refusedGroupResources = map[schema.GroupResource]string{
+	{Group: "", Resource: "secrets"}: "Secrets are not recorded: snapshots are stored unencrypted on the volume",
+}
+
 // ParseGVRList parses a comma-separated list of GVR strings. Whitespace
 // around each entry is trimmed and empty entries are ignored. Deployments
-// and ConfigMaps are refused: the typed Informers already record them.
+// and ConfigMaps are refused, because the typed Informers already record
+// them, and so are Secrets.
 func ParseGVRList(s string) ([]schema.GroupVersionResource, error) {
 	var out []schema.GroupVersionResource
 	for _, part := range strings.Split(s, ",") {
@@ -281,6 +290,9 @@ func ParseGVRList(s string) ([]schema.GroupVersionResource, error) {
 		}
 		if typedGroupResources[gvr.GroupResource()] {
 			return nil, fmt.Errorf("agent: %q is already recorded by the built-in watches; remove it from --watch-resources", part)
+		}
+		if why, ok := refusedGroupResources[gvr.GroupResource()]; ok {
+			return nil, fmt.Errorf("agent: %q: %s; remove it from --watch-resources", part, why)
 		}
 		out = append(out, gvr)
 	}
@@ -300,4 +312,46 @@ func CombinedReady(a, b <-chan struct{}) <-chan struct{} {
 		close(out)
 	}()
 	return out
+}
+
+// typedKinds are the Kinds the typed Informers write.
+var typedKinds = map[string]string{"Deployment": "apps/v1", "ConfigMap": "v1"}
+
+// CheckDynamicKinds asks the API server for the Kind of each GVR and refuses
+// a configuration in which two sources would write the same Kind. A Key
+// carries no API group, so two kinds with the same name, such as cert-manager
+// and Knative Certificates, would overwrite each other's history.
+//
+// It checks only the configuration it is given. History recorded under a
+// different --watch-resources list can still share a Kind with this one;
+// docs/install.md tells operators to use a new store when they change it.
+// Any discovery error is returned, so the agent never starts half-checked.
+func CheckDynamicKinds(d discovery.DiscoveryInterface, gvrs []schema.GroupVersionResource) error {
+	owner := make(map[string]string, len(gvrs)+len(typedKinds))
+	for kind, src := range typedKinds {
+		owner[kind] = src + " (built-in watch)"
+	}
+	for _, gvr := range gvrs {
+		gv := gvr.GroupVersion().String()
+		list, err := d.ServerResourcesForGroupVersion(gv)
+		if err != nil {
+			return fmt.Errorf("agent: discover %s: %w", gvr.String(), err)
+		}
+		kind := ""
+		for _, r := range list.APIResources {
+			if r.Name == gvr.Resource {
+				kind = r.Kind
+				break
+			}
+		}
+		if kind == "" {
+			return fmt.Errorf("agent: the API server does not serve %q in %s", gvr.Resource, gv)
+		}
+		src := gvr.Resource + "." + gv
+		if prev, ok := owner[kind]; ok {
+			return fmt.Errorf("agent: %s and %s both have Kind %q; snapshots key resources by Kind without the API group, so they would overwrite each other. Watch only one of them", prev, src, kind)
+		}
+		owner[kind] = src
+	}
+	return nil
 }

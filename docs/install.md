@@ -140,7 +140,7 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 | `storage.size` | `10Gi` | PVC size. Storage scales with change rate, not snapshot rate. |
 | `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
 | `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes liveness/readiness probes. |
-| `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. Deployments and ConfigMaps are refused: they are always recorded. |
+| `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. Refused: Deployments and ConfigMaps (always recorded), Secrets, and any two entries with the same Kind. See [Changing watched resources](#changing-watched-resources). |
 | `agent.resources.*` | conservative | The agent's working set is dominated by the informer cache; tune up if you watch large clusters. |
 | `networkPolicy.enabled` | `true` | Turn off only on clusters whose CNI does not enforce NetworkPolicy. |
 
@@ -158,6 +158,19 @@ The bundled `ClusterRole` grants `list` and `watch` on `deployments.apps`
 and `configmaps` cluster-wide. The default agent has no other permissions — it
 cannot write or read Secrets. Experimental dynamic watches are opt-in and
 require matching rules in both `agent.watchResources` and `rbac.extraRules`.
+
+### Changing watched resources
+
+Snapshots identify a resource by Kind, namespace and name, without its API
+group. At startup the agent asks the API server for the Kind of each
+`agent.watchResources` entry and refuses to start if two entries, or an entry
+and a built-in watch, share a Kind. It cannot check history recorded under an
+earlier list.
+
+**If you change `agent.watchResources`, use a new PVC (a new `--storage-dir`).
+Do not reuse history recorded with a different list.** Otherwise a Kind
+recorded earlier from one API group, such as cert-manager's `Certificate`, and
+the same Kind from another group, such as Knative's, end up in one history.
 
 If you want to scope the agent down further (e.g. to specific namespaces), today the chart does not parameterise the rule subject lists; you would patch the `ClusterRole` after install. Scoping is a Phase 2 enhancement.
 
