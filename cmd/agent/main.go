@@ -73,6 +73,18 @@ func run() error {
 		return fmt.Errorf("build dynamic kube client: %w", err)
 	}
 
+	// Checked before the store is opened, so a refused list changes nothing
+	// on the volume.
+	gvrs, err := agent.ParseGVRList(*watchResources)
+	if err != nil {
+		return fmt.Errorf("parse --watch-resources: %w", err)
+	}
+	if len(gvrs) > 0 {
+		if err := agent.CheckDynamicKinds(client.Discovery(), gvrs); err != nil {
+			return fmt.Errorf("check --watch-resources: %w", err)
+		}
+	}
+
 	// NewLocal takes the writer lock before it repairs anything.
 	store, err := storage.NewLocal(*storageDir)
 	if err != nil {
@@ -85,16 +97,6 @@ func run() error {
 	}()
 
 	excludeNS := splitTrimmed(*excludeNamespaces)
-
-	gvrs, err := agent.ParseGVRList(*watchResources)
-	if err != nil {
-		return fmt.Errorf("parse --watch-resources: %w", err)
-	}
-	if len(gvrs) > 0 {
-		if err := agent.CheckDynamicKinds(client.Discovery(), gvrs); err != nil {
-			return fmt.Errorf("check --watch-resources: %w", err)
-		}
-	}
 
 	buf := agent.NewBuffer()
 	snap := agent.NewSnapshotter(buf, store, *interval, *fullEvery).
