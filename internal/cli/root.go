@@ -7,15 +7,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Options holds the values of the persistent flags shared by every
-// subcommand. The pointer is passed into each subcommand constructor so
-// they read the value after flag parsing, not at construction time.
+// Options holds the persistent flags shared by every subcommand. Subcommands
+// keep the pointer so they read values after flag parsing.
 type Options struct {
 	StorageDir string
 }
 
-// NewRootCmd builds the ktm command tree without executing it. version is
-// the linker-stamped value from cmd/ktm and backs `ktm --version`.
+// NewRootCmd builds the ktm command tree; version backs `ktm --version`.
 func NewRootCmd(version string) *cobra.Command {
 	opts := &Options{}
 
@@ -24,8 +22,7 @@ func NewRootCmd(version string) *cobra.Command {
 		Short:   "Git blame & time-travel for your Kubernetes cluster",
 		Long:    "ktm reads the snapshot history recorded by ktm-agent: list snapshots, reconstruct the state at any point, diff two points in time, blame a resource's changes, and roll a resource back.",
 		Version: version,
-		// A runtime error (missing snapshot, conflict) prints just the error,
-		// not the usage text, which only helps with a mistyped command.
+		// Usage text helps with a mistyped command, not a runtime error.
 		SilenceUsage: true,
 	}
 
@@ -40,10 +37,8 @@ func NewRootCmd(version string) *cobra.Command {
 	return cmd
 }
 
-// defaultStorageDir picks a sensible per-user default for local
-// development: $HOME/.ktm/data. The agent's default in-cluster path
-// (/var/lib/ktm) is intentionally different because the CLI runs on the
-// engineer's laptop, not in a pod.
+// defaultStorageDir returns $HOME/.ktm/data. It differs from the agent's
+// /var/lib/ktm because the CLI runs on a workstation, not in a pod.
 func defaultStorageDir() string {
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".ktm", "data")

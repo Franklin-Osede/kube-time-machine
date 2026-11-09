@@ -1,6 +1,4 @@
-// Package cli implements the ktm command-line interface. It depends on
-// internal/storage for persisted snapshots and internal/delta for the
-// in-memory data model; everything user-facing lives here.
+// Package cli implements the ktm command-line interface.
 package cli
 
 import (
@@ -12,23 +10,15 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
-// reconstruct rebuilds the full Snapshot at the point identified by id.
-//
-// Algorithm:
-//  1. Walk backwards via PrevID until we hit a full snapshot.
-//  2. Apply the deltas forward from that full to reach id.
-//
-// Because the agent guarantees a full snapshot every `fullEvery` flushes,
-// step 1 reads at most `fullEvery` records, and step 2 applies the same
-// number of deltas. Cost is bounded by the cadence configuration, not by
-// the age of the snapshot.
+// reconstruct rebuilds the Snapshot at id by walking PrevID back to a full
+// snapshot and applying the deltas forward. The cost is bounded by the
+// agent's full-snapshot cadence, not by the snapshot's age.
 func reconstruct(ctx context.Context, store storage.Store, id types.SnapshotID) (delta.Snapshot, error) {
 	if id == "" {
 		return nil, fmt.Errorf("reconstruct: empty snapshot id")
 	}
 
-	// chain holds Loaded records ordered from `id` back to the anchoring
-	// full snapshot. chain[0] is `id`; chain[len-1] is the full.
+	// chain[0] is id; chain[len-1] is the anchoring full snapshot.
 	var chain []storage.Loaded
 	visited := make(map[types.SnapshotID]bool)
 
@@ -54,10 +44,8 @@ func reconstruct(ctx context.Context, store storage.Store, id types.SnapshotID) 
 		cur = loaded.Meta.PrevID
 	}
 
-	// Start from the full snapshot at the tail of the chain.
 	out := chain[len(chain)-1].Full
 
-	// Apply deltas forward (from oldest after the full to `id`).
 	for i := len(chain) - 2; i >= 0; i-- {
 		out = delta.Apply(out, chain[i].Delta)
 	}
