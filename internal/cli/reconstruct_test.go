@@ -15,11 +15,6 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
-// White-box test (package cli, not cli_test) so we can call the
-// unexported reconstruct helper directly. The function is intentionally
-// unexported — it's an implementation detail of show, diff and
-// blame.
-
 func key(kind, ns, name string) delta.Key {
 	return delta.Key{Kind: kind, Namespace: ns, Name: name}
 }
@@ -62,7 +57,7 @@ func TestReconstruct_FullPlusDeltas(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
 
-	// Seed a chain: full → d1 → d2 → d3
+	// full → d1 → d2 → d3
 	s0 := delta.Snapshot{
 		key("Deployment", "default", "api"): delta.State("v1"),
 	}
@@ -86,7 +81,6 @@ func TestReconstruct_FullPlusDeltas(t *testing.T) {
 	}
 	d3, _ := store.PutDelta(ctx, at(2026, 5, 20, 10, 3), d2.ID, delta.Compute(s2, s3))
 
-	// Reconstruct each point should match the original snapshot at that point.
 	for i, tc := range []struct {
 		id   types.SnapshotID
 		want delta.Snapshot
@@ -121,10 +115,8 @@ func TestReconstruct_UnknownIDErrors(t *testing.T) {
 	}
 }
 
-// TestReconstruct_CyclicChainReturnsError verifies that a corrupt delta chain
-// where PrevID forms a cycle (A→B→A) is detected quickly instead of looping
-// indefinitely. The store is seeded by writing meta.json and delta.json
-// directly to disk, bypassing the PutDelta API which cannot create cycles.
+// TestReconstruct_CyclicChainReturnsError: a PrevID cycle is an error, not an
+// endless loop. PutDelta cannot create one, so the files are written directly.
 func TestReconstruct_CyclicChainReturnsError(t *testing.T) {
 	root := t.TempDir()
 
@@ -132,7 +124,6 @@ func TestReconstruct_CyclicChainReturnsError(t *testing.T) {
 		idA = types.SnapshotID("20260101T000000000Z")
 		idB = types.SnapshotID("20260101T000000001Z")
 	)
-	// Write two delta snapshots whose PrevID fields form a cycle.
 	for _, pair := range [][2]types.SnapshotID{{idA, idB}, {idB, idA}} {
 		id, prev := pair[0], pair[1]
 		dir := filepath.Join(root, "snapshots", string(id))
@@ -149,7 +140,7 @@ func TestReconstruct_CyclicChainReturnsError(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "meta.json"), b, 0o600); err != nil {
 			t.Fatalf("write meta: %v", err)
 		}
-		// wireDelta with omitempty: all-empty fields marshal to {}
+		// An empty delta.
 		if err := os.WriteFile(filepath.Join(dir, "delta.json"), []byte("{}"), 0o600); err != nil {
 			t.Fatalf("write delta: %v", err)
 		}
@@ -160,7 +151,7 @@ func TestReconstruct_CyclicChainReturnsError(t *testing.T) {
 		t.Fatalf("NewLocal: %v", err)
 	}
 
-	// Run reconstruct in a goroutine; 2-second outer timer catches any hang.
+	// The timeout catches a hang.
 	timeout, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

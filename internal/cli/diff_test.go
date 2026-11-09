@@ -13,8 +13,7 @@ import (
 )
 
 func init() {
-	// Force-disable ANSI colour in tests so output is stable across CI
-	// runs regardless of TTY detection.
+	// Stable output regardless of TTY detection.
 	color.NoColor = true
 }
 
@@ -78,15 +77,13 @@ func TestRunDiff_ModifiedShowsUnifiedDiff(t *testing.T) {
 		t.Fatalf("runDiff: %v", err)
 	}
 	out := buf.String()
-	// Should see both the old and the new image lines in the unified diff.
 	for _, want := range []string{"Modified (1)", "~ Deployment/default/api", `-  "image": "nginx:1.25"`, `+  "image": "nginx:1.27"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in diff output:\n%s", want, out)
 		}
 	}
-	// Each changed line must be a line of its own. difflib needs
-	// newline-terminated input; without it hunks run together on one line,
-	// which Contains alone would not catch.
+	// Each changed line must be its own line; Contains alone would not catch
+	// hunks run together.
 	lines := map[string]bool{}
 	for _, l := range strings.Split(out, "\n") {
 		lines[strings.TrimSpace(l)] = true

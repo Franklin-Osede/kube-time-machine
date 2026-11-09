@@ -14,8 +14,7 @@ import (
 )
 
 // waitForBufferLen polls buf.Len() until it reaches want or the deadline
-// fires. Informer events arrive asynchronously through goroutines, so
-// tests need this kind of bounded wait instead of a fixed sleep.
+// fires, because informer events arrive asynchronously.
 func waitForBufferLen(t *testing.T, buf *agent.Buffer, want int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -48,9 +47,8 @@ func configMapFixture(name, val string) *corev1.ConfigMap {
 	}
 }
 
-// startInformers wires Informers to a buffer and runs Start in a
-// goroutine. Returns the context cancel so callers can stop it on
-// cleanup.
+// startInformers runs Informers on buf in a goroutine and returns the cancel
+// func.
 func startInformers(t *testing.T, client *fake.Clientset, buf *agent.Buffer) context.CancelFunc {
 	t.Helper()
 	inf := agent.NewInformers(client, buf, 0, nil)
@@ -110,7 +108,6 @@ func TestInformers_UpdateRefreshesState(t *testing.T) {
 		t.Fatalf("Update: %v", err)
 	}
 
-	// Wait for buffer to reflect the update (the State bytes change).
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		after := buf.Snapshot()[agent.KeyForDeployment(d)]
@@ -137,13 +134,9 @@ func TestInformers_DeleteRemovesFromBuffer(t *testing.T) {
 	waitForBufferLen(t, buf, 0)
 }
 
-// TestInformers_ReadyClosesAfterSync pins the readiness signal the
-// Snapshotter relies on: Ready() is open before Start and closed once the
-// initial cache sync completes.
-// TestInformers_ExcludeNamespaceDropsEvents verifies that resources in
-// excluded namespaces never reach the buffer.
+// TestInformers_ExcludeNamespaceDropsEvents: resources in excluded
+// namespaces never reach the buffer.
 func TestInformers_ExcludeNamespaceDropsEvents(t *testing.T) {
-	// One resource in an excluded namespace, one in a watched namespace.
 	excluded := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "system-dep", Namespace: "kube-system"},
 		Spec: appsv1.DeploymentSpec{
@@ -163,7 +156,6 @@ func TestInformers_ExcludeNamespaceDropsEvents(t *testing.T) {
 	defer cancel()
 	go func() { _ = inf.Start(ctx) }()
 
-	// Only the watched resource should land in the buffer.
 	waitForBufferLen(t, buf, 1)
 
 	snap := buf.Snapshot()
@@ -174,6 +166,8 @@ func TestInformers_ExcludeNamespaceDropsEvents(t *testing.T) {
 	}
 }
 
+// TestInformers_ReadyClosesAfterSync: Ready() is open before Start and
+// closed once the initial cache sync completes.
 func TestInformers_ReadyClosesAfterSync(t *testing.T) {
 	client := fake.NewSimpleClientset(deploymentFixture("api", "nginx:1.0"))
 	buf := agent.NewBuffer()
@@ -191,7 +185,6 @@ func TestInformers_ReadyClosesAfterSync(t *testing.T) {
 
 	select {
 	case <-inf.Ready():
-		// closed after sync — correct.
 	case <-time.After(2 * time.Second):
 		t.Fatal("Ready() never closed after Start() synced")
 	}

@@ -21,10 +21,7 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
 )
 
-// makeDeployment is a small helper used by rollback tests to build a
-// typed Deployment, marshal it to JSON, and produce both the live
-// in-cluster representation and the bytes that would have been stored
-// in a snapshot (post-sanitisation).
+// makeDeployment builds a typed Deployment at resourceVersion rv.
 func makeDeployment(name, image, rv string) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{Kind: "Deployment", APIVersion: "apps/v1"},
@@ -45,7 +42,7 @@ func makeDeployment(name, image, rv string) *appsv1.Deployment {
 
 func deploymentSnapshotPayload(t *testing.T, name, image string) []byte {
 	t.Helper()
-	// Snapshot payload mirrors the post-sanitisation shape: no RV.
+	// Sanitised payloads carry no RV.
 	d := makeDeployment(name, image, "")
 	b, err := json.Marshal(d)
 	if err != nil {
@@ -55,12 +52,10 @@ func deploymentSnapshotPayload(t *testing.T, name, image string) []byte {
 }
 
 func TestRollbackDeployment_HappyPath_UsesPreviewRV(t *testing.T) {
-	// Cluster has a Deployment at RV "100" with image nginx:1.27.
 	liveDep := makeDeployment("api", "nginx:1.27", "100")
 	client := fake.NewSimpleClientset(liveDep)
 
 	target := key("Deployment", "default", "api")
-	// Snapshot payload represents the desired rollback target: nginx:1.25.
 	payload := deploymentSnapshotPayload(t, "api", "nginx:1.25")
 
 	var out bytes.Buffer
@@ -71,7 +66,6 @@ func TestRollbackDeployment_HappyPath_UsesPreviewRV(t *testing.T) {
 		t.Fatalf("rollbackDeployment: %v", err)
 	}
 
-	// Verify the cluster now holds the rolled-back image.
 	got, err := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("post-rollback Get: %v", err)
@@ -89,7 +83,6 @@ func TestRollbackDeployment_AutoYesBypassesPrompt(t *testing.T) {
 	payload := deploymentSnapshotPayload(t, "api", "nginx:1.25")
 
 	var out bytes.Buffer
-	// Empty stdin — would block on prompt without --yes.
 	if err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader(""),
 		client, key("Deployment", "default", "api"), payload, true, false,
@@ -112,7 +105,6 @@ func TestRollbackDeployment_AbortedAtPrompt(t *testing.T) {
 	); err != nil {
 		t.Fatalf("rollbackDeployment: %v", err)
 	}
-	// Cluster image should still be the original.
 	got, _ := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
 	if got.Spec.Template.Spec.Containers[0].Image != "nginx:1.27" {
 		t.Errorf("cluster should be untouched after abort; got %q", got.Spec.Template.Spec.Containers[0].Image)
@@ -122,18 +114,13 @@ func TestRollbackDeployment_AbortedAtPrompt(t *testing.T) {
 	}
 }
 
-// TestRollbackDeployment_ConflictReturnsActionableError covers the
-// unhappy path that the entire ADR-0006 design exists to enforce: if the
-// resource has moved in the cluster between preview and apply, the
-// Update must be rejected and the user must be told to re-run, NOT
-// silently retried (a retry would absorb changes the user never saw).
+// TestRollbackDeployment_ConflictReturnsActionableError: a 409 on Update is
+// reported with a re-run instruction, never retried (ADR-0006).
 func TestRollbackDeployment_ConflictReturnsActionableError(t *testing.T) {
 	live := makeDeployment("api", "nginx:1.27", "100")
 	client := fake.NewSimpleClientset(live)
 
-	// Force the fake API server to return 409 Conflict on Update — the
-	// exact failure mode the production K8s API returns when the
-	// resourceVersion on the wire is stale.
+	// The API server answers a stale resourceVersion with 409 Conflict.
 	client.PrependReactor("update", "deployments", func(_ ktesting.Action) (bool, runtime.Object, error) {
 		gvr := schema.GroupResource{Group: "apps", Resource: "deployments"}
 		return true, nil, apierrors.NewConflict(gvr, "api",
@@ -151,10 +138,7 @@ func TestRollbackDeployment_ConflictReturnsActionableError(t *testing.T) {
 		t.Fatal("expected an error on 409 Conflict, got nil")
 	}
 
-	// The error message must (a) flag this as a rollback rejection, (b)
-	// explain why, and (c) tell the user what to do next. These three
-	// pieces are what makes the unhappy path actionable instead of
-	// confusing.
+	// The message must name the rejection, the cause and the next step.
 	msg := err.Error()
 	for _, want := range []string{
 		"rollback rejected",
@@ -166,8 +150,6 @@ func TestRollbackDeployment_ConflictReturnsActionableError(t *testing.T) {
 		}
 	}
 
-	// The cluster must still hold the original image — a failed Update
-	// must not partially apply.
 	got, _ := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
 	if got.Spec.Template.Spec.Containers[0].Image != "nginx:1.27" {
 		t.Errorf("cluster image after rejected rollback: want nginx:1.27, got %q",
@@ -175,26 +157,21 @@ func TestRollbackDeployment_ConflictReturnsActionableError(t *testing.T) {
 	}
 }
 
-// TestRollbackDeployment_StripsServerOwnedFieldsOnUpdate is the regression
-// pin for the delete-and-recreate hazard: sanitiseMeta in the agent
-// deliberately keeps UID and CreationTimestamp in the snapshot payload
-// (ADR-0005 reasoning), so the rollback Update path MUST strip them
-// before sending to the API server. Without this, a snapshot taken
-// before a delete+recreate would carry an old UID that the server
-// rejects as an immutable-field violation.
+// TestRollbackDeployment_StripsServerOwnedFieldsOnUpdate: snapshots keep UID
+// and CreationTimestamp, so Update must strip them; a UID from before a
+// delete-and-recreate is rejected as an immutable-field change.
 func TestRollbackDeployment_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
-	// Live cluster: Deployment with the UID it has NOW, post delete+recreate.
+	// Live UID after a delete-and-recreate.
 	live := makeDeployment("api", "nginx:1.27", "100")
 	live.UID = "live-uid-xyz"
 	client := fake.NewSimpleClientset(live)
 
-	// Snapshot payload carries the OLD UID — the kind sanitiseMeta produces.
+	// The snapshot carries the old UID.
 	snapshotDep := makeDeployment("api", "nginx:1.25", "")
 	snapshotDep.UID = "snapshot-uid-abc"
 	snapshotDep.CreationTimestamp = metav1.Now()
 	payload, _ := json.Marshal(snapshotDep)
 
-	// Capture the object actually sent to Update so we can inspect it.
 	var capturedUpdate *appsv1.Deployment
 	client.PrependReactor("update", "deployments", func(a ktesting.Action) (bool, runtime.Object, error) {
 		if ua, ok := a.(ktesting.UpdateAction); ok {
@@ -202,7 +179,6 @@ func TestRollbackDeployment_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
 				capturedUpdate = obj.DeepCopy()
 			}
 		}
-		// Let the fake apply normally so the rest of the test stays simple.
 		return false, nil, nil
 	})
 
@@ -223,16 +199,14 @@ func TestRollbackDeployment_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
 	if !capturedUpdate.CreationTimestamp.IsZero() {
 		t.Errorf("CreationTimestamp not stripped before Update: got %v, want zero", capturedUpdate.CreationTimestamp)
 	}
-	// The RV on the wire must be the live one captured at preview time
-	// (ADR-0006), NOT empty (which stripServerOwned would have produced
-	// if we forgot to re-inject) and NOT the snapshot's stale RV.
+	// The RV read at preview time (ADR-0006), not empty and not the snapshot's.
 	if capturedUpdate.ResourceVersion != "100" {
 		t.Errorf("ResourceVersion on Update: want live %q, got %q", "100", capturedUpdate.ResourceVersion)
 	}
 }
 
-// TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate is the analogous
-// regression pin for ConfigMaps. Same invariant, different typed API.
+// TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate is the ConfigMap
+// counterpart.
 func TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
 	live := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -280,27 +254,21 @@ func TestRollbackConfigMap_StripsServerOwnedFieldsOnUpdate(t *testing.T) {
 	}
 }
 
-// TestRollbackDeployment_PreviewIsSanitised: the rollback preview must diff a
-// SANITISED view of the live object against the snapshot payload, so
-// server-owned churn (resourceVersion, managedFields, status) never appears in
-// the diff the user confirms. Diffing the raw live object would bury the one
-// meaningful hunk in noise.
+// TestRollbackDeployment_PreviewIsSanitised: server-owned churn
+// (resourceVersion, managedFields, status) never appears in the preview.
 func TestRollbackDeployment_PreviewIsSanitised(t *testing.T) {
 	live := makeDeployment("api", "nginx:1.27", "100")
 	live.ManagedFields = []metav1.ManagedFieldsEntry{{Manager: "kubectl"}}
 	live.Status = appsv1.DeploymentStatus{ObservedGeneration: 7, Replicas: 3}
 	client := fake.NewSimpleClientset(live)
 
-	// Build the snapshot payload exactly as the agent's recorder would,
-	// so before/after are sanitised the same way.
 	_, payload, err := agent.MarshalDeployment(makeDeployment("api", "nginx:1.25", ""))
 	if err != nil {
 		t.Fatalf("MarshalDeployment: %v", err)
 	}
 
 	var out bytes.Buffer
-	// Decline at the prompt: we only want to inspect the rendered preview,
-	// not mutate the cluster.
+	// Decline at the prompt.
 	if err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader("n\n"),
 		client, key("Deployment", "default", "api"), []byte(payload), false, false,
@@ -374,12 +342,8 @@ func TestRollbackConfigMap_HappyPath(t *testing.T) {
 }
 
 func TestRunRollback_UnknownKindErrors(t *testing.T) {
-	// This test exercises the dispatch in runRollback indirectly through
-	// the package-level error path. The fake client is built via
-	// kubeclient (which would fail), so we bypass and test only the
-	// dispatch logic by calling the helper that would reject the kind.
-	// In practice the unsupported-kind error is raised in runRollback;
-	// here we just assert the message format the user would see.
+	// runRollback builds its client from a kubeconfig, so this asserts only
+	// the message format, not the dispatch.
 	err := fmt.Errorf("rollback supports only Deployment and ConfigMap in MVP (got %q)", "Service")
 	if !strings.Contains(err.Error(), "Deployment and ConfigMap") {
 		t.Errorf("unexpected error format: %v", err)
@@ -446,9 +410,7 @@ func boolStr(b bool) string {
 	return "no"
 }
 
-// A resource that no longer exists must not be silently recreated: deleting
-// something deliberately and then rolling back an unrelated snapshot should
-// not resurrect it. Recreation is opt-in.
+// A deleted resource is recreated only with --allow-create.
 func TestRollbackDeployment_404WithoutAllowCreateRefuses(t *testing.T) {
 	client := fake.NewSimpleClientset() // empty cluster — every Get is a 404
 	payload := []byte(`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"default"},"spec":{"replicas":3}}`)
@@ -464,7 +426,6 @@ func TestRollbackDeployment_404WithoutAllowCreateRefuses(t *testing.T) {
 	if !strings.Contains(err.Error(), "--allow-create") {
 		t.Errorf("error should point at the opt-in flag, got: %v", err)
 	}
-	// Refusing must not be a partial apply.
 	if acts := client.Actions(); len(acts) != 1 || acts[0].GetVerb() != "get" {
 		t.Errorf("expected a single get and no create, got %v", acts)
 	}
@@ -683,10 +644,9 @@ func previewOf(target delta.Key, before, after delta.State) string {
 	return buf.String()
 }
 
-// The preview must be exactly the diff between the live object and the object
-// the Update sends. The payload here is not from the current marshaller: it
-// carries an unrecorded annotation live does not have, as a snapshot recorded
-// under an older noise list would. Writing it would be a hidden change.
+// The preview must be exactly the diff between the live object and what the
+// Update sends, even for a payload carrying an unrecorded annotation that
+// live does not have.
 func TestRollback_PreviewIsTheDiffOfWhatIsWritten(t *testing.T) {
 	ctx := context.Background()
 
@@ -779,9 +739,8 @@ func TestRollback_PreviewIsTheDiffOfWhatIsWritten(t *testing.T) {
 	})
 }
 
-// ADR-0006: the ResourceVersion comes from the one Get made before the
-// prompt. A second Get after it would silently absorb changes the user never
-// saw; a static fake returns the same RV either way, so count the Gets.
+// ADR-0006: exactly one Get, before the prompt. A static fake returns the
+// same RV either way, so count the Gets.
 func TestRollback_SingleGetBeforeUpdate(t *testing.T) {
 	ctx := context.Background()
 	countGets := func(client *fake.Clientset, resource string) *int {

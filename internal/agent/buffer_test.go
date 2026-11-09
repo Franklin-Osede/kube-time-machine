@@ -69,15 +69,14 @@ func TestBuffer_Delete(t *testing.T) {
 
 func TestBuffer_DeleteAbsentIsNoop(t *testing.T) {
 	b := agent.NewBuffer()
-	// Should not panic, should not error.
 	b.Delete(k("Deployment", "default", "missing"))
 	if got := b.Len(); got != 0 {
 		t.Errorf("Len: want 0, got %d", got)
 	}
 }
 
-// TestBuffer_SnapshotReturnsIndependentMap guards the contract: callers
-// can freely mutate the returned map without affecting the buffer.
+// TestBuffer_SnapshotReturnsIndependentMap: mutating the returned map does
+// not affect the buffer.
 func TestBuffer_SnapshotReturnsIndependentMap(t *testing.T) {
 	b := agent.NewBuffer()
 	key := k("Deployment", "default", "api")
@@ -96,9 +95,7 @@ func TestBuffer_SnapshotReturnsIndependentMap(t *testing.T) {
 	}
 }
 
-// TestBuffer_ConcurrentAccessIsRaceFree exercises the lock under
-// contention. Must be run with `go test -race` to be meaningful; without
-// -race this only verifies that the final state is consistent.
+// TestBuffer_ConcurrentAccessIsRaceFree is meaningful only under -race.
 func TestBuffer_ConcurrentAccessIsRaceFree(t *testing.T) {
 	b := agent.NewBuffer()
 	const writers = 8
@@ -107,7 +104,7 @@ func TestBuffer_ConcurrentAccessIsRaceFree(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(writers + 1)
 
-	// Writers: each upserts a disjoint slice of keys, then deletes half.
+	// Each writer upserts disjoint keys, then deletes half.
 	for w := 0; w < writers; w++ {
 		w := w
 		go func() {
@@ -122,7 +119,6 @@ func TestBuffer_ConcurrentAccessIsRaceFree(t *testing.T) {
 		}()
 	}
 
-	// Reader: hammers Snapshot while writers are active.
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 100; i++ {
@@ -132,16 +128,14 @@ func TestBuffer_ConcurrentAccessIsRaceFree(t *testing.T) {
 
 	wg.Wait()
 
-	// Expected final size: writers * opsPerWriter / 2  (the odd-i entries that survive Delete).
 	want := writers * opsPerWriter / 2
 	if got := b.Len(); got != want {
 		t.Errorf("final Len: want %d, got %d", want, got)
 	}
 }
 
-// The change counter drives burst flushes and ktm_buffer_pending_changes. An
-// update whose sanitised payload is unchanged — a rollout's status churn —
-// must not count, or noise alone would trigger flushes.
+// An update whose sanitised payload is unchanged, such as status churn, must
+// not count as a pending change.
 func TestBuffer_PendingChangesCountsOnlyRealChanges(t *testing.T) {
 	b := agent.NewBuffer()
 	api := k("Deployment", "default", "api")

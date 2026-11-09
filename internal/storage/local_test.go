@@ -16,8 +16,7 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
-// newStore opens a Local store in a fresh t.TempDir(). The directory is
-// cleaned up automatically by the testing framework.
+// newStore opens a Local store in a fresh t.TempDir().
 func newStore(t *testing.T) *storage.Local {
 	t.Helper()
 	s, err := storage.NewLocal(t.TempDir())
@@ -275,12 +274,8 @@ func TestPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
-// TestRebuildsIndexWhenMissing exercises the "reconstructible index"
-// property (ADR-0004): with index.json deleted, reopening the store
-// rebuilds the index by scanning each snapshot's self-describing
-// meta.json, so both Get(id) AND List/blame keep working. It also checks
-// the rebuilt order (ascending by timestamp) and that index.json is
-// re-persisted so the next open is a cheap read.
+// TestRebuildsIndexWhenMissing checks ADR-0004: with index.json deleted,
+// reopening rebuilds it from meta.json in timestamp order and re-persists it.
 func TestRebuildsIndexWhenMissing(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
@@ -331,10 +326,8 @@ func TestRebuildsIndexWhenMissing(t *testing.T) {
 	}
 }
 
-// TestRebuildsIndexWhenCorrupt is the sibling of the missing-index case: a
-// corrupt index.json (truncated mid-write, garbled bytes) must not make
-// NewLocal fail. The store recovers by rebuilding from the per-snapshot
-// meta.json files and re-persists a clean index.json.
+// TestRebuildsIndexWhenCorrupt checks that a corrupt index.json is rebuilt
+// and re-persisted instead of failing NewLocal.
 func TestRebuildsIndexWhenCorrupt(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
@@ -461,8 +454,6 @@ func TestRebuildSkipsMetaWithoutPayload(t *testing.T) {
 		t.Fatalf("rebuilt List: want only [%s], got %v", good.ID, got)
 	}
 }
-
-// ---- Delete tests ---------------------------------------------------------
 
 func TestDelete_RemovesFromIndexAndDisk(t *testing.T) {
 	s := newStore(t)
@@ -636,8 +627,6 @@ func TestDelete_CrashAfterStagingReconcilesIndex(t *testing.T) {
 	}
 }
 
-// ---- Kind index tests -----------------------------------------------------
-
 func TestKindsPopulatedOnPutFull(t *testing.T) {
 	s := newStore(t)
 	snap := delta.Snapshot{
@@ -674,10 +663,9 @@ func TestKindsPopulatedOnPutDelta(t *testing.T) {
 	}
 }
 
-// TestPutFull_OrphanCleanedUpOnIndexFailure: if writeSnapshot
-// succeeds but appendIndex cannot update index.json (e.g. out of disk space),
-// PutFull must roll back the snapshot directory so no orphan is left behind,
-// AND the in-memory index must remain unchanged.
+// TestPutFull_OrphanCleanedUpOnIndexFailure: when the index write fails,
+// PutFull removes the snapshot directory and leaves the in-memory index
+// unchanged.
 func TestPutFull_OrphanCleanedUpOnIndexFailure(t *testing.T) {
 	root := t.TempDir()
 	ctx := context.Background()
@@ -687,7 +675,6 @@ func TestPutFull_OrphanCleanedUpOnIndexFailure(t *testing.T) {
 		t.Fatalf("NewLocal: %v", err)
 	}
 
-	// First snapshot writes successfully — establishes a known-good baseline.
 	first, err := s.PutFull(ctx, at(2026, 1, 1, 10, 0, 0, 0), delta.Snapshot{
 		key("Deployment", "default", "api"): delta.State("v1"),
 	})
@@ -695,8 +682,7 @@ func TestPutFull_OrphanCleanedUpOnIndexFailure(t *testing.T) {
 		t.Fatalf("seed PutFull: %v", err)
 	}
 
-	// Corrupt the index path: replace the file with a directory so any
-	// subsequent attempt to write index.json fails at the rename step.
+	// A directory at index.json makes the index rename fail.
 	indexPath := filepath.Join(root, "index.json")
 	if err := os.Remove(indexPath); err != nil {
 		t.Fatalf("remove index.json: %v", err)
@@ -705,32 +691,25 @@ func TestPutFull_OrphanCleanedUpOnIndexFailure(t *testing.T) {
 		t.Fatalf("mkdir index.json: %v", err)
 	}
 
-	// Second PutFull: writeSnapshot should succeed (creates snapshots/<id>/)
-	// but appendIndex must fail (can't rename over a directory).
-	// The expected snapshot ID for at(2026,1,1,11,0,0,0) is "20260101T110000000Z".
 	const wantOrphanID = "20260101T110000000Z"
 	_, putErr := s.PutFull(ctx, at(2026, 1, 1, 11, 0, 0, 0), delta.Snapshot{})
 	if putErr == nil {
 		t.Fatal("expected PutFull to return an error when index write fails")
 	}
 
-	// The snapshot directory for the second write must have been removed.
 	orphanDir := filepath.Join(root, "snapshots", wantOrphanID)
 	if _, statErr := os.Stat(orphanDir); !os.IsNotExist(statErr) {
 		t.Errorf("orphan snapshot directory must be cleaned up after appendIndex failure: %s", orphanDir)
 	}
 
-	// The in-memory index must still hold exactly the first snapshot.
 	metas, _ := s.List(ctx)
 	if len(metas) != 1 || metas[0].ID != first.ID {
 		t.Errorf("after failed appendIndex, List: want [%s], got %v", first.ID, metas)
 	}
 }
 
-// TestSerializationIsDeterministic locks down the byte-level determinism
-// of the on-disk format: two semantically equal snapshots written at the
-// same timestamp must produce byte-identical payload files. This matters
-// for stable test fixtures and for any future content-hash-based dedup.
+// TestSerializationIsDeterministic: two equal snapshots must produce
+// byte-identical payload files.
 func TestSerializationIsDeterministic(t *testing.T) {
 	ts := at(2026, 5, 18, 14, 0, 0, 0)
 	snap := delta.Snapshot{
@@ -776,13 +755,9 @@ func snapshotTree(t *testing.T, root string) map[string]string {
 	return out
 }
 
-// TestOpenForReadNeverWrites is the regression guard for a real defect: the CLI
-// opened stores with NewLocal, whose loadIndex REPAIRS the store -- rebuilding
-// and re-persisting index.json, rewriting the index to drop reconciled
-// deletions, and removing staged tombstones. The CLI takes no writer lock, so
-// running `ktm list` against a live PVC raced the agent on index.json and could
-// delete a tombstone for a deletion the agent had staged but not committed,
-// destroying the evidence that makes that deletion recoverable.
+// TestOpenForReadNeverWrites: a read-only open must not rewrite index.json or
+// clear a tombstone, because the CLI takes no lock and the tombstone may
+// belong to a deletion the agent has staged but not committed.
 func TestOpenForReadNeverWrites(t *testing.T) {
 	ctx := context.Background()
 
@@ -796,8 +771,7 @@ func TestOpenForReadNeverWrites(t *testing.T) {
 		if err != nil {
 			t.Fatalf("PutFull: %v", err)
 		}
-		// Simulate a crash mid-Delete: the directory has been staged under
-		// .deleting/ but the index still lists it.
+		// A crash mid-Delete: staged under .deleting/, still in the index.
 		deleting := filepath.Join(root, ".deleting")
 		if err := os.MkdirAll(deleting, 0o700); err != nil {
 			t.Fatal(err)
@@ -814,7 +788,7 @@ func TestOpenForReadNeverWrites(t *testing.T) {
 		if got := snapshotTree(t, root); !reflect.DeepEqual(before, got) {
 			t.Errorf("OpenForRead mutated the store.\nbefore: %v\nafter:  %v", before, got)
 		}
-		// It must still SEE the reconciled view, just not persist it.
+		// It sees the reconciled view without persisting it.
 		list, err := r.List(ctx)
 		if err != nil {
 			t.Fatalf("List: %v", err)
@@ -942,8 +916,7 @@ func TestNewLocal_AdoptsStoreWithoutMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen store without marker: %v", err)
 	}
-	// 1, not FormatVersion: the data predates the marker and is format 1
-	// whatever this build's current version is.
+	// 1, not FormatVersion: the data predates the marker.
 	if got := readFormatVersion(t, root); got != 1 {
 		t.Errorf("format.json version = %d, want 1", got)
 	}
@@ -994,9 +967,8 @@ func TestNewerFormatIsRefusedUntouched(t *testing.T) {
 				t.Fatalf("err = %v, want ErrUnsupportedFormat", err)
 			}
 			got := snapshotTree(t, root)
-			// The writer lock is taken before the format check. Its file
-			// holds no data; creating it also bumps the root's mtime. Any
-			// other new entry still shows up as a new key.
+			// The writer lock is taken before the format check; its file holds
+			// no data, and creating it bumps the root's mtime.
 			delete(got, ".writer.lock")
 			delete(got, ".")
 			delete(before, ".")

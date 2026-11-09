@@ -36,9 +36,8 @@ func writeKubeconfig(t *testing.T) string {
 	return path
 }
 
-// The whole point of Target is that a user can see which cluster they are
-// about to mutate. Defaulting to the current context must be visible, and
-// selecting another context must actually change the server.
+// The default context must be reported, and --context must change the
+// server.
 func TestBuildConfigForContext_DefaultsToCurrentContext(t *testing.T) {
 	cfg, target, err := BuildConfigForContext(writeKubeconfig(t), "")
 	if err != nil {
@@ -68,8 +67,7 @@ func TestBuildConfigForContext_SelectsNamedContext(t *testing.T) {
 	}
 }
 
-// A typo in --context must fail loudly. Silently falling back to the current
-// context would apply a rollback to the wrong cluster.
+// A typo in --context must fail, not fall back to the current context.
 func TestBuildConfigForContext_UnknownContextIsAnError(t *testing.T) {
 	_, _, err := BuildConfigForContext(writeKubeconfig(t), "does-not-exist")
 	if err == nil {

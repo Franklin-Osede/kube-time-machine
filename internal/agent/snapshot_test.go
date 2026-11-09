@@ -37,8 +37,6 @@ func (s *controlledFullStore) setFail(fail bool) {
 }
 
 // newFSStore returns a real local filesystem Store rooted in t.TempDir().
-// Snapshotter tests use the real storage to exercise the actual
-// integration path rather than mocking.
 func newFSStore(t *testing.T) storage.Store {
 	t.Helper()
 	s, err := storage.NewLocal(t.TempDir())
@@ -48,9 +46,8 @@ func newFSStore(t *testing.T) storage.Store {
 	return s
 }
 
-// stepClock returns a closure that yields times advancing by `step`
-// each call, starting at `start`. Lets tests produce deterministic IDs
-// across multiple Flush calls.
+// stepClock returns a clock that starts at start and advances by step per
+// call, for deterministic IDs.
 func stepClock(start time.Time, step time.Duration) func() time.Time {
 	t := start
 	return func() time.Time {
@@ -90,13 +87,11 @@ func TestSnapshotter_SubsequentFlushesAreDeltas(t *testing.T) {
 	s := agent.NewSnapshotter(buf, store, time.Minute, 12).
 		WithClock(stepClock(at(2026, 5, 18, 14, 0), time.Minute))
 
-	// Flush #0 — full snapshot of empty buffer.
 	full, err := s.Flush(context.Background())
 	if err != nil {
 		t.Fatalf("Flush #0: %v", err)
 	}
 
-	// Mutate buffer, then Flush #1 — should be a delta against the full.
 	buf.Upsert(k("Deployment", "default", "api"), delta.State("v1"))
 	d1, err := s.Flush(context.Background())
 	if err != nil {
@@ -109,8 +104,7 @@ func TestSnapshotter_SubsequentFlushesAreDeltas(t *testing.T) {
 		t.Errorf("Flush #1 PrevID: want %q, got %q", full.ID, d1.PrevID)
 	}
 
-	// Round-trip: loading the delta and applying it to the full's
-	// snapshot must reproduce the buffer's current state.
+	// Applying the delta to the full must reproduce the buffer.
 	fullLoaded, err := store.Get(context.Background(), full.ID)
 	if err != nil {
 		t.Fatalf("Get full: %v", err)
@@ -126,8 +120,8 @@ func TestSnapshotter_SubsequentFlushesAreDeltas(t *testing.T) {
 	}
 }
 
-// TestSnapshotter_FullEveryNFlushes verifies the cadence: with fullEvery=3,
-// flushes 0 and 3 should be full, 1, 2, 4, 5 should be deltas.
+// TestSnapshotter_FullEveryNFlushes: with fullEvery=3, flushes 0 and 3 are
+// full and the rest are deltas.
 func TestSnapshotter_FullEveryNFlushes(t *testing.T) {
 	store := newFSStore(t)
 	buf := agent.NewBuffer()
@@ -154,8 +148,7 @@ func TestSnapshotter_FullEveryNFlushes(t *testing.T) {
 	}
 }
 
-// TestSnapshotter_FullEveryClampsToOne ensures a misconfigured
-// fullEvery=0 doesn't divide-by-zero — we clamp to 1 (every flush full).
+// TestSnapshotter_FullEveryClampsToOne: fullEvery=0 is clamped to 1.
 func TestSnapshotter_FullEveryClampsToOne(t *testing.T) {
 	store := newFSStore(t)
 	buf := agent.NewBuffer()
@@ -173,8 +166,7 @@ func TestSnapshotter_FullEveryClampsToOne(t *testing.T) {
 	}
 }
 
-// failStore is a Store that returns a sentinel error on every Put.
-// Used to verify Flush propagates storage errors.
+// failStore is a Store that returns errBoom on every Put.
 type failStore struct{ storage.Store }
 
 var errBoom = errors.New("boom")
@@ -196,9 +188,7 @@ func TestSnapshotter_FlushPropagatesStoreErrors(t *testing.T) {
 	}
 }
 
-// flakyFullStore wraps a real Store and fails the first PutFull, then
-// delegates. Used to prove a failed full write does not advance the
-// Snapshotter's cadence.
+// flakyFullStore fails the first PutFull, then delegates.
 type flakyFullStore struct {
 	storage.Store
 	fullCalls int
@@ -212,12 +202,9 @@ func (f *flakyFullStore) PutFull(ctx context.Context, ts time.Time, snap delta.S
 	return f.Store.PutFull(ctx, ts, snap)
 }
 
-// TestSnapshotter_FailedFullDoesNotAdvanceCadence pins the fix for the
-// chain-corruption bug: if a full snapshot write fails, the next Flush
-// must retry the SAME cadence slot (another full), not emit a delta
-// anchored to a snapshot that was never persisted. Before the fix,
-// flushNum advanced before the write, so the recovery flush was a delta
-// with an empty PrevID — unreconstructable.
+// TestSnapshotter_FailedFullDoesNotAdvanceCadence: after a failed full
+// write the next Flush is another full, not a delta anchored to a snapshot
+// that was never persisted.
 func TestSnapshotter_FailedFullDoesNotAdvanceCadence(t *testing.T) {
 	store := &flakyFullStore{Store: newFSStore(t)}
 	buf := agent.NewBuffer()
@@ -226,12 +213,10 @@ func TestSnapshotter_FailedFullDoesNotAdvanceCadence(t *testing.T) {
 	s := agent.NewSnapshotter(buf, store, time.Minute, 3).
 		WithClock(stepClock(at(2026, 5, 18, 14, 0), time.Minute))
 
-	// First flush attempts a full and fails.
 	if _, err := s.Flush(context.Background()); !errors.Is(err, errBoom) {
 		t.Fatalf("first Flush: want errBoom, got %v", err)
 	}
 
-	// Recovery flush must still be a full (cadence not advanced).
 	full, err := s.Flush(context.Background())
 	if err != nil {
 		t.Fatalf("recovery Flush: %v", err)
@@ -243,7 +228,6 @@ func TestSnapshotter_FailedFullDoesNotAdvanceCadence(t *testing.T) {
 		t.Errorf("recovered full should have empty PrevID, got %q", full.PrevID)
 	}
 
-	// The following flush is a delta correctly anchored to the recovered full.
 	buf.Upsert(k("Deployment", "default", "api2"), delta.State("v2"))
 	d, err := s.Flush(context.Background())
 	if err != nil {
@@ -257,10 +241,8 @@ func TestSnapshotter_FailedFullDoesNotAdvanceCadence(t *testing.T) {
 	}
 }
 
-// TestSnapshotter_RunWaitsForReady pins the fix for the informer-sync
-// race: Run must not take its first flush until the ready channel is
-// closed, so the first (always-full) snapshot reflects a synced cluster
-// rather than a partially-populated buffer.
+// TestSnapshotter_RunWaitsForReady: Run takes no flush until ready is
+// closed, so the first full snapshot reflects a synced cluster.
 func TestSnapshotter_RunWaitsForReady(t *testing.T) {
 	store := newFSStore(t)
 	buf := agent.NewBuffer()
@@ -270,9 +252,7 @@ func TestSnapshotter_RunWaitsForReady(t *testing.T) {
 
 	ready := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	// Wait for Run to fully exit before the test returns. Otherwise its
-	// flush loop can still be mid-write when t.TempDir cleanup runs
-	// RemoveAll, racing on the storage dir ("directory not empty").
+	// Wait for Run to exit, or a mid-write flush races t.TempDir cleanup.
 	done := make(chan struct{})
 	go func() { _ = s.Run(ctx, ready); close(done) }()
 	defer func() { cancel(); <-done }()
@@ -287,7 +267,6 @@ func TestSnapshotter_RunWaitsForReady(t *testing.T) {
 		t.Fatalf("Run flushed %d snapshot(s) before ready was closed", len(metas))
 	}
 
-	// Closing ready releases the loop; flushes begin.
 	close(ready)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -302,9 +281,8 @@ func TestSnapshotter_RunWaitsForReady(t *testing.T) {
 	t.Fatal("Run did not flush after ready was closed")
 }
 
-// TestSnapshotter_RunStopsOnContextCancel exercises the goroutine loop:
-// a cancelled context must cause Run to return ctx.Err() promptly,
-// without leaking the ticker goroutine.
+// TestSnapshotter_RunStopsOnContextCancel: Run returns ctx.Err() promptly
+// on cancellation.
 func TestSnapshotter_RunStopsOnContextCancel(t *testing.T) {
 	store := newFSStore(t)
 	s := agent.NewSnapshotter(agent.NewBuffer(), store, 50*time.Millisecond, 12)
@@ -313,7 +291,6 @@ func TestSnapshotter_RunStopsOnContextCancel(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx, nil) }()
 
-	// Let one or two ticks pass so we know the loop is alive.
 	time.Sleep(120 * time.Millisecond)
 	cancel()
 
@@ -380,19 +357,16 @@ func waitForFlushHealth(t *testing.T, s *agent.Snapshotter, ready func(agent.Flu
 	t.Fatalf("timed out waiting for flush health; current state: %+v", s.FlushHealth())
 }
 
-// putFullFailStore delegates all methods to an underlying Store but always
-// returns errBoom from PutFull. Used to simulate a persistently full PVC
-// (ENOSPC) while keeping List and Delete functional so GC can work.
+// putFullFailStore always fails PutFull, like a full PVC, while List and
+// Delete still work.
 type putFullFailStore struct{ storage.Store }
 
 func (putFullFailStore) PutFull(_ context.Context, _ time.Time, _ delta.Snapshot) (types.SnapshotMeta, error) {
 	return types.SnapshotMeta{}, errBoom
 }
 
-// TestSnapshotter_GCRunsBeforeFailedFullFlush: when every full-flush attempt
-// fails (simulating ENOSPC), GC must still run proactively so old snapshots are
-// freed before the flush is retried. Without this, a full PVC deadlocks the
-// agent forever.
+// TestSnapshotter_GCRunsBeforeFailedFullFlush: GC runs even when every flush
+// fails, so a full volume can free space.
 func TestSnapshotter_GCRunsBeforeFailedFullFlush(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -400,11 +374,8 @@ func TestSnapshotter_GCRunsBeforeFailedFullFlush(t *testing.T) {
 	realStore := newFSStore(t)
 	now := at(2026, 6, 1, 12, 0)
 
-	// Seed directly into the real store (not through the Snapshotter) so the
-	// timestamps are fully under our control.
-	// - anchor at T-35d: oldest full snapshot inside the GC window;
-	//   qualifies as anchor because T-35d ≤ cutoff(T-30d).
-	// - old at T-60d: strictly before the anchor — GC must delete this.
+	// T-35d is the anchor (newest full at or before the T-30d cutoff); T-60d
+	// is before it and must be deleted.
 	_, err := realStore.PutFull(ctx, now.AddDate(0, 0, -35), delta.Snapshot{})
 	if err != nil {
 		t.Fatalf("seed anchor: %v", err)
@@ -414,7 +385,6 @@ func TestSnapshotter_GCRunsBeforeFailedFullFlush(t *testing.T) {
 		t.Fatalf("seed old: %v", err)
 	}
 
-	// Wrap so all PutFull calls fail; List and Delete pass through to realStore.
 	failing := putFullFailStore{realStore}
 
 	buf := agent.NewBuffer()
@@ -428,37 +398,30 @@ func TestSnapshotter_GCRunsBeforeFailedFullFlush(t *testing.T) {
 	runDone := make(chan struct{})
 	go func() { _ = s.Run(ctx, ready); close(runDone) }()
 
-	// Allow several flush cycles so GC has time to run.
 	time.Sleep(150 * time.Millisecond)
 	cancel()
 	<-runDone
 
-	// Despite all flush failures, GC must have deleted the pre-anchor snapshot.
 	ids := idsSet(mustList(t, realStore))
 	if ids[oldMeta.ID] {
 		t.Error("GC must delete old snapshots even when full flush always fails (ENOSPC deadlock)")
 	}
 }
 
-// ---- GC / retention tests -------------------------------------------------
-//
-// All GC tests call s.GC() directly (the exported wrapper around the private
-// gc()) so they don't need Run(). This also avoids timing sensitivity.
+// GC tests call s.GC() directly, so they do not depend on Run's timing.
 
-// gcStore returns a real filesystem Store and a Snapshotter pre-wired with
-// a fixed-in-time clock so GC cutoffs are reproducible.
+// gcStore returns a filesystem Store and a Snapshotter with the given
+// retention.
 func gcStore(t *testing.T, retainDays int) (storage.Store, *agent.Snapshotter) {
 	t.Helper()
 	store := newFSStore(t)
-	// fullEvery=1 so every Flush is a full snapshot → every call is an
-	// eligible GC anchor candidate.
+	// fullEvery=1: every Flush is full, so every snapshot can be an anchor.
 	s := agent.NewSnapshotter(agent.NewBuffer(), store, time.Minute, 1).
 		WithRetention(retainDays)
 	return store, s
 }
 
-// seedFull flushes a single full snapshot at the given absolute time and
-// returns its metadata.
+// seedFull flushes a full snapshot at ts.
 func seedFull(t *testing.T, s *agent.Snapshotter, ts time.Time) types.SnapshotMeta {
 	t.Helper()
 	once := true
@@ -467,7 +430,6 @@ func seedFull(t *testing.T, s *agent.Snapshotter, ts time.Time) types.SnapshotMe
 			once = false
 			return ts
 		}
-		// Should not be called again during a single Flush, but be safe.
 		return ts.Add(time.Millisecond)
 	})
 	meta, err := s.Flush(context.Background())
@@ -485,7 +447,6 @@ func TestGC_NoOpWhenRetainDaysZero(t *testing.T) {
 	m0 := seedFull(t, s, now.AddDate(0, 0, -60))
 	m1 := seedFull(t, s, now.AddDate(0, 0, -40))
 
-	// Fix the clock at "now" so gc sees today.
 	s.WithClock(func() time.Time { return now })
 	s.GC(context.Background())
 
@@ -496,14 +457,8 @@ func TestGC_NoOpWhenRetainDaysZero(t *testing.T) {
 	}
 }
 
-// TestGC_DeletesBeforeAnchor: the snapshot strictly before the anchor is
-// deleted; the anchor and everything newer is preserved.
-//
-// Timeline (retainDays=30, "now" = T):
-//
-//	T-60d: full-0 → strictly before anchor → deleted
-//	T-31d: full-1 → anchor (most-recent full ≤ T-30d) → kept
-//	T-10d: full-2 → within retention window → kept
+// TestGC_DeletesBeforeAnchor: with retainDays=30, the snapshot before the
+// anchor is deleted; the anchor and everything newer is kept.
 func TestGC_DeletesBeforeAnchor(t *testing.T) {
 	store, s := gcStore(t, 30)
 	now := time.Now().UTC()
@@ -527,8 +482,8 @@ func TestGC_DeletesBeforeAnchor(t *testing.T) {
 	}
 }
 
-// TestGC_NoAnchorKeepsEverything: when all full snapshots are within the
-// retention window (none old enough to be an anchor), nothing is deleted.
+// TestGC_NoAnchorKeepsEverything: with no full snapshot old enough to be an
+// anchor, nothing is deleted.
 func TestGC_NoAnchorKeepsEverything(t *testing.T) {
 	store, s := gcStore(t, 30)
 	now := time.Now().UTC()
@@ -547,9 +502,8 @@ func TestGC_NoAnchorKeepsEverything(t *testing.T) {
 	}
 }
 
-// TestGC_SingleOldSnapshotIsAnchorNotDeleted: when only one full snapshot
-// exists and it's older than the cutoff, it becomes the anchor and must
-// not be deleted (there is nothing strictly before it).
+// TestGC_SingleOldSnapshotIsAnchorNotDeleted: a sole old full snapshot is
+// the anchor and is kept.
 func TestGC_SingleOldSnapshotIsAnchorNotDeleted(t *testing.T) {
 	store, s := gcStore(t, 30)
 	now := time.Now().UTC()
@@ -571,7 +525,6 @@ func TestGC_MultipleBatchesBeforeAnchor(t *testing.T) {
 	store, s := gcStore(t, 30)
 	now := time.Now().UTC()
 
-	// Three snapshots before the anchor.
 	old0 := seedFull(t, s, now.AddDate(0, 0, -90))
 	old1 := seedFull(t, s, now.AddDate(0, 0, -70))
 	old2 := seedFull(t, s, now.AddDate(0, 0, -50))
@@ -595,7 +548,7 @@ func TestGC_MultipleBatchesBeforeAnchor(t *testing.T) {
 	}
 }
 
-// idsSet converts a slice of SnapshotMeta into a set of IDs for O(1) lookup.
+// idsSet returns the set of IDs in metas.
 func idsSet(metas []types.SnapshotMeta) map[types.SnapshotID]bool {
 	out := make(map[types.SnapshotID]bool, len(metas))
 	for _, m := range metas {
@@ -613,9 +566,8 @@ func mustList(t *testing.T, store storage.Store) []types.SnapshotMeta {
 	return metas
 }
 
-// Burst flushing had no test. Real changes past the threshold must flush
-// well before the periodic tick; byte-identical upserts (status churn after
-// sanitisation) must not.
+// Real changes past the threshold must flush before the periodic tick;
+// byte-identical upserts (status churn after sanitisation) must not.
 func TestSnapshotter_BurstFlushesOnRealChangesOnly(t *testing.T) {
 	buf := agent.NewBuffer()
 	s := agent.NewSnapshotter(buf, newFSStore(t), time.Hour, 12).

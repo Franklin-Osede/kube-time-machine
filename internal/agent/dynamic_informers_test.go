@@ -14,8 +14,6 @@ import (
 	ktesting "k8s.io/client-go/testing"
 )
 
-// -- ParseGVR --
-
 func TestParseGVR_CoreResource(t *testing.T) {
 	gvr, err := ParseGVR("services/v1")
 	if err != nil {
@@ -58,8 +56,6 @@ func TestParseGVR_RequiresVersion(t *testing.T) {
 	}
 }
 
-// -- CombinedReady --
-
 func TestCombinedReady_ClosesBothChannels(t *testing.T) {
 	a := make(chan struct{})
 	b := make(chan struct{})
@@ -70,7 +66,6 @@ func TestCombinedReady_ClosesBothChannels(t *testing.T) {
 
 	select {
 	case <-out:
-		// Good: combined channel closed after both inputs closed.
 	case <-time.After(time.Second):
 		t.Error("CombinedReady did not close after both inputs closed")
 	}
@@ -82,7 +77,7 @@ func TestCombinedReady_WaitsForBoth(t *testing.T) {
 	out := CombinedReady(a, b)
 
 	close(a)
-	// b is still open — combined channel must not close yet.
+	// b is still open.
 	select {
 	case <-out:
 		t.Error("CombinedReady closed before both inputs were closed")
@@ -92,20 +87,17 @@ func TestCombinedReady_WaitsForBoth(t *testing.T) {
 	close(b)
 	select {
 	case <-out:
-		// Good.
 	case <-time.After(time.Second):
 		t.Error("CombinedReady did not close after second input closed")
 	}
 }
-
-// -- marshalUnstructured --
 
 func TestMarshalUnstructured_ProducesKeyAndStripsRV(t *testing.T) {
 	u := &unstructured.Unstructured{}
 	u.SetKind("StatefulSet")
 	u.SetNamespace("prod")
 	u.SetName("redis")
-	u.SetResourceVersion("42") // must be stripped by sanitiseUnstructuredMeta
+	u.SetResourceVersion("42") // must be stripped
 
 	k, state, err := marshalUnstructured(u)
 	if err != nil {
@@ -148,8 +140,6 @@ func TestMarshalUnstructured_InjectsManagersAnnotation(t *testing.T) {
 	}
 }
 
-// -- handleUpsert namespace exclusion --
-
 func TestDynamicInformers_ExcludeNamespaceFiltersUpserts(t *testing.T) {
 	fc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	buf := NewBuffer()
@@ -176,10 +166,7 @@ func TestDynamicInformers_ExcludeNamespaceFiltersUpserts(t *testing.T) {
 	}
 }
 
-// -- WithSyncTimeout --
-
-// TestDynamicInformers_WithSyncTimeoutReturnsReceiver verifies the method exists
-// and returns the same *DynamicInformers for fluent chaining.
+// TestDynamicInformers_WithSyncTimeoutReturnsReceiver: it returns its receiver.
 func TestDynamicInformers_WithSyncTimeoutReturnsReceiver(t *testing.T) {
 	fc := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	buf := NewBuffer()
@@ -189,26 +176,19 @@ func TestDynamicInformers_WithSyncTimeoutReturnsReceiver(t *testing.T) {
 	}
 }
 
-// TestDynamicInformers_SyncTimeoutFiresBeforeParentContextCancel: when informer
-// sync does not complete within the configured timeout, Start() returns a
-// descriptive error WITHOUT cancelling or waiting for the parent context. This
-// guards against the silent hang when --watch-resources names a GVR that
-// doesn't exist in the cluster.
+// TestDynamicInformers_SyncTimeoutFiresBeforeParentContextCancel: when the
+// sync times out, Start returns an error without waiting for the parent
+// context.
 //
-// NewSimpleDynamicClientWithCustomListKinds is used instead of
-// NewSimpleDynamicClient because the reflector panics at list time when the
-// GVR's list kind is absent from the scheme. The custom map registers the
-// mapping so the reflector can proceed past that check and reach our
-// blocking reactor, which keeps HasSynced() == false until t.Cleanup fires.
+// NewSimpleDynamicClient would panic at list time because the GVR's list kind
+// is not in the scheme; the custom list kinds let the list reach the blocking
+// reactor.
 func TestDynamicInformers_SyncTimeoutFiresBeforeParentContextCancel(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "statefulsets"}
 	gvrToListKind := map[schema.GroupVersionResource]string{gvr: "StatefulSetList"}
 	fc := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), gvrToListKind)
 
-	// Block list calls so the informer's initial list never completes
-	// → HasSynced() stays false → WaitForCacheSync times out.
-	// The channel is closed in t.Cleanup so the stuck goroutine can exit
-	// cleanly (no permanent goroutine leak).
+	// Block list calls so the sync times out; t.Cleanup unblocks them.
 	unblock := make(chan struct{})
 	t.Cleanup(func() { close(unblock) })
 	fc.Fake.PrependReactor("list", "statefulsets", func(_ ktesting.Action) (bool, runtime.Object, error) {
@@ -231,11 +211,10 @@ func TestDynamicInformers_SyncTimeoutFiresBeforeParentContextCancel(t *testing.T
 	if err == nil {
 		t.Fatal("Start must return an error when sync times out")
 	}
-	// The error must be a sync-specific message, not the parent ctx error.
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected sync-specific error (not parent ctx), got: %v", err)
 	}
-	// Parent context must still be live — the sync timeout must not cancel it.
+	// The sync timeout must not cancel the parent context.
 	select {
 	case <-parentCtx.Done():
 		t.Error("parent context must not be cancelled by a sync timeout")
