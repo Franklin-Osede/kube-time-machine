@@ -1,24 +1,17 @@
 // Package types defines the public, serializable metadata used to describe
-// snapshots persisted by kube-time-machine.
-//
-// It has no dependency on internal/, so tooling outside this module can
-// read snapshot metadata without access to payload internals.
+// snapshots persisted by kube-time-machine. It must not import internal/.
 package types
 
 import "time"
 
-// SnapshotID is an opaque, sortable identifier for a snapshot. The local
-// filesystem backend derives it from the snapshot's UTC timestamp at
-// millisecond resolution (e.g. "20260518T140530123Z"). Other backends may
-// choose other formats; consumers MUST treat the value as opaque.
+// SnapshotID is an opaque, sortable identifier for a snapshot, such as
+// "20260518T140530123Z". Consumers must treat the value as opaque.
 type SnapshotID string
 
 // ManagersAnnotation is the synthetic annotation the agent writes into every
-// recorded object: a sorted, comma-separated list of the field managers
-// (kubectl, helm, kube-controller-manager...) seen in its managedFields,
-// which are themselves stripped. `ktm blame` reads it. Part of the on-disk
-// format: renaming it would hide the managers of every snapshot already
-// written.
+// recorded object: the sorted, comma-separated field managers from its
+// stripped managedFields. It is part of the on-disk format; renaming it hides
+// the managers of every snapshot already written.
 const ManagersAnnotation = "ktm.io/managers"
 
 // AnnotationPrefix marks annotations KTM synthesises into recorded state.
@@ -27,8 +20,7 @@ const ManagersAnnotation = "ktm.io/managers"
 const AnnotationPrefix = "ktm.io/"
 
 // SnapshotKind discriminates between a full reference snapshot and an
-// incremental delta. A storage backend's Get must consult this field to
-// decide which payload type to return.
+// incremental delta.
 type SnapshotKind string
 
 const (
@@ -36,22 +28,15 @@ const (
 	KindDelta SnapshotKind = "delta"
 )
 
-// SnapshotMeta is the metadata for a single persisted snapshot. It is
-// JSON-serializable and forms both the per-snapshot meta.json file and
-// the entries inside the top-level index.json.
+// SnapshotMeta is the metadata for a single persisted snapshot: the content
+// of meta.json and of each index.json entry.
 //
-// PrevID is empty for full snapshots and identifies the immediate
-// predecessor for deltas. Reconstruction of any historical state walks
-// PrevID backwards until reaching a full snapshot, then applies the
-// deltas forward.
+// PrevID is empty for full snapshots and names the immediate predecessor for
+// deltas.
 //
-// Kinds is a sorted list of the Kubernetes resource kinds (e.g.
-// "Deployment", "ConfigMap") that appear in this snapshot's payload.
-// For full snapshots it covers every kind in the full state; for deltas
-// it covers only the kinds that changed. An empty slice means the
-// payload has no entries (or the snapshot predates this field — treat
-// as unknown). `ktm blame` uses Kinds to skip loading deltas that cannot
-// contain the target kind.
+// Kinds lists, sorted, the resource kinds in the payload: every kind for a
+// full snapshot, the changed kinds for a delta. Empty means no entries or
+// unknown. `ktm blame` uses it to skip deltas that cannot contain the target.
 type SnapshotMeta struct {
 	ID        SnapshotID   `json:"id"`
 	Kind      SnapshotKind `json:"kind"`

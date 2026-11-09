@@ -1,37 +1,26 @@
 // Package delta computes and applies set-difference operations between
-// snapshots of opaque resource state.
-//
-// The package is intentionally Kubernetes-agnostic: a Snapshot is just a
-// map from Key to opaque State bytes. Serialization, persistence, and the
-// concrete shape of "a Kubernetes resource" live elsewhere.
+// snapshots of opaque resource state. It must stay Kubernetes-agnostic: a
+// Snapshot is a map from Key to opaque State bytes.
 package delta
 
 import "bytes"
 
-// Key identifies a single resource within a Snapshot. All fields are
-// strings, which makes Key comparable and therefore usable directly as a
-// map key.
-//
-// JSON tags are lowercase so the on-disk format stays readable with
-// standard tooling (cat, jq).
+// Key identifies a single resource within a Snapshot. It must stay
+// comparable so it can be a map key.
 type Key struct {
 	Kind      string `json:"kind"`
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 }
 
-// State is the opaque serialized payload for a single resource. The delta
-// package treats it as a bag of bytes; it does not parse or interpret it.
+// State is the opaque serialized payload for a single resource.
 type State []byte
 
 // Snapshot is the state of every tracked resource at a point in time.
 type Snapshot map[Key]State
 
-// Delta is the set-difference between two snapshots, split by operation
-// so Apply can be implemented as three straightforward passes.
-//
-// The maps are always non-nil after a call to Compute, even when empty.
-// Callers should test emptiness with len(...) rather than == nil.
+// Delta is the set-difference between two snapshots, split by operation.
+// Compute always returns non-nil maps; test emptiness with len.
 type Delta struct {
 	Added    map[Key]State
 	Modified map[Key]State
@@ -39,9 +28,7 @@ type Delta struct {
 }
 
 // Compute returns the Delta that transforms prev into next.
-//
-// Invariant (verified by tests): Apply(prev, Compute(prev, next)) equals
-// next for all prev, next.
+// Invariant: Apply(prev, Compute(prev, next)) equals next for all inputs.
 func Compute(prev, next Snapshot) Delta {
 	d := Delta{
 		Added:    map[Key]State{},
@@ -65,9 +52,8 @@ func Compute(prev, next Snapshot) Delta {
 	return d
 }
 
-// Apply returns the Snapshot that results from applying d to prev.
-// prev is not mutated; the returned Snapshot is always a fresh map so
-// callers can safely chain Apply calls without aliasing concerns.
+// Apply returns the Snapshot that results from applying d to prev. prev is
+// not mutated and the result is always a fresh map.
 func Apply(prev Snapshot, d Delta) Snapshot {
 	out := make(Snapshot, len(prev)+len(d.Added))
 	for k, v := range prev {

@@ -30,12 +30,8 @@ import (
 //	      full.json    -- iff meta.kind == "full"
 //	      delta.json   -- iff meta.kind == "delta"
 //
-// index.json is a *cache* of the per-snapshot meta.json files. If the
-// index goes missing, the store remains semantically intact — every
-// snapshot is fully self-describing inside its own directory. A future
-// rebuild routine can walk snapshots/ and regenerate the index without
-// touching payloads. (See rebuildIndex, which implements exactly that; the
-// format is designed to support it.)
+// index.json is a cache of the per-snapshot meta.json files; rebuildIndex
+// regenerates it from snapshots/. See ADR-0004.
 type Local struct {
 	root string
 
@@ -45,9 +41,7 @@ type Local struct {
 	mu    sync.Mutex
 	index []types.SnapshotMeta // sorted by Timestamp ascending
 
-	// readOnly stores are opened by the CLI against a directory the agent may
-	// be writing concurrently. They must never touch the filesystem: see
-	// OpenForRead.
+	// readOnly stores must never write to the filesystem; see OpenForRead.
 	readOnly bool
 }
 
@@ -70,7 +64,7 @@ const FormatVersion = 1
 var ErrUnsupportedFormat = errors.New("storage: unsupported store format")
 
 // legacyFormatVersion is the layout of stores written before format.json
-// existed (v0.1.1-rc.1). It is fixed: it describes old data, not this build.
+// existed. It describes old data, not this build, so it never changes.
 const legacyFormatVersion = 1
 
 type formatMarker struct {
@@ -80,14 +74,12 @@ type formatMarker struct {
 // checkFormat resolves the store's format version and refuses any version
 // other than FormatVersion. present reports whether format.json exists.
 //
-// A missing marker on a store that already holds data means
-// legacyFormatVersion, never FormatVersion: stamping old data with the current
-// version would claim a migration that never happened. A missing marker on an
-// empty store means a fresh store, which is FormatVersion.
+// A missing marker means legacyFormatVersion if the store holds data, and
+// FormatVersion if it is empty: stamping old data with the current version
+// would claim a migration that never happened.
 //
-// It must run before anything else touches the store. NewLocal repairs the
-// index on open; repairing a store in another format with this build's idea
-// of the layout would corrupt it.
+// It must run before anything repairs the store: repairing a store in another
+// format with this build's idea of the layout would corrupt it.
 func (l *Local) checkFormat() (version int, present bool, err error) {
 	var m formatMarker
 	err = readJSON(filepath.Join(l.root, formatFileName), &m)
@@ -117,9 +109,9 @@ func (l *Local) checkFormat() (version int, present bool, err error) {
 		return version, present, fmt.Errorf("%w: %s has invalid format version %d",
 			ErrUnsupportedFormat, l.root, version)
 	case version < FormatVersion:
-		// Unreachable while FormatVersion is 1. It exists so that bumping the
-		// version cannot silently open older stores as the new layout: the
-		// bump has to replace this with a migration.
+		// Unreachable while FormatVersion is 1. Bumping the version must
+		// replace this with a migration, not open older stores as the new
+		// layout.
 		return version, present, fmt.Errorf("%w: %s is format %d and this build has no migration to %d",
 			ErrUnsupportedFormat, l.root, version, FormatVersion)
 	}
@@ -144,24 +136,20 @@ func (l *Local) hasData() (bool, error) {
 	return len(entries) > 0, nil
 }
 
-// Root returns the root directory path of the store. Useful in tests that
-// need to inspect the on-disk layout without bypassing the Store interface.
+// Root returns the root directory path of the store.
 func (l *Local) Root() string { return l.root }
 
-// NewLocal opens (or initializes) a Local store for WRITING, rooted at the
-// given path, and holds its writer lock until Close. The root and its
-// snapshots/ subdirectory are created if missing, index.json is loaded or
-// rebuilt, and any deletion staged but not committed before a crash is
-// reconciled.
+// NewLocal opens (or initializes) a Local store for writing at root and holds
+// its writer lock until Close. It creates missing directories, loads or
+// rebuilds index.json, and reconciles deletions staged before a crash.
 //
-// Opening for write repairs the store, which means writing to it, so the lock
-// is taken first: a second writer is turned away before it can adopt the
-// format, rebuild the index or clear a tombstone. Use OpenForRead for
-// anything that merely inspects history.
+// Opening for write repairs the store, so the lock is taken first: a second
+// writer is turned away before it can adopt the format, rebuild the index or
+// clear a tombstone. Use OpenForRead to inspect history.
 func NewLocal(root string) (_ *Local, err error) {
-	// Only the root before checkFormat: a store in another format must be
-	// refused before anything inside it is created or repaired. The lock
-	// file is the one exception; it coordinates writers and holds no data.
+	// Only the root and the lock file exist before checkFormat: a store in
+	// another format must be refused before anything inside it is created or
+	// repaired.
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("storage: create root: %w", err)
 	}
@@ -194,18 +182,11 @@ func NewLocal(root string) (_ *Local, err error) {
 
 // OpenForRead opens a store for inspection without writing to it.
 //
-// This exists because opening for write is a repair operation: loadIndex
-// rebuilds a missing or corrupt index.json and re-persists it, and
-// reconcileDeletions rewrites the index and removes staged tombstones. Those
-// are correct for the agent, which holds the writer lock. Running them from
-// `ktm list` against a live PVC is not: the CLI takes no lock, so it would
-// race the agent on index.json and could delete a tombstone for a deletion the
-// agent had staged but not yet committed -- destroying the very evidence that
-// makes the staged deletion recoverable.
-//
-// A read-only store therefore performs the same recovery IN MEMORY and touches
-// nothing. It sees exactly what a repaired store would, and leaves the repair
-// to the writer.
+// Opening for write repairs the store: it rewrites index.json and clears
+// tombstones. The CLI takes no lock, so doing that against a live PVC would
+// race the agent and could delete a tombstone for a deletion the agent has
+// staged but not committed. A read-only store performs the same recovery in
+// memory only, and leaves the repair to the writer.
 func OpenForRead(root string) (*Local, error) {
 	if _, err := os.Stat(root); err != nil {
 		return nil, fmt.Errorf("storage: open %s for reading: %w", root, err)
@@ -221,15 +202,13 @@ func OpenForRead(root string) (*Local, error) {
 }
 
 // ErrReadOnly is returned by any mutating operation on a store opened with
-// OpenForRead. It is a programming error rather than a runtime condition: the
-// CLI opens read-only precisely so a write cannot be reached by accident.
+// OpenForRead. Reaching it is a programming error.
 var ErrReadOnly = errors.New("storage: store is open read-only")
 
-// AcquireWriterLock obtains a process-scoped exclusive lock for this store.
-// NewLocal calls it before touching anything, and calling it again while the
-// lock is held is a no-op. A second agent pointed at the same PVC fails fast
-// instead of racing writes to index.json and the snapshot directories. Readers
-// use OpenForRead, which takes no lock.
+// AcquireWriterLock takes an exclusive, non-blocking OS file lock on the
+// store, so a second agent on the same PVC fails fast instead of racing
+// writes. NewLocal calls it before touching anything; calling it again while
+// the lock is held is a no-op.
 func (l *Local) AcquireWriterLock() error {
 	if l.readOnly {
 		return ErrReadOnly
@@ -254,9 +233,8 @@ func (l *Local) AcquireWriterLock() error {
 	return nil
 }
 
-// Close releases the writer lock, when held. Closing the file descriptor also
-// releases the OS lock automatically if the process exits without calling
-// Close, so stale lock files do not create stale locks.
+// Close releases the writer lock, when held. The OS also releases it when the
+// process exits, so a stale lock file is not a stale lock.
 func (l *Local) Close() error {
 	l.lockMu.Lock()
 	defer l.lockMu.Unlock()
@@ -281,10 +259,7 @@ func (l *Local) Close() error {
 func (l *Local) loadIndex() error {
 	b, err := os.ReadFile(filepath.Join(l.root, indexFileName))
 	if errors.Is(err, os.ErrNotExist) {
-		// index.json is a pure cache of the per-snapshot meta.json files
-		// (ADR-0004). If it is missing we rebuild it from disk rather than
-		// starting blind — otherwise `list` and `blame` would report no
-		// history even though every snapshot is intact in snapshots/.
+		// index.json is a cache; rebuild it from meta.json files (ADR-0004).
 		if err := l.rebuildIndex(); err != nil {
 			return err
 		}
@@ -294,10 +269,7 @@ func (l *Local) loadIndex() error {
 		return err
 	}
 	if err := json.Unmarshal(b, &l.index); err != nil {
-		// The cache exists but is corrupt (truncated mid-write, garbled).
-		// Same recovery as a missing cache: rebuild from the authoritative
-		// per-snapshot meta.json files rather than refusing to open the
-		// store. rebuildIndex re-persists a clean index.json, healing it.
+		// A corrupt cache gets the same recovery as a missing one.
 		slog.Warn("storage: index.json is corrupt; rebuilding from snapshots", "err", err)
 		l.index = nil
 		if err := l.rebuildIndex(); err != nil {
@@ -308,11 +280,10 @@ func (l *Local) loadIndex() error {
 	return l.reconcileDeletions()
 }
 
-// reconcileDeletions completes or discards deletions that were staged under
-// .deleting/ but never committed, and is the reason Delete's staging step is
-// crash-safe. Called only from loadIndex, i.e. from NewLocal before the store
-// is published to any other goroutine — hence writeIndexLocked is safe here
-// despite l.mu not being held.
+// reconcileDeletions completes deletions staged under .deleting/ but never
+// committed, which is what makes Delete crash-safe. It runs only from
+// loadIndex, before the store is shared with another goroutine, so
+// writeIndexLocked is safe without l.mu.
 func (l *Local) reconcileDeletions() error {
 	deletingDir := filepath.Join(l.root, ".deleting")
 	entries, err := os.ReadDir(deletingDir)
@@ -338,9 +309,8 @@ func (l *Local) reconcileDeletions() error {
 	}
 	l.index = filtered
 
-	// A read-only store stops here: it has the same view a repaired store
-	// would have, without having repaired anything. Persisting the filtered
-	// index or clearing the tombstones is the writer's job.
+	// A read-only store stops here. Persisting the index and clearing
+	// tombstones is the writer's job.
 	if l.readOnly {
 		return nil
 	}
@@ -357,12 +327,10 @@ func (l *Local) reconcileDeletions() error {
 	return nil
 }
 
-// rebuildIndex reconstructs the in-memory index by scanning the meta.json
-// of every directory under snapshots/, then best-effort re-writes
-// index.json so the next open is a cheap read. Directories without a
-// readable meta.json are skipped — an incomplete write leaves the rest of
-// the history usable rather than failing the whole open. Called only when
-// index.json is absent.
+// rebuildIndex reconstructs the index from the meta.json of every directory
+// under snapshots/. Directories without a readable meta.json and payload are
+// incomplete writes and are skipped, so the rest of the history stays usable.
+// Called when index.json is missing or corrupt.
 func (l *Local) rebuildIndex() error {
 	dir := filepath.Join(l.root, snapshotsDirName)
 	entries, err := os.ReadDir(dir)
@@ -382,13 +350,13 @@ func (l *Local) rebuildIndex() error {
 		snapDir := filepath.Join(dir, e.Name())
 		var meta types.SnapshotMeta
 		if err := readJSON(filepath.Join(snapDir, metaFileName), &meta); err != nil {
-			continue // incomplete/unreadable snapshot dir — skip, keep the rest
+			continue
 		}
 		if string(meta.ID) != e.Name() {
-			continue // directory name disagrees with meta.ID — not a trustworthy snapshot
+			continue // not a trustworthy snapshot
 		}
 		if !snapshotPayloadPresent(snapDir, meta) {
-			continue // meta without a valid payload — incomplete write, skip
+			continue
 		}
 		rebuilt = append(rebuilt, meta)
 	}
@@ -397,14 +365,10 @@ func (l *Local) rebuildIndex() error {
 	})
 	l.index = rebuilt
 
-	// Persist the rebuilt cache. A write failure is not fatal: the
-	// in-memory index is already correct for this process, and the next
-	// open will simply rebuild again.
+	// Best-effort: on failure the next open rebuilds again. A read-only store
+	// holds no lock and leaves this to the writer.
 	if len(rebuilt) > 0 {
 		if !l.readOnly {
-			// Best-effort: a rebuilt index makes the next open a cheap read. A
-			// read-only store skips it -- it has no lock, and the writer will
-			// persist its own rebuild.
 			_ = l.writeIndexLocked()
 		}
 	}
@@ -431,8 +395,7 @@ func (l *Local) PutFull(_ context.Context, ts time.Time, snap delta.Snapshot) (t
 	}
 	result, err := l.appendIndex(meta)
 	if err != nil {
-		// Roll back the on-disk snapshot directory so a failed index write
-		// does not leave an orphan that rebuildIndex would silently accept.
+		// Remove the directory so rebuildIndex cannot later accept an orphan.
 		_ = os.RemoveAll(filepath.Join(l.root, snapshotsDirName, string(meta.ID)))
 		return types.SnapshotMeta{}, err
 	}
@@ -495,9 +458,8 @@ func (l *Local) Get(_ context.Context, id types.SnapshotID) (Loaded, error) {
 	return out, nil
 }
 
-// Delete removes the snapshot directory and its index entry. It is
-// idempotent: if id does not exist the call returns nil. The caller is
-// responsible for ensuring no remaining delta references id as its PrevID.
+// Delete removes the snapshot directory and its index entry. It returns nil if
+// id does not exist. The caller must ensure no remaining delta has PrevID id.
 func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
 	if l.readOnly {
 		return ErrReadOnly
@@ -520,18 +482,10 @@ func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
 		return os.RemoveAll(dir) // idempotent; also cleans an unindexed orphan
 	}
 
-	// Stage the deletion: rename the directory out of the authoritative
-	// snapshots namespace, then commit by writing the index, then discard the
-	// tombstone. The rename is the point of no return for readers, and the
-	// index write is the commit point for the record.
-	//
-	// A crash between the rename and the index write leaves index.json still
-	// listing the snapshot while its directory sits under .deleting/. That is
-	// exactly what reconcileDeletions repairs on the next open: it treats the
-	// presence of .deleting/<id> as proof the deletion was intended, drops the
-	// entry, and re-persists the index. rebuildIndex cannot resurrect the
-	// snapshot either, because it scans snapshots/ and the tombstone is no
-	// longer there.
+	// Rename into a tombstone, commit by writing the index, then discard the
+	// tombstone. After a crash before the index write, reconcileDeletions
+	// treats .deleting/<id> as proof the deletion was intended, and
+	// rebuildIndex cannot resurrect it because it only scans snapshots/.
 	deletingDir := filepath.Join(l.root, ".deleting")
 	if err := os.MkdirAll(deletingDir, 0o700); err != nil {
 		return fmt.Errorf("storage: create deletion staging directory: %w", err)
@@ -568,10 +522,9 @@ func (l *Local) List(_ context.Context) ([]types.SnapshotMeta, error) {
 	return out, nil
 }
 
-// writeSnapshot creates the per-snapshot directory and writes the payload
-// before meta.json so a crash mid-write never leaves a meta-only dir that
-// rebuildIndex would accept. Each file is written atomically (rename-based)
-// with fsync for durability across node crashes.
+// writeSnapshot writes the payload before meta.json: meta.json is the commit
+// point rebuildIndex trusts, so a crash never leaves a meta-only directory.
+// Every file goes through atomicWriteJSON.
 func (l *Local) writeSnapshot(meta types.SnapshotMeta, payloadName string, payload any) error {
 	dir, err := l.snapshotDir(meta.ID)
 	if err != nil {
@@ -613,8 +566,6 @@ func (l *Local) appendIndex(meta types.SnapshotMeta) (types.SnapshotMeta, error)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// Build the updated index in a fresh slice so a disk-write failure leaves
-	// l.index entirely unchanged — no partial mutation to roll back.
 	updated := make([]types.SnapshotMeta, len(l.index)+1)
 	copy(updated, l.index)
 	updated[len(l.index)] = meta
@@ -625,7 +576,7 @@ func (l *Local) appendIndex(meta types.SnapshotMeta) (types.SnapshotMeta, error)
 	old := l.index
 	l.index = updated
 	if err := l.writeIndexLocked(); err != nil {
-		l.index = old // restore: do not advance in-memory state on disk failure
+		l.index = old
 		return types.SnapshotMeta{}, fmt.Errorf("storage: write index: %w", err)
 	}
 	return meta, nil
@@ -639,10 +590,9 @@ func idFromTime(t time.Time) types.SnapshotID {
 	return types.SnapshotID(fmt.Sprintf("%s%03dZ", t.Format("20060102T150405"), ms))
 }
 
-// atomicWriteJSON marshals v as JSON and writes it to path via a
-// tempfile-then-rename with fsync on the file and parent directory, so
-// concurrent readers never see a partial file and committed data survives
-// a node crash.
+// atomicWriteJSON writes v to path via temp file, fsync, rename and fsync of
+// the parent directory, so readers never see a partial file and committed data
+// survives a node crash.
 func atomicWriteJSON(path string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -684,8 +634,7 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
-// snapshotPayloadPresent reports whether the on-disk payload for meta exists
-// and is readable JSON. Used during index rebuild to skip incomplete writes.
+// snapshotPayloadPresent reports whether the payload for meta is readable JSON.
 func snapshotPayloadPresent(dir string, meta types.SnapshotMeta) bool {
 	switch meta.Kind {
 	case types.KindFull:
@@ -707,13 +656,9 @@ func readJSON(path string, v any) error {
 	return json.Unmarshal(b, v)
 }
 
-// -- wire format --------------------------------------------------------
-//
-// JSON requires string map keys, but delta.Key is a struct. We serialize
-// Snapshots and Deltas as ordered lists of entries instead. Sorting on
-// write makes the on-disk bytes deterministic: two semantically equal
-// snapshots produce byte-identical files, which keeps test fixtures
-// stable and leaves the door open for content hashing / dedup later.
+// JSON requires string map keys and delta.Key is a struct, so Snapshots and
+// Deltas are written as sorted entry lists. Sorting makes equal snapshots
+// byte-identical on disk.
 
 type wireEntry struct {
 	Key   delta.Key   `json:"key"`
@@ -796,10 +741,7 @@ func keyLess(a, b delta.Key) bool {
 	return a.Name < b.Name
 }
 
-// -- kind index helpers --------------------------------------------------
-
-// kindsFromSnapshot returns a sorted list of unique Kind strings present
-// in the snapshot. Called during PutFull to populate SnapshotMeta.Kinds.
+// kindsFromSnapshot returns the sorted unique Kinds in the snapshot.
 func kindsFromSnapshot(s delta.Snapshot) []string {
 	seen := make(map[string]struct{}, 8)
 	for k := range s {
@@ -808,9 +750,7 @@ func kindsFromSnapshot(s delta.Snapshot) []string {
 	return sortedStringSet(seen)
 }
 
-// kindsFromDelta returns a sorted list of unique Kind strings touched by
-// the delta (added, modified, or removed entries). Called during PutDelta
-// to populate SnapshotMeta.Kinds.
+// kindsFromDelta returns the sorted unique Kinds the delta touches.
 func kindsFromDelta(d delta.Delta) []string {
 	seen := make(map[string]struct{}, 8)
 	for k := range d.Added {
@@ -825,7 +765,6 @@ func kindsFromDelta(d delta.Delta) []string {
 	return sortedStringSet(seen)
 }
 
-// sortedStringSet converts a set-style map into a sorted slice of its keys.
 func sortedStringSet(m map[string]struct{}) []string {
 	if len(m) == 0 {
 		return nil
