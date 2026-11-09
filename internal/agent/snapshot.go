@@ -185,9 +185,10 @@ func (s *Snapshotter) recordFlushOutcome(err error) {
 // when retainDays is 0.
 func (s *Snapshotter) GC(ctx context.Context) { s.gc(ctx) }
 
-// gc deletes every snapshot older than the anchor: the newest full snapshot
-// at or before now-retainDays. Keeping the anchor keeps every delta in the
-// window reconstructable; with no anchor, nothing is safe to delete.
+// gc deletes snapshots older than the anchor, the newest full snapshot at or
+// before now-retainDays, except any that a kept snapshot still reaches
+// through PrevID. Every kept snapshot stays reconstructable; with no anchor,
+// nothing is safe to delete.
 //
 // gc takes no lock of its own; the store serialises each Delete.
 func (s *Snapshotter) gc(ctx context.Context) {
@@ -213,11 +214,35 @@ func (s *Snapshotter) gc(ctx context.Context) {
 		return
 	}
 
+	// Timestamp order is not chain order: a clock step back across a restart
+	// can sort a full between a delta and its base. So nothing that a kept
+	// snapshot reaches through PrevID is deleted, and deletion runs newest
+	// first so a failed Delete protects its own base.
+	byID := make(map[types.SnapshotID]types.SnapshotMeta, len(metas))
+	for _, m := range metas {
+		byID[m.ID] = m
+	}
+	keep := make(map[types.SnapshotID]bool, len(metas))
+	markChain := func(id types.SnapshotID) {
+		for id != "" && !keep[id] {
+			keep[id] = true
+			id = byID[id].PrevID
+		}
+	}
+	for _, m := range metas[anchorIdx:] {
+		markChain(m.ID)
+	}
+
 	deleted := 0
-	for _, m := range metas[:anchorIdx] {
+	for i := anchorIdx - 1; i >= 0; i-- {
+		m := metas[i]
+		if keep[m.ID] {
+			continue
+		}
 		if err := s.store.Delete(ctx, m.ID); err != nil {
 			slog.Error("snapshotter: gc: delete snapshot", "id", m.ID, "err", err)
-			continue // best-effort: Delete is crash-safe per snapshot
+			markChain(m.ID) // best-effort, but never strand what is left
+			continue
 		}
 		deleted++
 	}

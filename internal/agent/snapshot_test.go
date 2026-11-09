@@ -615,3 +615,133 @@ func TestSnapshotter_BurstFlushesOnRealChangesOnly(t *testing.T) {
 	buf.Upsert(api, delta.State("v3"))
 	waitFor(2)
 }
+
+// reconstructAll fails the test unless every snapshot left in store can be
+// rebuilt by following its PrevID chain back to a full snapshot.
+func reconstructAll(t *testing.T, store storage.Store) []types.SnapshotID {
+	t.Helper()
+	ctx := context.Background()
+	metas, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	var ids []types.SnapshotID
+	for _, m := range metas {
+		ids = append(ids, m.ID)
+		cur := m.ID
+		for {
+			l, err := store.Get(ctx, cur)
+			if err != nil {
+				t.Errorf("snapshot %s is not reconstructable: %v", m.ID, err)
+				break
+			}
+			if l.Meta.Kind == types.KindFull {
+				break
+			}
+			cur = l.Meta.PrevID
+		}
+	}
+	return ids
+}
+
+func putFull(t *testing.T, store storage.Store, ts time.Time) types.SnapshotMeta {
+	t.Helper()
+	m, err := store.PutFull(context.Background(), ts, delta.Snapshot{})
+	if err != nil {
+		t.Fatalf("PutFull: %v", err)
+	}
+	return m
+}
+
+func putDelta(t *testing.T, store storage.Store, ts time.Time, prev types.SnapshotMeta) types.SnapshotMeta {
+	t.Helper()
+	m, err := store.PutDelta(context.Background(), ts, prev.ID, delta.Delta{})
+	if err != nil {
+		t.Fatalf("PutDelta: %v", err)
+	}
+	return m
+}
+
+func runGC(store storage.Store, now time.Time, retainDays int) {
+	s := agent.NewSnapshotter(agent.NewBuffer(), store, time.Minute, 3).
+		WithRetention(retainDays).
+		WithClock(func() time.Time { return now })
+	s.GC(context.Background())
+}
+
+// The anchor must be a full snapshot. Deltas straddle the cutoff here, so
+// anchoring on the newest snapshot of any kind would delete the full that
+// the retained deltas are built on.
+func TestGC_DeltasAcrossCutoffStayReconstructable(t *testing.T) {
+	store := newFSStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	day := func(d int) time.Time { return now.AddDate(0, 0, d) }
+
+	f0 := putFull(t, store, day(-40))
+	d1 := putDelta(t, store, day(-35), f0)
+	f2 := putFull(t, store, day(-32))
+	d3 := putDelta(t, store, day(-31), f2)
+	d4 := putDelta(t, store, day(-29), d3)
+	d5 := putDelta(t, store, day(-1), d4)
+
+	runGC(store, now, 30)
+
+	got := reconstructAll(t, store)
+	want := []types.SnapshotID{f2.ID, d3.ID, d4.ID, d5.ID}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("after GC: got %v, want %v (deleted %s, %s)", got, want, f0.ID, d1.ID)
+	}
+}
+
+// Timestamps can go backwards across an agent restart (clock step, another
+// node). A full written later with an earlier timestamp must not become the
+// anchor that strands a retained delta built on an older full.
+func TestGC_ClockStepBackKeepsRetainedDeltaReconstructable(t *testing.T) {
+	store := newFSStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cutoff := now.AddDate(0, 0, -30)
+
+	f1 := putFull(t, store, cutoff.Add(-10*time.Minute))
+	d2 := putDelta(t, store, cutoff.Add(5*time.Minute), f1) // inside the window
+	// Restart on a clock that is behind: this full sorts between f1 and d2.
+	f3 := putFull(t, store, cutoff.Add(-3*time.Minute))
+	putDelta(t, store, now.Add(-time.Hour), f3)
+
+	runGC(store, now, 30)
+
+	got := reconstructAll(t, store)
+	for _, id := range got {
+		if id == d2.ID {
+			return
+		}
+	}
+	t.Errorf("retained delta %s was deleted; left %v", d2.ID, got)
+}
+
+type failDeleteStore struct {
+	storage.Store
+	fail types.SnapshotID
+}
+
+func (s failDeleteStore) Delete(ctx context.Context, id types.SnapshotID) error {
+	if id == s.fail {
+		return errors.New("injected delete failure")
+	}
+	return s.Store.Delete(ctx, id)
+}
+
+// GC is best-effort per snapshot. If one delete fails, the snapshots it
+// depends on must stay, or what is left is a delta with no base.
+func TestGC_FailedDeleteKeepsItsBase(t *testing.T) {
+	inner := newFSStore(t)
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	day := func(d int) time.Time { return now.AddDate(0, 0, d) }
+
+	f0 := putFull(t, inner, day(-40))
+	d1 := putDelta(t, inner, day(-39), f0)
+	putFull(t, inner, day(-31))
+
+	runGC(failDeleteStore{Store: inner, fail: d1.ID}, now, 30)
+
+	reconstructAll(t, inner)
+}
