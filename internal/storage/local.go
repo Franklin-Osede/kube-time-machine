@@ -491,17 +491,32 @@ func (l *Local) Delete(_ context.Context, id types.SnapshotID) error {
 		return fmt.Errorf("storage: create deletion staging directory: %w", err)
 	}
 	tombstone := filepath.Join(deletingDir, string(id))
-	if err := os.RemoveAll(tombstone); err != nil {
-		return fmt.Errorf("storage: remove stale deletion tombstone %s: %w", id, err)
+
+	// An indexed snapshot whose directory is gone is either already staged
+	// (an earlier Delete failed after the rename) or lost. Either way only
+	// the index commit is left; an existing tombstone is the evidence and
+	// must not be touched before that commit.
+	_, statErr := os.Lstat(dir)
+	staged := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !staged {
+		return fmt.Errorf("storage: stat snapshot %s: %w", id, statErr)
 	}
-	if err := os.Rename(dir, tombstone); err != nil {
-		return fmt.Errorf("storage: stage snapshot deletion %s: %w", id, err)
+	if !staged {
+		if err := os.RemoveAll(tombstone); err != nil {
+			return fmt.Errorf("storage: remove stale deletion tombstone %s: %w", id, err)
+		}
+		if err := os.Rename(dir, tombstone); err != nil {
+			return fmt.Errorf("storage: stage snapshot deletion %s: %w", id, err)
+		}
 	}
 
 	old := l.index
 	l.index = filtered
 	if err := l.writeIndexLocked(); err != nil {
 		l.index = old
+		if staged {
+			return fmt.Errorf("storage: write index after delete: %w", err)
+		}
 		if restoreErr := os.Rename(tombstone, dir); restoreErr != nil {
 			return fmt.Errorf("storage: write index after delete: %w (restore snapshot: %v)", err, restoreErr)
 		}

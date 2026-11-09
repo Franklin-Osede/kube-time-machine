@@ -627,6 +627,129 @@ func TestDelete_CrashAfterStagingReconcilesIndex(t *testing.T) {
 	}
 }
 
+// stageBehindStore moves a snapshot directory into .deleting/ without the
+// store's knowledge: the state a running writer is left in when Delete's
+// index write fails and the rename back fails too.
+func stageBehindStore(t *testing.T, root string, id types.SnapshotID) string {
+	t.Helper()
+	deletingDir := filepath.Join(root, ".deleting")
+	if err := os.MkdirAll(deletingDir, 0o700); err != nil {
+		t.Fatalf("create deletion staging directory: %v", err)
+	}
+	tombstone := filepath.Join(deletingDir, string(id))
+	if err := os.Rename(filepath.Join(root, "snapshots", string(id)), tombstone); err != nil {
+		t.Fatalf("stage deletion: %v", err)
+	}
+	return tombstone
+}
+
+func reopenWriter(t *testing.T, s *storage.Local, root string) *storage.Local {
+	t.Helper()
+	if err := s.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	r, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
+}
+
+func onlyID(t *testing.T, s *storage.Local, want types.SnapshotID) {
+	t.Helper()
+	metas, err := s.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(metas) != 1 || metas[0].ID != want {
+		t.Fatalf("index: want only %s, got %v", want, metas)
+	}
+}
+
+// A retried Delete of an already-staged snapshot must commit the staged
+// deletion, not destroy the tombstone and then fail on the missing directory.
+func TestDelete_RetryOfStagedDeletionCommits(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	staged, _ := s.PutFull(ctx, at(2026, 1, 1, 10, 0, 0, 0), delta.Snapshot{})
+	kept, _ := s.PutFull(ctx, at(2026, 1, 1, 11, 0, 0, 0), delta.Snapshot{})
+	tombstone := stageBehindStore(t, root, staged.ID)
+
+	err = s.Delete(ctx, staged.ID)
+	if err != nil {
+		if _, statErr := os.Stat(tombstone); statErr != nil {
+			t.Fatalf("Delete failed (%v) and destroyed the tombstone: %v", err, statErr)
+		}
+		t.Fatalf("Delete of a staged snapshot: %v", err)
+	}
+	onlyID(t, s, kept.ID)
+	if _, err := os.Stat(tombstone); !os.IsNotExist(err) {
+		t.Errorf("tombstone not cleared after commit: %v", err)
+	}
+	onlyID(t, reopenWriter(t, s, root), kept.ID)
+}
+
+// An index entry whose directory and tombstone are both gone has nothing
+// left to stage; Delete must still be able to drop it.
+func TestDelete_IndexEntryWithoutDataIsDropped(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	lost, _ := s.PutFull(ctx, at(2026, 1, 1, 10, 0, 0, 0), delta.Snapshot{})
+	kept, _ := s.PutFull(ctx, at(2026, 1, 1, 11, 0, 0, 0), delta.Snapshot{})
+	if err := os.RemoveAll(filepath.Join(root, "snapshots", string(lost.ID))); err != nil {
+		t.Fatalf("remove snapshot directory: %v", err)
+	}
+
+	if err := s.Delete(ctx, lost.ID); err != nil {
+		t.Fatalf("Delete of an entry with no data: %v", err)
+	}
+	onlyID(t, s, kept.ID)
+	onlyID(t, reopenWriter(t, s, root), kept.ID)
+}
+
+// If the index write fails while committing an already-staged deletion, the
+// tombstone is the only record that the deletion was intended. It must
+// survive so that the next open completes the deletion.
+func TestDelete_RetryIndexFailureKeepsTombstone(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	s, err := storage.NewLocal(root)
+	if err != nil {
+		t.Fatalf("NewLocal: %v", err)
+	}
+	staged, _ := s.PutFull(ctx, at(2026, 1, 1, 10, 0, 0, 0), delta.Snapshot{})
+	kept, _ := s.PutFull(ctx, at(2026, 1, 1, 11, 0, 0, 0), delta.Snapshot{})
+	tombstone := stageBehindStore(t, root, staged.ID)
+
+	indexPath := filepath.Join(root, "index.json")
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatalf("remove index: %v", err)
+	}
+	if err := os.Mkdir(indexPath, 0o700); err != nil {
+		t.Fatalf("replace index with directory: %v", err)
+	}
+	if err := s.Delete(ctx, staged.ID); err == nil {
+		t.Fatal("Delete: expected index write error")
+	}
+	if _, err := os.Stat(tombstone); err != nil {
+		t.Fatalf("tombstone lost after failed commit: %v", err)
+	}
+
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatalf("restore index path: %v", err)
+	}
+	onlyID(t, reopenWriter(t, s, root), kept.ID)
+}
+
 func TestKindsPopulatedOnPutFull(t *testing.T) {
 	s := newStore(t)
 	snap := delta.Snapshot{
