@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
@@ -83,5 +84,29 @@ func TestFinalFlush_OnlyAfterSync(t *testing.T) {
 	close(synced)
 	if !finalFlush(synced, f) || f.calls != 1 {
 		t.Fatalf("did not flush after sync (calls=%d)", f.calls)
+	}
+}
+
+func TestSetMemoryLimit(t *testing.T) {
+	prev := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+
+	if got := setMemoryLimit(env(map[string]string{memoryLimitEnv: "268435456"})); got != 241591905 {
+		t.Errorf("256Mi limit: got %d, want 90%% = 241591905", got)
+	}
+	if cur := debug.SetMemoryLimit(-1); cur != 241591905 {
+		t.Errorf("runtime limit = %d, want it applied", cur)
+	}
+	debug.SetMemoryLimit(prev)
+	for _, m := range []map[string]string{
+		{memoryLimitEnv: "268435456", "GOMEMLIMIT": "100MiB"}, // operator's choice wins
+		{memoryLimitEnv: ""},
+		{memoryLimitEnv: "abc"},
+		{memoryLimitEnv: "0"},
+	} {
+		if got := setMemoryLimit(env(m)); got != 0 || debug.SetMemoryLimit(-1) != prev {
+			t.Errorf("%v: got %d and changed the runtime limit; want no change", m, got)
+		}
 	}
 }

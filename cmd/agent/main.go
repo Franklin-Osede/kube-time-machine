@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -60,6 +62,7 @@ func run() error {
 	if err := validateConfig(*interval, *fullEvery, *burstThreshold, *retainDays); err != nil {
 		return err
 	}
+	memLimit := setMemoryLimit(os.Getenv)
 
 	client, err := kubeclient.NewClient(*kubeconfig)
 	if err != nil {
@@ -117,7 +120,8 @@ func run() error {
 		"retainDays", *retainDays,
 		"healthAddr", *healthAddr,
 		"excludeNamespaces", excludeNS,
-		"dynamicResources", *watchResources)
+		"dynamicResources", *watchResources,
+		"goMemoryLimitBytes", memLimit)
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return inf.Start(gctx) })
@@ -218,4 +222,27 @@ func splitTrimmed(s string) []string {
 		}
 	}
 	return out
+}
+
+// memoryLimitEnv carries the container's memory limit in bytes. The chart
+// sets it from the downward API.
+const memoryLimitEnv = "KTM_MEMORY_LIMIT"
+
+// setMemoryLimit gives the Go GC a soft limit at 90% of the container's
+// memory limit and returns it, or returns 0 and changes nothing when
+// GOMEMLIMIT is set or the limit is unknown. Without a soft limit the GC lets
+// the heap grow to twice what is live, and the transient allocations of a full
+// snapshot push that past the container limit, so the kernel OOM-kills the
+// agent although the live heap would fit.
+func setMemoryLimit(getenv func(string) string) int64 {
+	if getenv("GOMEMLIMIT") != "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(getenv(memoryLimitEnv), 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	limit := n / 10 * 9
+	debug.SetMemoryLimit(limit)
+	return limit
 }

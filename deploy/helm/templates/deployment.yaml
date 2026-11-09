@@ -53,6 +53,15 @@ spec:
             {{- if .Values.agent.watchResources }}
             - --watch-resources={{ join "," .Values.agent.watchResources }}
             {{- end }}
+          env:
+            {{- /* The agent sets the Go GC's soft limit to 90% of this, so a
+                   full snapshot does not push the heap past the container
+                   limit. */}}
+            - name: KTM_MEMORY_LIMIT
+              valueFrom:
+                resourceFieldRef:
+                  containerName: agent
+                  resource: limits.memory
           {{- if .Values.agent.health.enabled }}
           ports:
             - name: health
