@@ -86,6 +86,13 @@ version to install.
   `Certificate`s would have overwritten each other. The Kind comes from API
   discovery, and a discovery error stops the agent. History recorded under a
   different list is not checked: change the list only with a new PVC.
+- The agent's first full snapshot after every start could miss objects.
+  It waited for the informers' caches, which are complete before their
+  event handlers have delivered the objects to the buffer, so the snapshot
+  was taken from a partial buffer and the next delta "created" the rest.
+  On kind with 2,000 ConfigMaps the first full snapshot held 1.6 MiB of a
+  66 MiB state. The agent now waits for the handlers. The final flush on
+  shutdown had the same gap and is fixed by the same change.
 - `docs/install.md` claimed storage scales with change rate, not snapshot
   rate. It does not: full snapshots are written on schedule whether or not
   anything changed. The sizing note now says how to estimate it.

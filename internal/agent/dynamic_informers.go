@@ -60,7 +60,8 @@ func NewDynamicInformers(
 	}
 }
 
-// Ready returns a channel closed once all informer caches have synced.
+// Ready returns a channel closed once every object in the initial lists is in
+// the buffer.
 func (d *DynamicInformers) Ready() <-chan struct{} {
 	return d.ready
 }
@@ -93,10 +94,12 @@ func (d *DynamicInformers) Start(ctx context.Context) error {
 				d.handleDelete(obj, gvrCopy)
 			},
 		}
-		if _, err := inf.AddEventHandler(handler); err != nil {
+		reg, err := inf.AddEventHandler(handler)
+		if err != nil {
 			return fmt.Errorf("agent: dynamic: register handler for %s: %w", gvr.Resource, err)
 		}
-		hasSynced = append(hasSynced, inf.HasSynced)
+		// The handler's sync, not the informer's: see Informers.synced.
+		hasSynced = append(hasSynced, reg.HasSynced)
 	}
 
 	d.factory.Start(ctx.Done())
