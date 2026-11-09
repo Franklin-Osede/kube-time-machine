@@ -149,42 +149,56 @@ There is no `replicaCount` value. The agent writes to a `ReadWriteOnce` PVC and 
 ### Sizing memory
 
 The agent keeps the latest state of every recorded object in memory, and
-writing a full snapshot allocates several times that state again. It sets the
-Go garbage collector's soft limit to 90% of `agent.resources.limits.memory`
-(not when `GOMEMLIMIT` is set). The runtime grows toward that target before it
-collects, so container memory close to the limit is expected and is not by
-itself a problem. The signals that matter are restarts with reason
-`OOMKilled` and `ktm_flushes_total` no longer increasing.
+writing a full snapshot allocates several times that state again. The Go
+garbage collector runs with its default target, roughly twice the heap that
+survived the last collection, and the agent also sets its soft limit to 90% of
+`agent.resources.limits.memory` (not when `GOMEMLIMIT` is set). The soft limit
+only changes anything once that doubled heap would pass it; it makes the
+collector run more often, it does not cap memory. In the larger runs below,
+container memory reached the limit, with the page cache taking what the heap
+did not, and that alone was not a failure. The signals that matter are
+restarts with reason `OOMKilled` and `ktm_flushes_total` no longer
+increasing.
 
 The defaults, a `512Mi` limit and a `256Mi` request, were chosen from the runs
 below. The request is what the scheduler reserves. It is not a promise that it
-covers the agent's steady-state memory: in the 20 MB run the container used
-about 390 MiB of anonymous memory.
+covers the agent's memory: in the 20 MB run the container's anonymous memory
+levelled off at 386–397 MiB.
 
-Measured runs, all on the same setup:
+Measured runs:
 
-- kind v0.32.0, Kubernetes v1.36.1, one node in a colima VM (aarch64, 6 CPUs,
-  10 GiB) on macOS.
-- Agent from commit `525aafb` with diagnostic logging added (Go runtime memory
-  every 5 s, flush durations, pprof). That build also had the first-snapshot
-  bug fixed later in this release, so its first full snapshot was partial;
-  every later one was complete.
+- All on kind v0.32.0, Kubernetes v1.36.1, one node in a colima VM (aarch64,
+  6 CPUs, 10 GiB) on macOS.
+- Builds: the ~2 MB run and the first 20 MB/`256Mi` run used commit `b6f1242`,
+  before the soft limit. The second 20 MB/`256Mi` run used `525aafb`, which
+  adds it. The passing 20 MB run and both 50 MB runs used `525aafb` with
+  diagnostic logging added (Go runtime memory every 5 s, flush durations,
+  pprof).
+- Every build had the first-snapshot bug fixed later in this release, so a
+  run's first full snapshot could be partial. In the one run checked
+  (~50 MB, `1Gi`) it was, and every later full snapshot was complete.
 - The objects existed before the agent started, in one namespace. Each
   ConfigMap has one key holding random base64 text, which does not compress.
   The Deployments have `replicas: 0`, one container and ten 64-byte
   environment variables.
 - `snapshot.intervalSeconds=30` and `snapshot.fullEvery=2`, so a full snapshot
   every minute; the defaults write one every hour. The ~2 MB run lasted
-  5 minutes. The others were sampled every 5 s for about 7 minutes, which
-  covered 8 full snapshots each.
+  5 minutes. The three diagnostic runs were sampled every 5 s for about
+  7 minutes and covered 8 full snapshots each; the failed runs are described
+  in their row.
 
 | Workload | ConfigMap data | Limit | Result |
 |---|---|---|---|
 | 500 ConfigMaps × 4 KiB, 100 Deployments | ~2 MB | `256Mi` | Passed. No restarts, container peak 62 MiB. Build before the soft limit was added. |
 | 2,000 ConfigMaps × 10 KiB, 300 Deployments | ~20 MB | `256Mi` | **Failed.** OOMKilled with and without the soft limit: 4 restarts in about 4 minutes without it, and with it 1 restart in 6 minutes and only 4 flushes recorded. |
-| same | ~20 MB | `512Mi` | Passed. No restarts, no OOM or `memory.high` events, no memory pressure. 16 flushes (8 full, 8 delta), full snapshots 340–558 ms. Go live heap at most 209 MiB; container anonymous memory at most 397 MiB. |
-| 2,000 ConfigMaps × 25 KiB, 300 Deployments | ~50 MB | `512Mi` | Completed with no restarts, OOM events or memory pressure. 15 flushes (8 full, 7 delta), full snapshots 1,164–1,568 ms. But the Go live heap was 310 MiB and the collector ran about 25 cycles in the window, so a capacity margin was **not** established. |
-| same | ~50 MB | `1Gi` | Completed with no restarts, OOM events or memory pressure. 15 flushes (8 full, 7 delta), full snapshots 963–1,739 ms. Go live heap at most 417 MiB, about 5 collector cycles. |
+| same | ~20 MB | `512Mi` | Passed. No restarts, no OOM or `memory.high` events, no memory pressure. 16 flushes (8 full, 8 delta), full snapshots 340–558 ms. Heap live at the last collection at most 209 MiB; container anonymous memory at most 397 MiB. |
+| 2,000 ConfigMaps × 25 KiB, 300 Deployments | ~50 MB | `512Mi` | Completed with no restarts, OOM events or memory pressure. 15 flushes (8 full, 7 delta), full snapshots 1,164–1,568 ms. But the heap live at the last collection held at 310 MiB and the collector ran about 25 cycles in the window, so a capacity margin was **not** established. |
+| same | ~50 MB | `1Gi` | Completed with no restarts, OOM events or memory pressure. 15 flushes (8 full, 7 delta), full snapshots 963–1,739 ms. Heap live at the last collection at most 417 MiB, about 5 collector cycles. |
+
+"Heap live at the last collection" is the Go runtime's `/gc/heap/live:bytes`.
+It counts everything in use when the collection ran, including the buffers of
+a snapshot being written, so it depends on when collections happen and
+differs between limits for the same workload. It is not a steady-state size.
 
 What this supports:
 

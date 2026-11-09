@@ -150,9 +150,9 @@ type flusher interface {
 	Flush(ctx context.Context) (types.SnapshotMeta, error)
 }
 
-// finalFlush writes one last snapshot on shutdown, and only if the informer
-// caches synced: an empty or partial cache must never become a full
-// snapshot. ctx is already cancelled by then, so the flush gets its own
+// finalFlush writes one last snapshot on shutdown, and only once the
+// handlers have delivered the initial lists to the buffer: an empty or
+// partial buffer must never become a full snapshot. ctx is already cancelled by then, so the flush gets its own
 // budget. It reports whether a flush was attempted.
 func finalFlush(ready <-chan struct{}, snap flusher) bool {
 	select {
@@ -227,7 +227,8 @@ func splitTrimmed(s string) []string {
 }
 
 // memoryLimitEnv carries the container's memory limit in bytes. The chart
-// sets it from the downward API.
+// sets it from the downward API, which reports the node's allocatable memory
+// when the container has no limit.
 const memoryLimitEnv = "KTM_MEMORY_LIMIT"
 
 // setMemoryLimit gives the Go GC a soft limit at 90% of the container's

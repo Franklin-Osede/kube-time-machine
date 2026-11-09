@@ -185,7 +185,7 @@ Common causes:
 | `parse --watch-resources: agent: "secrets/v1": Secrets are not recorded ...` | `agent.watchResources` lists Secrets | Remove the entry; Secrets are never recorded |
 | `check --watch-resources: agent: discover ...` or `... does not serve ...` | A GVR's group/version or resource is not served, or discovery failed | Install the CRD or fix the GVR; the agent does not start with an unchecked list |
 | `check --watch-resources: agent: ... both have Kind "..."` | Two entries, or an entry and a built-in watch, share a Kind | Keep only one of them. If the list changed, use a new PVC ([install.md](install.md#changing-watched-resources)) |
-| `agent: dynamic: informer cache sync timed out after 2m0s` | RBAC denies a GVR in `agent.watchResources` | Install the CRD and add `rbac.extraRules`, or remove it with `--set-json 'agent.watchResources=[]'` |
+| `agent: dynamic: informer cache sync timed out after 2m0s` | RBAC denies a GVR in `agent.watchResources` | Add a read-only `rbac.extraRules` entry for it, or remove it with `--set-json 'agent.watchResources=[]'` |
 | `open storage: storage: another process holds the writer lock` | A second agent is using the same volume | Run one agent per volume; the chart's `Recreate` strategy prevents this during upgrades |
 | `storage: unsupported store format` | The volume was written by a newer KTM | Upgrade the agent; see [ADR-0008](adr/0008-store-format-version.md) |
 
