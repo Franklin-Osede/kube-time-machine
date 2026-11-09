@@ -13,8 +13,8 @@ It has two binaries that share a storage directory: `ktm-agent` records, and
 
 | | |
 |---|---|
-| Latest published build | `v0.1.1-rc.2` prerelease: binaries, multi-arch agent image and OCI chart, verified |
-| Stable `v0.1.1` | Not released yet. Fixes made since rc.2 go out in rc.3 first |
+| Latest published build | `v0.1.1-rc.3` prerelease: binaries, multi-arch agent image and OCI chart, verified |
+| Stable `v0.1.1` | Pending |
 | Supported kinds | Deployments and ConfigMaps (record, diff, blame, rollback) |
 | Storage | Local directory or a PersistentVolume. No cloud storage |
 | Tested on | kind with its default node image, Kubernetes v1.36.1 on the test run. Not pinned; other versions are untested |
@@ -66,13 +66,13 @@ That makes the history sampled, not a log of every write:
 ## Quick start
 
 These commands were run as written from a clean zsh against the published
-rc.2 build. Set `VERSION` to the release you want; until the stable release,
-the newest verified build is `v0.1.1-rc.2`.
+rc.3 build. Set `VERSION` to the release you want; until the stable release,
+the newest verified build is `v0.1.1-rc.3`.
 
 Install the two binaries and check them against the published checksums:
 
 ```bash
-VERSION=v0.1.1-rc.2
+VERSION=v0.1.1-rc.3
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
@@ -148,7 +148,7 @@ The Helm chart runs the agent as a single Pod that writes to a PersistentVolume:
 
 ```bash
 helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
-  --version 0.1.1-rc.2 -n ktm-system --create-namespace
+  --version 0.1.1-rc.3 -n ktm-system --create-namespace
 ```
 
 `ktm` reads a local directory and does not talk to the agent, so to query this

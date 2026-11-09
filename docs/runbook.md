@@ -39,7 +39,7 @@ _Resolution:_ restore the chart's ClusterRole and ClusterRoleBinding, for exampl
 A GVR in `agent.watchResources` that does not exist in the cluster, or that RBAC denies, does not leave the Pod hanging: after 2 minutes the agent exits with `agent: dynamic: informer cache sync timed out after 2m0s` and the Pod restarts. See [Scenario 6](#scenario-6-agent-crash-loop-crashloopbackoff). To remove all extra resources:
 
 ```bash
-CHART_VERSION=0.1.1-rc.2   # the installed version; `helm list -n ktm-system` shows it
+CHART_VERSION=0.1.1-rc.3   # the installed version; `helm list -n ktm-system` shows it
 helm upgrade ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
   --version "$CHART_VERSION" -n ktm-system --reuse-values \
   --set-json 'agent.watchResources=[]'

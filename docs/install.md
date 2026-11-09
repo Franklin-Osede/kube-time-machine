@@ -14,10 +14,10 @@ KTM has two operating modes. Both share the same agent and CLI binaries and the 
 
 ## Installing the binaries
 
-Published builds are attached to each [GitHub release](https://github.com/Franklin-Osede/kube-time-machine/releases) with a `checksums.txt`. Until the stable `v0.1.1` is released, the newest verified build is the `v0.1.1-rc.2` prerelease.
+Published builds are attached to each [GitHub release](https://github.com/Franklin-Osede/kube-time-machine/releases) with a `checksums.txt`. Until the stable `v0.1.1` is released, the newest verified build is the `v0.1.1-rc.3` prerelease.
 
 ```bash
-VERSION=v0.1.1-rc.2
+VERSION=v0.1.1-rc.3
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
@@ -71,7 +71,7 @@ A scripted walkthrough with a Deployment and a ConfigMap is in [examples/demo-sc
 For longer-running deployments where you want history captured even when no laptop is attached, install the published OCI chart. It pulls the matching multi-arch image from GHCR:
 
 ```bash
-CHART_VERSION=0.1.1-rc.2
+CHART_VERSION=0.1.1-rc.3
 helm install ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
   --version "$CHART_VERSION" -n ktm-system --create-namespace
 ```

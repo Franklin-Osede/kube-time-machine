@@ -5,15 +5,19 @@ Items move to issues or the CHANGELOG as they are picked up.
 
 ## Before v0.1.1
 
-- [ ] At the final tag: date the `[0.1.1]` CHANGELOG entry (now
-      "Unreleased"), set `VERSION` / `CHART_VERSION` to the stable release in
-      the README, `docs/install.md` and `docs/runbook.md`, and update the
-      README status table.
-- [ ] Tag `v0.1.1-rc.3` from the fixes made after rc.2 (rollback annotations,
-      writer lock, x/net, release assets limited to the binaries) and verify it
-      with the `release-gate` skill. rc.2 ran the pipeline end to end and is
-      verified; its release still carries a stray `.dockerbuild` asset.
-- [ ] Scan the published image, not just the binaries and the image E2E builds.
+- [ ] On the day `v0.1.1` is tagged, in the commit that gets the tag: date
+      the `[0.1.1]` CHANGELOG entry with that day, and set `VERSION` /
+      `CHART_VERSION` to the stable release in the README, `docs/install.md`
+      and `docs/runbook.md`. Change the README status table to "released"
+      only after the post-tag `release-gate` checks pass.
+- [x] `v0.1.1-rc.3` tagged on `118457c` and verified with `release-gate`
+      (2026-11-09). rc.2's release still carries a stray `.dockerbuild`
+      asset; cleaning it up can wait.
+- [x] Scan the published image: done for rc.3, see
+      [docs/security/image-scan-v0.1.1-rc.3.md](docs/security/image-scan-v0.1.1-rc.3.md).
+- [ ] Owner sign-off on the assessment in that record (four Debian LTS
+      advisories in the distroless base, acceptance proposed). Rescan the
+      stable image after it is published.
 - [ ] `docs/launch.md` stays marked PENDING until the stable release and the
       demo link exist; move it out of the repository once the posts are out.
 
@@ -44,7 +48,8 @@ Items move to issues or the CHANGELOG as they are picked up.
 - [ ] A `networkPolicy.healthIngressFrom` value to narrow who can reach the
       health port, once tested against the CNIs we support: an untested
       selector can block kubelet probes and look like a crash-looping agent.
-- [ ] No cosign signature or SBOM on releases; checksums only.
+- [ ] No signature or SBOM on releases. There are checksums, and the image
+      carries BuildKit's unsigned provenance attestation (ADR-0007).
 - [ ] Chart has no `icon` (the only `helm lint` finding) and no image digest
       pinning.
 
