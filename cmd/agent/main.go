@@ -230,10 +230,9 @@ const memoryLimitEnv = "KTM_MEMORY_LIMIT"
 
 // setMemoryLimit gives the Go GC a soft limit at 90% of the container's
 // memory limit and returns it, or returns 0 and changes nothing when
-// GOMEMLIMIT is set or the limit is unknown. Without a soft limit the GC lets
-// the heap grow to twice what is live, and the transient allocations of a full
-// snapshot push that past the container limit, so the kernel OOM-kills the
-// agent although the live heap would fit.
+// GOMEMLIMIT is set or the limit is unknown. It makes the GC work harder as
+// runtime memory nears the limit; it does not cap container memory, and the
+// runtime exceeds it rather than spend too long in GC.
 func setMemoryLimit(getenv func(string) string) int64 {
 	if getenv("GOMEMLIMIT") != "" {
 		return 0
