@@ -146,3 +146,12 @@ jobs:
           ! grep -q 'containerPort: 8080' <<<"$disabled"
           ! grep -q 'livenessProbe:' <<<"$disabled"
           ! grep -q 'readinessProbe:' <<<"$disabled"
+
+      - name: Verify excludeNamespaces contract
+        run: |
+          # The default list is passed through; an empty list must reach the
+          # binary as an empty flag, not fall back to its built-in default.
+          default="$(helm template ktm deploy/helm --namespace ktm-system)"
+          grep -q -- '- --exclude-namespaces=kube-system,kube-public,kube-node-lease$' <<<"$default"
+          empty="$(helm template ktm deploy/helm --namespace ktm-system --set-json 'agent.excludeNamespaces=[]')"
+          grep -q -- '- --exclude-namespaces=$' <<<"$empty"
