@@ -86,6 +86,9 @@ version to install.
   `Certificate`s would have overwritten each other. The Kind comes from API
   discovery, and a discovery error stops the agent. History recorded under a
   different list is not checked: change the list only with a new PVC.
+- `docs/install.md` claimed storage scales with change rate, not snapshot
+  rate. It does not: full snapshots are written on schedule whether or not
+  anything changed. The sizing note now says how to estimate it.
 - The chart ignored `agent.excludeNamespaces: []` and kept excluding
   `kube-system`, `kube-public` and `kube-node-lease`. An empty list now
   excludes nothing.

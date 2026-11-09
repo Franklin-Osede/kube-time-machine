@@ -19,7 +19,8 @@ snapshot:
   burstThreshold: 100
 
 storage:
-  # Size from measured object count and change rate. Keep enough free space
+  # Size from the measured size of one full snapshot times the full snapshots
+  # retained (24 a day at the defaults), plus deltas. Keep enough free space
   # that retention can still write a full snapshot before GC runs.
   size: 50Gi
   # REQUIRED: a CSI StorageClass with encryption at rest (the history holds

@@ -53,7 +53,7 @@ A **Snapshot** is a point-in-time view of the watched resources. Two flavours, t
 
 A reader reconstructs the state at any point by replaying `apply(full ⨁ delta₁ ⨁ … ⨁ deltaₙ)` along the chain back to the most recent full. Reconstruction cost is bounded by `fullEvery` — the Docker-layer pattern.
 
-Why deltas instead of full snapshots every tick: storage cost grows with **change rate**, not snapshot rate. Flushing every five minutes for a year is 105,120 snapshots. Stored as fulls, every one would repeat the whole cluster; with deltas, most of them are small diff files and only one in every `fullEvery` holds the full state. The trade-off — more code to get right — is contained in `internal/delta` (100% statement coverage + fuzz test). See [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md) for the design.
+Why deltas instead of full snapshots every tick: flushing every five minutes for a year is 105,120 snapshots. Stored as fulls, every one would repeat the whole cluster; with deltas, most of them are small diff files and only one in every `fullEvery` holds the full state. Storage is still tied to the snapshot rate: those full snapshots, and an empty delta for every quiet flush, are written whether or not anything changed. Deltas divide the cost by about `fullEvery`; they do not make it follow the change rate. The trade-off — more code to get right — is contained in `internal/delta` (100% statement coverage + fuzz test). See [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md) for the design.
 
 ## On-disk layout
 

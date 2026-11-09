@@ -137,7 +137,7 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 | `snapshot.intervalSeconds` | `300` | Flush cadence in seconds. Smaller keeps shorter-lived states and timestamps closer to the change, at the cost of more snapshots. |
 | `snapshot.fullEvery` | `12` | Every Nth flush is a full reference snapshot. Bounds chain-reconstruction cost (see [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md)). |
 | `snapshot.retainDays` | `30` | Deletes history before the safe full-snapshot anchor. Set `0` to retain everything. |
-| `storage.size` | `10Gi` | PVC size. Storage scales with change rate, not snapshot rate. |
+| `storage.size` | `10Gi` | PVC size. Every flush writes a snapshot, even when nothing changed, and every `fullEvery`-th is an uncompressed copy of every recorded object. With the defaults that is 24 full copies a day, so 30 days of retention hold about 720 full copies plus the deltas. Size the volume from the size of one full snapshot (`du -sh` of a `full` entry under `snapshots/`). |
 | `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
 | `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes liveness/readiness probes. |
 | `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. Refused: Deployments and ConfigMaps (always recorded), Secrets, and any two entries with the same Kind. See [Changing watched resources](#changing-watched-resources). |
