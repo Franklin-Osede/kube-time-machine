@@ -98,17 +98,26 @@ func TestMarshalDeployment_DeterministicAcrossCalls(t *testing.T) {
 // identical State. Both use the same managers, which survive as
 // ktm.io/managers.
 func TestMarshalDeployment_StripsResourceVersionAndManagedFields(t *testing.T) {
-	managers := []metav1.ManagedFieldsEntry{{Manager: "kubectl"}}
+	// Same manager, so ktm.io/managers is equal; the entries differ in time
+	// and fieldsV1, which change on every write in a real cluster.
+	entry := func(sec int64, fields string) []metav1.ManagedFieldsEntry {
+		ts := metav1.Unix(sec, 0)
+		return []metav1.ManagedFieldsEntry{{
+			Manager: "kubectl", Operation: metav1.ManagedFieldsOperationUpdate,
+			Time: &ts, FieldsType: "FieldsV1",
+			FieldsV1: &metav1.FieldsV1{Raw: []byte(fields)},
+		}}
+	}
 
 	d1 := newDeployment("nginx:1.0")
 	d1.ResourceVersion = "100"
 	d1.Generation = 1
-	d1.ManagedFields = managers
+	d1.ManagedFields = entry(1000, `{"f:spec":{"f:replicas":{}}}`)
 
 	d2 := newDeployment("nginx:1.0")
 	d2.ResourceVersion = "9999"
 	d2.Generation = 42
-	d2.ManagedFields = managers
+	d2.ManagedFields = entry(2000, `{"f:metadata":{"f:labels":{}}}`)
 
 	_, s1, _ := agent.MarshalDeployment(d1)
 	_, s2, _ := agent.MarshalDeployment(d2)

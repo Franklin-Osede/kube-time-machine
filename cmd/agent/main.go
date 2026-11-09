@@ -22,6 +22,7 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/internal/health"
 	"github.com/Franklin-Osede/kube-time-machine/internal/kubeclient"
 	"github.com/Franklin-Osede/kube-time-machine/internal/storage"
+	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
 // version is set at release time with -ldflags="-X main.version=...".
@@ -124,27 +125,39 @@ func run() error {
 	g.Go(func() error { return snap.Run(gctx, allReady) })
 
 	runErr := g.Wait()
-
-	// Final flush, skipped unless the caches synced. ctx is already cancelled,
-	// so it gets its own budget.
-	select {
-	case <-allReady:
-		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer flushCancel()
-		if _, ferr := snap.Flush(flushCtx); ferr != nil {
-			slog.Error("ktm-agent: final flush failed", "err", ferr)
-		} else {
-			slog.Info("ktm-agent: final flush succeeded")
-		}
-	default:
-		slog.Info("ktm-agent: skipping final flush; informer caches never synced")
-	}
+	finalFlush(allReady, snap)
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
 		return fmt.Errorf("agent stopped: %w", runErr)
 	}
 	slog.Info("ktm-agent: stopped cleanly")
 	return nil
+}
+
+// flusher is the part of *agent.Snapshotter that finalFlush needs.
+type flusher interface {
+	Flush(ctx context.Context) (types.SnapshotMeta, error)
+}
+
+// finalFlush writes one last snapshot on shutdown, and only if the informer
+// caches synced: an empty or partial cache must never become a full
+// snapshot. ctx is already cancelled by then, so the flush gets its own
+// budget. It reports whether a flush was attempted.
+func finalFlush(ready <-chan struct{}, snap flusher) bool {
+	select {
+	case <-ready:
+	default:
+		slog.Info("ktm-agent: skipping final flush; informer caches never synced")
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := snap.Flush(ctx); err != nil {
+		slog.Error("ktm-agent: final flush failed", "err", err)
+	} else {
+		slog.Info("ktm-agent: final flush succeeded")
+	}
+	return true
 }
 
 func validateConfig(interval time.Duration, fullEvery, burstThreshold, retainDays int) error {

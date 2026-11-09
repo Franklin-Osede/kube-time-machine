@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
 func TestValidateConfig(t *testing.T) {
@@ -57,5 +60,28 @@ func TestSplitTrimmed(t *testing.T) {
 		if got := splitTrimmed(tt.in); !slices.Equal(got, tt.want) {
 			t.Errorf("splitTrimmed(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+type countingFlusher struct{ calls int }
+
+func (f *countingFlusher) Flush(context.Context) (types.SnapshotMeta, error) {
+	f.calls++
+	return types.SnapshotMeta{}, nil
+}
+
+// Invariant 5: shutting down before the caches synced must not persist the
+// empty buffer as a full snapshot.
+func TestFinalFlush_OnlyAfterSync(t *testing.T) {
+	notSynced := make(chan struct{})
+	f := &countingFlusher{}
+	if finalFlush(notSynced, f) || f.calls != 0 {
+		t.Fatalf("flushed with caches not synced (calls=%d)", f.calls)
+	}
+
+	synced := make(chan struct{})
+	close(synced)
+	if !finalFlush(synced, f) || f.calls != 1 {
+		t.Fatalf("did not flush after sync (calls=%d)", f.calls)
 	}
 }

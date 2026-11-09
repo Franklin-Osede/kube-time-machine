@@ -625,6 +625,10 @@ func TestDelete_CrashAfterStagingReconcilesIndex(t *testing.T) {
 	if len(metas) != 1 || metas[0].ID != kept.ID {
 		t.Fatalf("rebuilt index: want only %s, got %v", kept.ID, metas)
 	}
+	// Completing the deletion is the writer's job, tombstone included.
+	if _, err := os.Stat(filepath.Join(deletingDir, string(deleted.ID))); !os.IsNotExist(err) {
+		t.Errorf("writer left the tombstone after reconciling: %v", err)
+	}
 }
 
 // stageBehindStore moves a snapshot directory into .deleting/ without the

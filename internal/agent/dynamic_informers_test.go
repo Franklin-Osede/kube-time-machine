@@ -237,3 +237,25 @@ func TestParseGVRList_RefusesTypedKinds(t *testing.T) {
 		t.Fatalf("ParseGVRList of other kinds: got %v, %v", got, err)
 	}
 }
+
+// Dynamic objects follow the same sanitisation as typed ones: .status is
+// controller-owned and must not reach the snapshot.
+func TestMarshalUnstructured_StripsStatus(t *testing.T) {
+	obj := func(ready int64) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "apps/v1",
+			"kind":       "StatefulSet",
+			"metadata":   map[string]interface{}{"name": "db", "namespace": "default"},
+			"spec":       map[string]interface{}{"replicas": int64(1)},
+			"status":     map[string]interface{}{"readyReplicas": ready},
+		}}
+	}
+	_, s1, err := marshalUnstructured(obj(0))
+	if err != nil {
+		t.Fatalf("marshalUnstructured: %v", err)
+	}
+	_, s2, _ := marshalUnstructured(obj(1))
+	if string(s1) != string(s2) || strings.Contains(string(s1), "status") {
+		t.Errorf("status leaked into state:\n%s\n%s", s1, s2)
+	}
+}
