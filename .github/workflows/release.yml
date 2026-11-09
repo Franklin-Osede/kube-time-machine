@@ -1,18 +1,6 @@
-# Triggered when a tag matching v* is pushed. Produces three artefacts,
-# all under the same version derived from the tag:
-#
-#   1. Multi-arch ktm-agent image (linux/amd64 + linux/arm64) pushed to
-#      GHCR. Multi-arch by default because ARM nodes (Apple Silicon,
-#      Graviton, Ampere) are common; see ADR-0007.
-#   2. ktm AND ktm-agent binaries for linux/macOS/Windows × amd64/arm64,
-#      attached as assets to the GitHub Release. Both are needed for Mode A
-#      (local-first): ktm-agent records, ktm queries.
-#   3. Helm chart pushed to GHCR as an OCI artefact, with chart.version
-#      and app.version pinned to the tag (kept coupled pre-v1.0; see
-#      ADR-0007).
-#
-# Nothing publishes until the verify job passes: a tag on a commit that
-# fails its tests must not produce artefacts.
+# On a v* tag, publishes under the tag's version: the multi-arch agent image
+# and the Helm chart to GHCR, and ktm and ktm-agent binaries to the GitHub
+# Release (ADR-0007). Nothing publishes until the verify job passes.
 
 name: Release
 
@@ -46,8 +34,7 @@ jobs:
         with:
           version: v3.14.0
 
-      # A malformed tag (v0.1, vtest) would otherwise publish an image and
-      # binaries under a version no semver tool can order.
+      # Refuse tags that are not semver (v0.1, vtest).
       - name: Tag is vMAJOR.MINOR.PATCH[-PRERELEASE]
         run: |
           if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
@@ -87,9 +74,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # OCI repository names MUST be lowercase (distribution spec). The
-      # GitHub-supplied ${{ github.repository_owner }} preserves case, so
-      # we lowercase it here before composing any GHCR reference.
+      # OCI repository names must be lowercase; repository_owner keeps case.
       - name: Derive version, lowercase owner, compute image tags
         id: meta
         env:
@@ -102,9 +87,7 @@ jobs:
             echo "owner=${OWNER,,}"
           } >> "$GITHUB_OUTPUT"
 
-          # Always publish the version tag. Only move :latest for stable
-          # releases — a prerelease tag (anything with a hyphen, e.g.
-          # v0.1.1-rc.1) must NOT repoint :latest at an RC build.
+          # A prerelease tag (one with a hyphen) must not move :latest.
           TAGS="${REPO}:${VERSION}"
           if [[ "$VERSION" != *-* ]]; then
             TAGS="${TAGS}"$'\n'"${REPO}:latest"
@@ -148,10 +131,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Same patch as go.mod's toolchain line and the Dockerfile, so every
-          # published artefact comes from one toolchain with the stdlib fixes.
-          # The three pins move together; Dependabot can only see the
-          # Dockerfile.
+          # Keep in step with go.mod's toolchain line and the Dockerfile;
+          # Dependabot only sees the Dockerfile.
           go-version: '1.26.10'
           cache: true
 
@@ -159,10 +140,8 @@ jobs:
         id: meta
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
 
-      # Mode A (local-first, the recommended/demo path) runs BOTH binaries
-      # on the user's machine: ktm-agent records, ktm queries. Publishing
-      # only ktm would leave that path uninstallable from a release, so we
-      # build and attach both for every platform.
+      # Both binaries: running locally needs ktm-agent to record and ktm to
+      # query.
       - name: Build ktm and ktm-agent
         run: |
           ext=""
@@ -239,8 +218,8 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artefacts
-          # Only the binaries. Without a pattern this also fetched the build
-          # record build-push-action uploads, and published it as an asset.
+          # Without a pattern this also fetches build-push-action's build
+          # record and publishes it.
           pattern: binaries-*
 
       - name: Flatten artefacts into a single dir
@@ -258,7 +237,5 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
-          # Mark hyphenated tags (e.g. v0.1.1-rc.1) as prereleases so they
-          # don't become the repo's "Latest release", matching the :latest
-          # image-tag guard above.
+          # Hyphenated tags are prereleases, matching the :latest guard.
           prerelease: ${{ contains(github.ref_name, '-') }}

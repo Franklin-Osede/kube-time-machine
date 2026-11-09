@@ -1,7 +1,6 @@
 {{- if .Values.rbac.create -}}
-# Cluster-scoped, read-only. See ADR-0007: the agent never writes to the
-# cluster — rollback is performed by the CLI under the user's own
-# kubeconfig (ADR-0006). Adding write verbs here would be dead permission.
+# Cluster-scoped and read-only (ADR-0007): rollback runs in the CLI under the
+# user's own kubeconfig, so the agent never writes to the cluster.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -17,7 +16,7 @@ rules:
     resources: ["configmaps"]
     verbs: ["list", "watch"]
   {{- with .Values.rbac.extraRules }}
-  # Explicit opt-in permissions for experimental dynamic informers.
+  # Opt-in rules for agent.watchResources.
   {{- toYaml . | nindent 2 }}
   {{- end }}
 {{- end }}

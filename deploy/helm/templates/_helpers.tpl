@@ -1,5 +1,5 @@
 {{/*
-Chart name (overridable so users can shorten "kube-time-machine" if they want).
+Chart name, overridable with nameOverride.
 */}}
 {{- define "ktm.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}

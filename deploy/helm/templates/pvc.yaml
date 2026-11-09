@@ -11,8 +11,7 @@ metadata:
     {{- include "ktm.labels" . | nindent 4 }}
   {{- if .Values.storage.retain }}
   annotations:
-    # Survive `helm uninstall`: the history is the product. See storage.retain
-    # in values.yaml.
+    # Survive `helm uninstall`; see storage.retain.
     helm.sh/resource-policy: keep
   {{- end }}
 spec:

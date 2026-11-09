@@ -1,6 +1,6 @@
-# Recreate strategy + replicas: 1 is load-bearing. The agent writes to a
-# ReadWriteOnce PVC; a rolling update would briefly run two pods racing
-# for the same volume and corrupt the storage. See ADR-0007.
+# Recreate and replicas: 1 are load-bearing: the store allows one writer, and
+# a rolling update would briefly run two pods against the same ReadWriteOnce
+# volume. See ADR-0007.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,8 +25,7 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
-        # fsGroup makes the mounted PVC writable by the nonroot user. The
-        # distroless `nonroot` user is UID 65532 — keep these aligned.
+        # Makes the PVC writable by distroless `nonroot` (UID 65532).
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
@@ -40,10 +39,9 @@ spec:
             - --full-every={{ .Values.snapshot.fullEvery }}
             - --burst-threshold={{ .Values.snapshot.burstThreshold }}
             - --retain-days={{ .Values.snapshot.retainDays }}
-            {{- /* Built from the port so the server, containerPort, probes and
-                   NetworkPolicy can never disagree. When disabled the flag is
-                   explicitly empty: the binary's default (127.0.0.1:8080)
-                   would still start a server the chart says is off. */}}
+            {{- /* Built from the port so server, probes and NetworkPolicy agree.
+                   Disabled means an explicitly empty flag: the binary's
+                   default would still start a server. */}}
             {{- if .Values.agent.health.enabled }}
             - --health-addr=:{{ .Values.agent.health.port }}
             {{- else }}

@@ -1,12 +1,11 @@
 # Makefile for kube-time-machine.
-# Keep targets minimal — every line must be defensible. Add only when needed.
 
 GO         ?= go
 BIN_DIR    := bin
 AGENT_BIN  := $(BIN_DIR)/ktm-agent
 CLI_BIN    := $(BIN_DIR)/ktm
-# -trimpath keeps local usernames/paths out of binaries and improves reproducibility.
-# -s -w strips symbol/debug tables for smaller binaries; panic traces still include functions and lines.
+# -trimpath keeps local paths out of binaries. -s -w drops symbol and debug
+# tables; panic traces still show functions and lines.
 GO_BUILD   := $(GO) build -trimpath -ldflags="-s -w"
 
 .PHONY: help build agent cli test fmt vet tidy clean
