@@ -1,9 +1,5 @@
-# End-to-end test against a real Kubernetes cluster.
-#
-# Separate from ci.yml because it costs minutes rather than seconds: it builds
-# the agent image, boots a kind cluster, and drives the full product loop
-# (install → record → mutate → reconstruct → blame → rollback). It runs on
-# pull requests, on pushes to main, and on demand — not on every branch push.
+# End-to-end test on kind (install, record, mutate, reconstruct, blame,
+# rollback). Separate from ci.yml because it takes minutes.
 name: E2E
 
 on:
@@ -37,8 +33,7 @@ jobs:
         with:
           version: v3.14.0
 
-      # The runner ships Docker with buildx, so e2e.sh takes its BuildKit path
-      # and builds the real release Dockerfile rather than the fallback.
+      # The runner has buildx, so e2e.sh builds the release Dockerfile.
       - name: Install kind
         uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:

@@ -8,10 +8,8 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
 )
 
-// snap builds a Snapshot from alternating "Kind/Namespace/Name" / "payload"
-// arguments. It exists purely to keep test fixtures readable.
-//
-//	snap("Deployment/default/api", "v1", "ConfigMap/default/cfg", "c1")
+// snap builds a Snapshot from alternating "Kind/Namespace/Name" and payload
+// arguments.
 func snap(pairs ...string) delta.Snapshot {
 	if len(pairs)%2 != 0 {
 		panic("snap: arguments must come in (key, state) pairs")
@@ -31,9 +29,8 @@ func parseKey(s string) delta.Key {
 	return delta.Key{Kind: parts[0], Namespace: parts[1], Name: parts[2]}
 }
 
-// TestComputeProducesExpectedDelta locks down the structural output of
-// Compute. The round-trip test below verifies *behaviour*; this one
-// verifies *shape* — that Added/Modified/Removed land where they should.
+// TestComputeProducesExpectedDelta checks that entries land in Added,
+// Modified and Removed; TestRoundTrip checks behaviour.
 func TestComputeProducesExpectedDelta(t *testing.T) {
 	prev := snap("A/n/1", "v1", "B/n/2", "v2")
 	next := snap(
@@ -64,9 +61,8 @@ func TestComputeProducesExpectedDelta(t *testing.T) {
 	}
 }
 
-// TestRoundTrip is the load-bearing test of the package.
-// For every (prev, next) pair, the invariant Apply(prev, Compute(prev, next)) == next
-// must hold. If this fails the entire snapshot/reconstruction model is broken.
+// TestRoundTrip guards the package invariant:
+// Apply(prev, Compute(prev, next)) == next.
 func TestRoundTrip(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -112,9 +108,8 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
-// TestApplyChain walks several states forward through chained deltas,
-// mimicking what reconstruction will do at query time: start from a full
-// snapshot and replay every delta on top of it.
+// TestApplyChain replays chained deltas on a full snapshot, as reconstruction
+// does.
 func TestApplyChain(t *testing.T) {
 	s0 := snap()
 	s1 := snap("Deployment/default/api", "v1")
@@ -142,9 +137,8 @@ func TestApplyChain(t *testing.T) {
 	}
 }
 
-// TestApplyDoesNotMutatePrev guards a subtle invariant: Apply must return
-// a fresh map. If it ever returned prev with in-place mutations, chained
-// reconstruction would corrupt earlier snapshots that callers still hold.
+// TestApplyDoesNotMutatePrev: Apply returns a fresh map, so chained
+// reconstruction cannot corrupt snapshots callers still hold.
 func TestApplyDoesNotMutatePrev(t *testing.T) {
 	prev := snap("A/n/1", "v1")
 	d := delta.Compute(prev, snap("A/n/1", "v2"))
@@ -157,10 +151,7 @@ func TestApplyDoesNotMutatePrev(t *testing.T) {
 	}
 }
 
-// TestIdentityProducesEmptyDelta verifies that comparing a snapshot to
-// itself produces no operations. This matters because the agent will run
-// Compute every flush interval; on a quiet cluster the deltas must be
-// empty, not full of redundant Modified entries.
+// TestIdentityProducesEmptyDelta: on a quiet cluster deltas must be empty.
 func TestIdentityProducesEmptyDelta(t *testing.T) {
 	s := snap(
 		"Deployment/default/api", "v1",

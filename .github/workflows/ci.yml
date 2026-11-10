@@ -1,7 +1,6 @@
 name: CI
 
-# Push runs only on main: a branch with a PR is already covered by
-# pull_request, and running both doubled every check.
+# Push runs only on main: a branch with a PR is covered by pull_request.
 on:
   push:
     branches: [main]
@@ -67,12 +66,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Pinned, not 'latest': .golangci.yml uses the v2 config schema, and a
-      # major-version jump would fail the job on config parsing rather than on
-      # anything in the code. Dependabot bumps the action but not this
-      # version input; raise it by hand, and keep CLAUDE.md's gate in step.
-      # Action major and linter major are coupled: golangci-lint-action v6
-      # rejects any v2.x linter outright. Bump them together.
+      # Pinned: .golangci.yml uses the v2 schema. Dependabot does not bump this
+      # input; raise it by hand with CLAUDE.md's gate. Action and linter majors
+      # are coupled (action v6 rejects linter v2), so bump them together.
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
@@ -87,10 +83,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      # 'stable' rather than go-version-file: stdlib advisories are fixed by
-      # toolchain patch releases, and go.mod pins only the 1.26.0 floor that
-      # client-go requires. Scanning with the newest patched toolchain keeps
-      # this job reporting module problems we can actually act on.
+      # 'stable', not go-version-file: go.mod pins only the 1.26.0 floor, and
+      # stdlib advisories are fixed by toolchain patch releases.
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

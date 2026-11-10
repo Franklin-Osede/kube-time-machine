@@ -67,8 +67,7 @@ func runDiff(out io.Writer, storageDir string, fromID, toID types.SnapshotID, ns
 	return nil
 }
 
-// filterByNamespace returns a new Snapshot containing only entries whose
-// Namespace matches ns. The original Snapshot is not mutated.
+// filterByNamespace returns a new Snapshot with only the entries in ns.
 func filterByNamespace(s delta.Snapshot, ns string) delta.Snapshot {
 	out := delta.Snapshot{}
 	for k, v := range s {
@@ -79,22 +78,8 @@ func filterByNamespace(s delta.Snapshot, ns string) delta.Snapshot {
 	return out
 }
 
-// printDelta writes a human-readable diff of d to out. prev is used to
-// fetch the "before" payload of Modified entries.
-//
-// Output layout (per section, only if non-empty):
-//
-//	==== Added (N) ====
-//	+ Kind/Namespace/Name
-//	  <pretty JSON, line-prefixed with "+ ">
-//
-//	==== Modified (N) ====
-//	~ Kind/Namespace/Name
-//	  <unified diff with "+" / "-" line prefixes>
-//
-//	==== Removed (N) ====
-//	- Kind/Namespace/Name
-//	  <pretty JSON, line-prefixed with "- ">
+// printDelta writes a human-readable diff of d to out, in Added, Modified
+// and Removed sections. prev supplies the "before" payloads.
 func printDelta(out io.Writer, d delta.Delta, prev delta.Snapshot) {
 	green := color.New(color.FgGreen).SprintFunc()
 	red := color.New(color.FgRed).SprintFunc()
@@ -106,7 +91,6 @@ func printDelta(out io.Writer, d delta.Delta, prev delta.Snapshot) {
 		return
 	}
 
-	// Added
 	if len(d.Added) > 0 {
 		fmt.Fprintln(out, bold(fmt.Sprintf("==== Added (%d) ====", len(d.Added))))
 		for _, k := range sortedKeysFromMap(d.Added) {
@@ -118,7 +102,6 @@ func printDelta(out io.Writer, d delta.Delta, prev delta.Snapshot) {
 		}
 	}
 
-	// Modified — proper unified diff per resource
 	if len(d.Modified) > 0 {
 		fmt.Fprintln(out, bold(fmt.Sprintf("==== Modified (%d) ====", len(d.Modified))))
 		for _, k := range sortedKeysFromMap(d.Modified) {
@@ -148,7 +131,6 @@ func printDelta(out io.Writer, d delta.Delta, prev delta.Snapshot) {
 		}
 	}
 
-	// Removed
 	if len(d.Removed) > 0 {
 		fmt.Fprintln(out, bold(fmt.Sprintf("==== Removed (%d) ====", len(d.Removed))))
 		removed := make([]delta.Key, 0, len(d.Removed))
@@ -166,8 +148,7 @@ func printDelta(out io.Writer, d delta.Delta, prev delta.Snapshot) {
 	}
 }
 
-// sortedKeysFromMap returns the keys of an Added/Modified-style map,
-// sorted deterministically.
+// sortedKeysFromMap returns the keys of m sorted by keyLess.
 func sortedKeysFromMap(m map[delta.Key]delta.State) []delta.Key {
 	out := make([]delta.Key, 0, len(m))
 	for k := range m {
@@ -191,8 +172,8 @@ func keyString(k delta.Key) string {
 	return fmt.Sprintf("%s/%s/%s", k.Kind, k.Namespace, k.Name)
 }
 
-// prettyLines pretty-prints raw JSON bytes and returns the lines. Falls
-// back to splitting the raw input if it isn't valid JSON.
+// prettyLines pretty-prints raw JSON and returns its lines; invalid JSON is
+// split as-is.
 func prettyLines(raw []byte) []string {
 	var b bytes.Buffer
 	if err := json.Indent(&b, raw, "", "  "); err != nil {

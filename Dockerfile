@@ -1,28 +1,23 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage build for the in-cluster agent.
-# Result: ~41 MB distroless image (static client-go binary), runs as UID
-# 65532, no shell, no apt.
+# Multi-stage build for the agent: a static binary on distroless, running as
+# UID 65532 with no shell.
 
 FROM golang:1.26.10-alpine AS builder
 
-# VERSION is injected by the release workflow via --build-arg so that
-# `ktm-agent --version` reports the real tag inside the container image.
-# Defaults to "dev" for local `docker build` runs without the arg.
+# Set by the release workflow so `ktm-agent --version` reports the tag.
 ARG VERSION=dev
 
 WORKDIR /src
 
-# Cache module downloads — only invalidates when go.mod / go.sum move.
+# Module downloads are cached until go.mod or go.sum change.
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Source last so unrelated edits don't bust the mod cache.
 COPY cmd ./cmd
 COPY internal ./internal
 COPY pkg ./pkg
 
-# CGO off so the binary is statically linked and runnable in distroless
-# static. -trimpath gives reproducible paths in stack traces.
+# CGO off: distroless static needs a statically linked binary.
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
@@ -30,9 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
-# distroless-nonroot already declares USER 65532:65532. The Deployment
-# pins the same UID via securityContext.runAsUser so the PVC's fsGroup
-# can be set correctly.
+# The image runs as 65532:65532; the chart's runAsUser and fsGroup must match.
 COPY --from=builder /out/ktm-agent /ktm-agent
 
 ENTRYPOINT ["/ktm-agent"]

@@ -9,10 +9,8 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/internal/kubeclient"
 )
 
-// writeKubeconfig writes a minimal valid kubeconfig at path pointing at
-// serverURL. The serverURL is what later assertions read back via
-// rest.Config.Host to confirm WHICH source BuildConfig picked. Distinct
-// URLs per source make the precedence visible without parsing files.
+// writeKubeconfig writes a minimal kubeconfig at path pointing at serverURL.
+// A distinct URL per source shows which one BuildConfig picked.
 func writeKubeconfig(t *testing.T, path, serverURL string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -38,16 +36,9 @@ users:
 	}
 }
 
-// TestBuildConfig_PrecedenceTable covers the three resolvable sources
-// BuildConfig considers — explicit > $KUBECONFIG > $HOME/.kube/config —
-// plus the "nothing works" error path. In-cluster (the second source
-// in the real order, between explicit and $KUBECONFIG) is NOT covered
-// here: rest.InClusterConfig() requires /var/run/secrets/... to exist,
-// which doesn't on a laptop or a normal GHA runner. In those
-// environments InClusterConfig() returns an error and the production
-// code falls through to the next source — exactly the behaviour the
-// remaining cases rely on. Verifying in-cluster itself would require a
-// real Pod fixture and is deferred.
+// TestBuildConfig_PrecedenceTable covers explicit > $KUBECONFIG >
+// $HOME/.kube/config and the error path. In-cluster is not covered: outside a
+// pod rest.InClusterConfig fails and BuildConfig falls through.
 func TestBuildConfig_PrecedenceTable(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -97,7 +88,6 @@ func TestBuildConfig_PrecedenceTable(t *testing.T) {
 		{
 			name: "error when nothing is available",
 			prepare: func(t *testing.T, tmp string) string {
-				// tmp has no .kube/config; no env var; no explicit.
 				t.Setenv("KUBECONFIG", "")
 				t.Setenv("HOME", tmp)
 				return ""

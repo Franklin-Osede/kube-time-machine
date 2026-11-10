@@ -93,11 +93,10 @@ func TestMarshalDeployment_DeterministicAcrossCalls(t *testing.T) {
 	}
 }
 
-// TestMarshalDeployment_StripsResourceVersionAndManagedFields verifies that
-// ResourceVersion, Generation, and ManagedFields are stripped so that two
-// Deployments differing only in those fields produce identical State bytes.
-// Manager names from ManagedFields are preserved as ktm.io/managers, so
-// both deployments use the same manager set to keep the states equal.
+// TestMarshalDeployment_StripsResourceVersionAndManagedFields: Deployments
+// differing only in ResourceVersion, Generation and ManagedFields produce
+// identical State. Both use the same managers, which survive as
+// ktm.io/managers.
 func TestMarshalDeployment_StripsResourceVersionAndManagedFields(t *testing.T) {
 	managers := []metav1.ManagedFieldsEntry{{Manager: "kubectl"}}
 
@@ -118,8 +117,8 @@ func TestMarshalDeployment_StripsResourceVersionAndManagedFields(t *testing.T) {
 	}
 }
 
-// TestMarshalDeployment_ManagersAnnotation verifies that manager names from
-// ManagedFields are extracted and injected as ktm.io/managers.
+// TestMarshalDeployment_ManagersAnnotation: manager names from ManagedFields
+// become ktm.io/managers.
 func TestMarshalDeployment_ManagersAnnotation(t *testing.T) {
 	d := newDeployment("nginx:1.0")
 	d.ManagedFields = []metav1.ManagedFieldsEntry{
@@ -144,10 +143,8 @@ func TestMarshalConfigMap_StripsResourceVersion(t *testing.T) {
 	}
 }
 
-// TestMarshalDeployment_RealChangeProducesDifferentBytes is the inverse:
-// a meaningful spec change (image tag) MUST produce different State.
-// Without this, MarshalDeployment could pass the stripping test by
-// outputting a constant — defending the contract from both sides.
+// TestMarshalDeployment_RealChangeProducesDifferentBytes: a spec change must
+// change State, so the stripping tests cannot pass on a constant output.
 func TestMarshalDeployment_RealChangeProducesDifferentBytes(t *testing.T) {
 	_, s1, _ := agent.MarshalDeployment(newDeployment("nginx:1.0"))
 	_, s2, _ := agent.MarshalDeployment(newDeployment("nginx:2.0"))
@@ -156,9 +153,8 @@ func TestMarshalDeployment_RealChangeProducesDifferentBytes(t *testing.T) {
 	}
 }
 
-// TestMarshalDoesNotMutateInput guards a critical invariant: the
-// function must DeepCopy before sanitising, or it would corrupt the
-// informer's shared cache.
+// TestMarshalDoesNotMutateInput: marshalling must not mutate the informer's
+// shared cache.
 func TestMarshalDoesNotMutateInput(t *testing.T) {
 	d := newDeployment("nginx:1.0")
 	originalRV := d.ResourceVersion
@@ -178,10 +174,8 @@ func TestMarshalDoesNotMutateInput(t *testing.T) {
 	}
 }
 
-// TestMarshalDeployment_StripsTopLevelStatusKey is the visible side of the
-// ADR-0005 contract: a Deployment with a populated .status must produce
-// State bytes that do NOT contain a top-level "status" key. This is the
-// "what a reader sees" guarantee.
+// TestMarshalDeployment_StripsTopLevelStatusKey: State has no top-level
+// "status" key (ADR-0005).
 func TestMarshalDeployment_StripsTopLevelStatusKey(t *testing.T) {
 	d := newDeployment("nginx:1.0")
 	d.Status = appsv1.DeploymentStatus{
@@ -206,11 +200,8 @@ func TestMarshalDeployment_StripsTopLevelStatusKey(t *testing.T) {
 	}
 }
 
-// TestMarshalDeployment_StatusOnlyDifferenceProducesIdenticalBytes is the
-// motivating side of the ADR-0005 contract: two Deployments that differ
-// only in their .status block must produce identical State bytes, so
-// status churn never reaches the delta engine. This is the "why the
-// change exists" guarantee.
+// TestMarshalDeployment_StatusOnlyDifferenceProducesIdenticalBytes: a
+// status-only difference produces identical State (ADR-0005).
 func TestMarshalDeployment_StatusOnlyDifferenceProducesIdenticalBytes(t *testing.T) {
 	d1 := newDeployment("nginx:1.0")
 	d1.Status = appsv1.DeploymentStatus{
@@ -234,10 +225,8 @@ func TestMarshalDeployment_StatusOnlyDifferenceProducesIdenticalBytes(t *testing
 	}
 }
 
-// TestMarshalDeployment_StripsNoiseAnnotations verifies that well-known
-// controller-owned annotations (kubectl last-applied, Helm, Argo CD, Flux)
-// are removed before serialisation so they don't produce spurious MODIFIED
-// deltas in the blame timeline.
+// TestMarshalDeployment_StripsNoiseAnnotations: controller-owned annotations
+// are removed and user annotations survive.
 func TestMarshalDeployment_StripsNoiseAnnotations(t *testing.T) {
 	cases := []struct {
 		name string
@@ -268,7 +257,6 @@ func TestMarshalDeployment_StripsNoiseAnnotations(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Baseline: same deployment but with all annotations removed.
 			base := newDeployment("nginx:1.0")
 			base.Annotations = nil
 			_, baseState, err := agent.MarshalDeployment(base)
@@ -276,7 +264,6 @@ func TestMarshalDeployment_StripsNoiseAnnotations(t *testing.T) {
 				t.Fatalf("marshal base: %v", err)
 			}
 
-			// Noisy: same deployment with controller annotations present.
 			noisy := newDeployment("nginx:1.0")
 			noisy.Annotations = tc.ann
 			_, noisyState, err := agent.MarshalDeployment(noisy)
@@ -284,8 +271,7 @@ func TestMarshalDeployment_StripsNoiseAnnotations(t *testing.T) {
 				t.Fatalf("marshal noisy: %v", err)
 			}
 
-			// States must be equal IFF all annotations in tc.ann are noise.
-			// If any user annotation is present we just verify it survived.
+			// States are equal iff every annotation in tc.ann is noise.
 			hasUserAnn := false
 			for k := range tc.ann {
 				switch k {
@@ -293,7 +279,6 @@ func TestMarshalDeployment_StripsNoiseAnnotations(t *testing.T) {
 					"deployment.kubernetes.io/revision",
 					"deprecated.daemonset.template.generation":
 				default:
-					// Check for prefix noise
 					isPrefix := false
 					for _, p := range []string{"argocd.argoproj.io/", "fluxcd.io/", "kustomize.toolkit.fluxcd.io/", "meta.helm.sh/"} {
 						if len(k) >= len(p) && k[:len(p)] == p {
@@ -308,12 +293,10 @@ func TestMarshalDeployment_StripsNoiseAnnotations(t *testing.T) {
 			}
 
 			if !hasUserAnn {
-				// All annotations were noise — state must equal the no-annotation baseline.
 				if string(noisyState) != string(baseState) {
 					t.Errorf("noise annotations leaked into state:\nnoisy: %s\nbase:  %s", noisyState, baseState)
 				}
 			} else {
-				// At least one user annotation — state must differ from the baseline.
 				if string(noisyState) == string(baseState) {
 					t.Errorf("user annotation was incorrectly stripped: noisy state equals baseline")
 				}
@@ -322,10 +305,7 @@ func TestMarshalDeployment_StripsNoiseAnnotations(t *testing.T) {
 	}
 }
 
-// TestMarshalDeployment_IsValidJSON sanity-checks that the bytes round-trip
-// through encoding/json without errors — important because anything
-// downstream may want to decode the State (e.g. ktm diff for a human-
-// readable view).
+// TestMarshalDeployment_IsValidJSON: State decodes as JSON.
 func TestMarshalDeployment_IsValidJSON(t *testing.T) {
 	_, state, err := agent.MarshalDeployment(newDeployment("nginx:1.0"))
 	if err != nil {

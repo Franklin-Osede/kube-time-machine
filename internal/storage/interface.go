@@ -1,9 +1,5 @@
 // Package storage persists and retrieves snapshots and deltas produced
-// by the ktm-agent.
-//
-// The Store interface is backend-agnostic. The MVP ships a local
-// filesystem implementation in local.go; cloud backends (S3, GCS, Azure
-// Blob) are Phase 2.
+// by the ktm-agent. Local, a filesystem store, is the only implementation.
 package storage
 
 import (
@@ -15,28 +11,23 @@ import (
 )
 
 // Loaded is the result of a Get call. Exactly one of Full or Delta is
-// meaningful, determined by Meta.Kind. Callers should switch on the kind
-// rather than testing field zero-values, because an empty snapshot or
-// delta is a perfectly valid payload.
+// meaningful; switch on Meta.Kind, because an empty payload is valid.
 type Loaded struct {
 	Meta  types.SnapshotMeta
 	Full  delta.Snapshot
 	Delta delta.Delta
 }
 
-// Store is the persistence contract for snapshots.
-//
-// Implementations must guarantee that a successful Put is durable enough
-// for the next Get/List to observe it. They are not required to provide
-// cross-snapshot transactional semantics — each snapshot is independent.
+// Store is the persistence contract for snapshots. A successful Put must be
+// visible to the next Get or List; each snapshot is independent, with no
+// cross-snapshot transactions.
 type Store interface {
 	// PutFull persists a full reference snapshot taken at ts. The backend
 	// assigns the SnapshotID and returns the resulting metadata.
 	PutFull(ctx context.Context, ts time.Time, snap delta.Snapshot) (types.SnapshotMeta, error)
 
 	// PutDelta persists an incremental delta from prevID, taken at ts.
-	// prevID must reference an existing snapshot; backends are not
-	// required to verify this for performance reasons.
+	// prevID must reference an existing snapshot; backends need not verify it.
 	PutDelta(ctx context.Context, ts time.Time, prevID types.SnapshotID, d delta.Delta) (types.SnapshotMeta, error)
 
 	// Get loads the payload at id. The returned Loaded has Full populated
@@ -47,10 +38,8 @@ type Store interface {
 	// The returned slice is owned by the caller and safe to mutate.
 	List(ctx context.Context) ([]types.SnapshotMeta, error)
 
-	// Delete removes the snapshot with the given id from the store,
-	// including its on-disk payload and its entry in the index. Callers
-	// must ensure that no remaining snapshot depends on id (i.e. no delta
-	// has PrevID == id) — backends are not required to enforce this.
-	// Returns nil if id does not exist (idempotent).
+	// Delete removes the snapshot with the given id, payload and index entry.
+	// Callers must ensure no remaining delta has PrevID == id; backends need
+	// not enforce it. Returns nil if id does not exist.
 	Delete(ctx context.Context, id types.SnapshotID) error
 }

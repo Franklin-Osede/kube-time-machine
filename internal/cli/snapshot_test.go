@@ -10,8 +10,7 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/internal/storage"
 )
 
-// seedStore seeds a Local store under tmpDir with the given snapshots,
-// returning the populated dir path so tests can pass it to run* helpers.
+// seedStore opens a Local store in a temp dir and returns the dir and store.
 func seedStore(t *testing.T) (string, storage.Store) {
 	t.Helper()
 	dir := t.TempDir()
@@ -130,30 +129,25 @@ func TestParseKeyFilter(t *testing.T) {
 	}
 }
 
-// TestParseKeyFilter_KindNormalization pins the kubectl-style alias
-// table: every input listed here must produce the canonical Kind so
-// downstream lookups against keys stored by the agent (which always
-// uses agent.KindDeployment / agent.KindConfigMap) succeed.
+// TestParseKeyFilter_KindNormalization: every alias resolves to the
+// canonical Kind the agent stores.
 func TestParseKeyFilter_KindNormalization(t *testing.T) {
 	cases := []struct {
 		in       string
 		wantKind string
 	}{
-		// Deployment aliases.
 		{"Deployment/default/api", "Deployment"},
 		{"deployment/default/api", "Deployment"},
 		{"deployments/default/api", "Deployment"},
 		{"deploy/default/api", "Deployment"},
 		{"DEPLOYMENT/default/api", "Deployment"},
 		{"Deploy/default/api", "Deployment"},
-		// ConfigMap aliases.
 		{"ConfigMap/default/cfg", "ConfigMap"},
 		{"configmap/default/cfg", "ConfigMap"},
 		{"configmaps/default/cfg", "ConfigMap"},
 		{"cm/default/cfg", "ConfigMap"},
 		{"CM/default/cfg", "ConfigMap"},
-		// Unknown kinds pass through unchanged so we don't break future
-		// kinds we forget to alias.
+		// Unknown kinds pass through unchanged.
 		{"Service/default/svc", "Service"},
 		{"CustomThing/ns/name", "CustomThing"},
 	}

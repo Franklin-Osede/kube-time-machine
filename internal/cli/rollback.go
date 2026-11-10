@@ -97,10 +97,8 @@ func runRollback(
 		return err
 	}
 
-	// Print the destination before anything is applied, unconditionally —
-	// --yes suppresses the prompt, not the disclosure. Rolling the right
-	// resource back in the wrong cluster is the failure this prevents, and a
-	// confirmation prompt that does not name the cluster cannot prevent it.
+	// Always print the destination: --yes skips the prompt, never the
+	// disclosure, so a rollback cannot silently hit the wrong cluster.
 	fmt.Fprintf(out, "cluster:  %s\n", clusterTarget)
 	if clusterTarget.User != "" {
 		fmt.Fprintf(out, "user:     %s\n", clusterTarget.User)
@@ -118,11 +116,9 @@ func runRollback(
 	}
 }
 
-// rollbackDeployment implements the Update path for Deployments and the
-// 404-to-Create fallback. The flow is identical for ConfigMaps below
-// modulo the typed API surface; the duplication is deliberate — sharing
-// via generics or interfaces would obscure which kinds are supported
-// and would land before we've earned the abstraction with a third kind.
+// rollbackDeployment updates a Deployment to payload, or with allowCreate
+// recreates it on 404 (ADR-0006). rollbackConfigMap duplicates it on purpose:
+// an abstraction over two kinds would hide which kinds are supported.
 func rollbackDeployment(
 	ctx context.Context,
 	out io.Writer,
@@ -145,11 +141,8 @@ func rollbackDeployment(
 		return fmt.Errorf("get Deployment %s: %w", keyString(target), err)
 	}
 
-	// Capture the ResourceVersion observed at preview time. We will reuse
-	// THIS value for the subsequent Update. We must NOT re-Get after the
-	// user confirms — see ADR-0006: a second Get would absorb changes
-	// that happened between preview and apply, undermining the user's
-	// informed consent.
+	// The Update uses the ResourceVersion read here. Never Get again after
+	// the prompt: that would absorb changes the user never saw (ADR-0006).
 	previewRV := live.ResourceVersion
 
 	var targetDep appsv1.Deployment
@@ -158,10 +151,9 @@ func rollbackDeployment(
 	}
 	prepareForWrite(&targetDep.ObjectMeta, &live.ObjectMeta)
 
-	// The preview renders the object that will be written, not the raw
-	// payload, so what the user confirms is what the Update sends. Both
-	// sides go through the recorder's marshaller (ADR-0005) so server-owned
-	// churn does not bury the one hunk that matters.
+	// The preview renders the object that will be written, so what the user
+	// confirms is what the Update sends. Both sides go through the recorder's
+	// marshaller (ADR-0005) to hide server-owned churn.
 	liveView := live.DeepCopy()
 	stripServerOwned(&liveView.ObjectMeta)
 	_, beforeBytes, err := agent.MarshalDeployment(liveView)
@@ -176,10 +168,8 @@ func rollbackDeployment(
 		return nil
 	}
 
-	// Re-inject the RV captured at preview time (stripServerOwned cleared
-	// it along with the rest). The Kubernetes API server will reject the
-	// Update with 409 Conflict if the cluster-side value has moved since
-	// previewRV was read.
+	// stripServerOwned cleared it. The API server answers 409 Conflict if the
+	// object changed since the preview.
 	targetDep.ResourceVersion = previewRV
 
 	if _, err := api.Update(ctx, &targetDep, metav1.UpdateOptions{}); err != nil {
@@ -311,12 +301,8 @@ func createConfigMap(
 	return nil
 }
 
-// showPreviewAndConfirm renders a unified diff between the sanitised live
-// state (beforeBytes) and the sanitised object about to be written (payload)
-// using the printDelta machinery, then prompts the user. Both sides are
-// sanitised the same way (see callers), so the diff shows only the
-// declarative fields that actually differ. Returns true if the apply should
-// proceed.
+// showPreviewAndConfirm prints the diff from the sanitised live state to the
+// object about to be written, then prompts. It reports whether to proceed.
 func showPreviewAndConfirm(
 	out io.Writer,
 	in io.Reader,
@@ -342,8 +328,8 @@ func showCreatePreviewAndConfirm(out io.Writer, in io.Reader, target delta.Key, 
 	return autoYes || promptConfirm(in, out)
 }
 
-// promptConfirm prints a [y/N] prompt and reads one line from in.
-// Default (empty line) is no. Anything starting with 'y' or 'Y' is yes.
+// promptConfirm prints a [y/N] prompt and reads one line from in. Only "y"
+// or "yes", in any case, confirms.
 func promptConfirm(in io.Reader, out io.Writer) bool {
 	fmt.Fprint(out, "Apply rollback? [y/N]: ")
 	reader := bufio.NewReader(in)
@@ -359,16 +345,10 @@ func promptConfirm(in io.Reader, out io.Writer) bool {
 // prepareForWrite turns snapshot metadata into metadata safe to send to the
 // API server. live is the current object's metadata, or nil on create.
 //
-//   - Server-owned fields go; see stripServerOwned.
-//   - KTM's own annotations go: they describe the recording, not the
-//     resource.
-//   - Annotations the recorder never stores take their live value, or are
-//     absent if live has none. The snapshot is silent about them, so a full
-//     Update would otherwise delete them, including Helm and Argo CD
-//     ownership and sync settings. Any such key already in the payload is
-//     dropped first: the preview never shows these keys, so writing one
-//     from a payload recorded under an older noise list would be a change
-//     the user did not see.
+// It strips server-owned fields and ktm.io/* annotations. Annotations the
+// recorder does not store take their live value, never the payload's: the
+// snapshot is silent about them, so a full Update would otherwise delete them,
+// and the preview never shows them. See ADR-0006.
 func prepareForWrite(m, live *metav1.ObjectMeta) {
 	stripServerOwned(m)
 	for k := range m.Annotations {
@@ -392,11 +372,8 @@ func prepareForWrite(m, live *metav1.ObjectMeta) {
 }
 
 // stripServerOwned clears the metadata the API server owns. A write ignores
-// or rejects these fields, so leaving them on either side of the preview
-// would show a change the write does not make: UID and CreationTimestamp
-// survive the recorder's sanitisation, and DeletionTimestamp is set on a
-// live object held by a finalizer. On Update a stale UID is rejected as an
-// immutable-field change; on Create all of them must be empty.
+// or rejects these fields, so leaving them in the preview would show a change
+// the write does not make.
 func stripServerOwned(m *metav1.ObjectMeta) {
 	m.DeletionTimestamp = nil
 	m.DeletionGracePeriodSeconds = nil

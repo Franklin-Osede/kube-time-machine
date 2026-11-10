@@ -115,11 +115,8 @@ func runSnapshotShow(out io.Writer, storageDir string, id types.SnapshotID, keyF
 	return nil
 }
 
-// parseKeyFilter parses a "Kind/Namespace/Name" string into a delta.Key.
-// Used by --key on snapshot show, by blame, and by rollback. The Kind
-// segment is normalised via kubectl-style aliases so users can type
-// `deployment`, `deploy`, `Deployment`, or `DEPLOYMENT` interchangeably
-// — matching kubectl's own behaviour.
+// parseKeyFilter parses a "Kind/Namespace/Name" string into a delta.Key,
+// normalising Kind through kubectl-style aliases.
 func parseKeyFilter(s string) (delta.Key, error) {
 	parts := strings.SplitN(s, "/", 3)
 	if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
@@ -128,9 +125,7 @@ func parseKeyFilter(s string) (delta.Key, error) {
 	return delta.Key{Kind: normalizeKind(parts[0]), Namespace: parts[1], Name: parts[2]}, nil
 }
 
-// kindAliases maps kubectl-style aliases (case-insensitive) to KTM's
-// canonical Kind names as they appear in delta.Key. Mirrors kubectl's
-// short names so the mental model is consistent.
+// kindAliases maps lower-cased kubectl-style names to canonical Kinds.
 var kindAliases = map[string]string{
 	"deployment":  "Deployment",
 	"deployments": "Deployment",
@@ -140,10 +135,8 @@ var kindAliases = map[string]string{
 	"cm":          "ConfigMap",
 }
 
-// normalizeKind resolves a user-supplied kind string to its canonical
-// form. Unknown inputs pass through unchanged so users who already type
-// the canonical form (and future kinds we may add before aliasing them)
-// keep working.
+// normalizeKind resolves a user-supplied kind to its canonical form. Unknown
+// inputs pass through unchanged.
 func normalizeKind(k string) string {
 	if canonical, ok := kindAliases[strings.ToLower(k)]; ok {
 		return canonical
@@ -151,8 +144,7 @@ func normalizeKind(k string) string {
 	return k
 }
 
-// sortedKeys returns the keys of m sorted by Kind, then Namespace, then Name.
-// Used to make `show` and `diff` output deterministic.
+// sortedKeys returns the keys of m sorted by Kind, Namespace, then Name.
 func sortedKeys(m delta.Snapshot) []delta.Key {
 	out := make([]delta.Key, 0, len(m))
 	for k := range m {
@@ -170,9 +162,8 @@ func sortedKeys(m delta.Snapshot) []delta.Key {
 	return out
 }
 
-// printPrettyJSON re-indents raw JSON bytes and writes them to out.
-// If the bytes are not valid JSON, prints them as-is rather than failing
-// — better to show something the user can read than to error out.
+// printPrettyJSON re-indents raw JSON and writes it to out. Invalid JSON is
+// printed as-is rather than failing.
 func printPrettyJSON(out io.Writer, raw []byte) error {
 	var indented bytes.Buffer
 	if err := json.Indent(&indented, raw, "", "  "); err != nil {

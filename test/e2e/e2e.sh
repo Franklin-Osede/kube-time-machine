@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# End-to-end test against a real Kubernetes cluster (kind).
-#
-# Covers the full product loop, which no other test in this repo touches:
-#
-#   install -> record -> mutate -> reconstruct -> blame -> rollback
-#
-# Everything else is unit-level or chart rendering; this is the only check
-# that the agent, the storage format, the chart, and the CLI actually agree
-# with each other at runtime.
+# End-to-end test on kind: install -> record -> mutate -> reconstruct ->
+# blame -> rollback. The only check that agent, store format, chart and CLI
+# agree at runtime.
 #
 # Usage:  test/e2e/e2e.sh [--keep]
 #   --keep   leave the kind cluster running for inspection afterwards
@@ -53,13 +47,9 @@ kind get kubeconfig --name "$CLUSTER" > "$KUBECONFIG_FILE"
 export KUBECONFIG="$KUBECONFIG_FILE"
 
 log "Building the agent image and loading it into the cluster"
-# The release Dockerfile declares a syntax directive and uses
-# --mount=type=cache, both of which require BuildKit. release.yml always has
-# it (docker/build-push-action brings buildx), but a developer machine may
-# not, so fall back to a BuildKit-free variant rather than skipping the whole
-# E2E. The fallback changes only the build cache mount — same base images,
-# same nonroot user, same binary — so what gets installed is still
-# representative. The authoritative Dockerfile check is the release build.
+# The release Dockerfile needs BuildKit. Without buildx, fall back to a
+# variant that drops only the cache mount, so the installed image is still
+# representative; the release build stays the authoritative check.
 if docker buildx version >/dev/null 2>&1; then
   DOCKER_BUILDKIT=1 docker build -t "$IMAGE" "$ROOT"
 else
@@ -86,8 +76,8 @@ helm install "$RELEASE" "$ROOT/deploy/helm" \
   --set snapshot.fullEvery=3 \
   --wait --timeout 180s
 
-# Readiness now means "informers synced AND at least one snapshot persisted",
-# so --wait returning is itself the first assertion.
+# Readiness means informers synced and one snapshot persisted, so --wait
+# returning is the first assertion.
 ok "pod reached Ready, which requires a durable first snapshot"
 
 # -------------------------------------------------------------- record ---
@@ -153,15 +143,9 @@ ok "diff reports changes in the demo namespace"
 log "blame Deployment/demo/api"
 "$KTM" --storage-dir "$STORE" blame Deployment/demo/api > "$WORK/blame.txt"
 cat "$WORK/blame.txt"
-# blame renders a table: TIME / OP / MANAGERS / SNAPSHOT. The interesting
-# assertion is not that the image string appears, but that the field manager
-# `kubectl set image` uses -- kubectl-set -- shows up among the managers once
-# the mutation has been recorded.
-#
-# Note this asserts PRESENCE, not authorship: MANAGERS is cumulative, so
-# kubectl-set appearing on the MODIFIED row does not by itself prove it made
-# that change. The check is still meaningful because kubectl-set is absent
-# before the mutation and present after.
+# kubectl-set, the field manager of `kubectl set image`, must appear among
+# the managers. That shows presence, not authorship: MANAGERS is cumulative,
+# but kubectl-set is absent before the mutation.
 grep -q 'CREATED' "$WORK/blame.txt"  || fail "blame is missing the CREATED event"
 grep -q 'MODIFIED' "$WORK/blame.txt" || fail "blame is missing the MODIFIED event"
 awk '/MODIFIED/ && /kubectl-set/ {found=1} END{exit !found}' "$WORK/blame.txt" \
