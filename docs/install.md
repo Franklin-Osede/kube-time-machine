@@ -137,14 +137,84 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 | `snapshot.intervalSeconds` | `300` | Flush cadence in seconds. Smaller keeps shorter-lived states and timestamps closer to the change, at the cost of more snapshots. |
 | `snapshot.fullEvery` | `12` | Every Nth flush is a full reference snapshot. Bounds chain-reconstruction cost (see [ADR-0002](adr/0002-incremental-deltas-with-reference-snapshots.md)). |
 | `snapshot.retainDays` | `30` | Deletes history before the safe full-snapshot anchor. Set `0` to retain everything. |
-| `storage.size` | `10Gi` | PVC size. Storage scales with change rate, not snapshot rate. |
+| `storage.size` | `10Gi` | PVC size. Every flush writes a snapshot, even when nothing changed, and every `fullEvery`-th is an uncompressed copy of every recorded object. With the defaults that is 24 full copies a day, so 30 days of retention hold about 720 full copies plus the deltas. Size the volume from the size of one full snapshot (`du -sh` of a `full` entry under `snapshots/`). |
 | `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
 | `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes liveness/readiness probes. |
-| `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. |
-| `agent.resources.*` | conservative | The agent's working set is dominated by the informer cache; tune up if you watch large clusters. |
+| `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. Refused: Deployments and ConfigMaps (always recorded), Secrets, and any two entries with the same Kind. See [Changing watched resources](#changing-watched-resources). |
+| `agent.resources.*` | memory: request `256Mi`, limit `512Mi` | The agent holds every recorded object in memory, and each full snapshot briefly needs several times that. See [Sizing memory](#sizing-memory). |
 | `networkPolicy.enabled` | `true` | Turn off only on clusters whose CNI does not enforce NetworkPolicy. |
 
 There is no `replicaCount` value. The agent writes to a `ReadWriteOnce` PVC and `replicas` is hardcoded to `1` in the template. Two writers would corrupt the storage (see [ADR-0007](adr/0007-packaging-defaults.md)).
+
+### Sizing memory
+
+The agent keeps the latest state of every recorded object in memory, and
+writing a full snapshot allocates several times that state again. The Go
+garbage collector runs with its default target, roughly twice the heap that
+survived the last collection, and the agent also sets its soft limit to 90% of
+`agent.resources.limits.memory` (not when `GOMEMLIMIT` is set). The soft limit
+only changes anything once that doubled heap would pass it; it makes the
+collector run more often, it does not cap memory. In the larger runs below,
+container memory reached the limit, with the page cache taking what the heap
+did not, and that alone was not a failure. The signals that matter are
+restarts with reason `OOMKilled` and `ktm_flushes_total` no longer
+increasing.
+
+The defaults, a `512Mi` limit and a `256Mi` request, were chosen from the runs
+below. The request is what the scheduler reserves. It is not a promise that it
+covers the agent's memory: in the 20 MB run the container's anonymous memory
+levelled off at 386–397 MiB.
+
+Measured runs:
+
+- All on kind v0.32.0, Kubernetes v1.36.1, one node in a colima VM (aarch64,
+  6 CPUs, 10 GiB) on macOS.
+- Builds: the ~2 MB run and the first 20 MB/`256Mi` run used commit `b6f1242`,
+  before the soft limit. The second 20 MB/`256Mi` run used `525aafb`, which
+  adds it. The passing 20 MB run and both 50 MB runs used `525aafb` with
+  diagnostic logging added (Go runtime memory every 5 s, flush durations,
+  pprof).
+- Every build had the first-snapshot bug fixed later in this release, so a
+  run's first full snapshot could be partial. In the one run checked
+  (~50 MB, `1Gi`) it was, and every later full snapshot was complete.
+- The objects existed before the agent started, in one namespace. Each
+  ConfigMap has one key holding random base64 text, which does not compress.
+  The Deployments have `replicas: 0`, one container and ten 64-byte
+  environment variables.
+- `snapshot.intervalSeconds=30` and `snapshot.fullEvery=2`, so a full snapshot
+  every minute; the defaults write one every hour. The ~2 MB run lasted
+  5 minutes. The three diagnostic runs were sampled every 5 s for about
+  7 minutes and covered 8 full snapshots each; the failed runs are described
+  in their row.
+
+| Workload | ConfigMap data | Limit | Result |
+|---|---|---|---|
+| 500 ConfigMaps × 4 KiB, 100 Deployments | ~2 MB | `256Mi` | Passed. No restarts, container peak 62 MiB. Build before the soft limit was added. |
+| 2,000 ConfigMaps × 10 KiB, 300 Deployments | ~20 MB | `256Mi` | **Failed.** OOMKilled with and without the soft limit: 4 restarts in about 4 minutes without it, and with it 1 restart in 6 minutes and only 4 flushes recorded. |
+| same | ~20 MB | `512Mi` | Passed. No restarts, no OOM or `memory.high` events, no memory pressure. 16 flushes (8 full, 8 delta), full snapshots 340–558 ms. Heap live at the last collection at most 209 MiB; container anonymous memory at most 397 MiB. |
+| 2,000 ConfigMaps × 25 KiB, 300 Deployments | ~50 MB | `512Mi` | Completed with no restarts, OOM events or memory pressure. 15 flushes (8 full, 7 delta), full snapshots 1,164–1,568 ms. But the heap live at the last collection held at 310 MiB and the collector ran about 25 cycles in the window, so a capacity margin was **not** established. |
+| same | ~50 MB | `1Gi` | Completed with no restarts, OOM events or memory pressure. 15 flushes (8 full, 7 delta), full snapshots 963–1,739 ms. Heap live at the last collection at most 417 MiB, about 5 collector cycles. |
+
+"Heap live at the last collection" is the Go runtime's `/gc/heap/live:bytes`.
+It counts everything in use when the collection ran, including the buffers of
+a snapshot being written, so it depends on when collections happen and
+differs between limits for the same workload. It is not a steady-state size.
+
+What this supports:
+
+- About 20 MB of ConfigMap data: the default `512Mi`.
+- The tested ~50 MB scenario: use `1Gi`. It ran with fewer collector cycles,
+  which supports the recommendation, but it does not prove additional
+  capacity beyond that workload.
+- Larger workloads were not tested and need their own measurement.
+- The results come from one machine and windows of minutes, not a long soak
+  test.
+
+ConfigMap data is not the same as the recorded state. The state also includes
+metadata and the Deployments. On disk each object's JSON is stored base64
+encoded inside the snapshot file, so in the ~50 MB run a full snapshot was
+66.6 MiB for 48.8 MiB of ConfigMap data. To size from a running agent, use
+the size of one full snapshot (`du -sh` of a `full` entry under `snapshots/`).
 
 ### The 30-second capture gap during `helm upgrade`
 
@@ -158,6 +228,19 @@ The bundled `ClusterRole` grants `list` and `watch` on `deployments.apps`
 and `configmaps` cluster-wide. The default agent has no other permissions — it
 cannot write or read Secrets. Experimental dynamic watches are opt-in and
 require matching rules in both `agent.watchResources` and `rbac.extraRules`.
+
+### Changing watched resources
+
+Snapshots identify a resource by Kind, namespace and name, without its API
+group. At startup the agent asks the API server for the Kind of each
+`agent.watchResources` entry and refuses to start if two entries, or an entry
+and a built-in watch, share a Kind. It cannot check history recorded under an
+earlier list.
+
+**If you change `agent.watchResources`, use a new PVC (a new `--storage-dir`).
+Do not reuse history recorded with a different list.** Otherwise a Kind
+recorded earlier from one API group, such as cert-manager's `Certificate`, and
+the same Kind from another group, such as Knative's, end up in one history.
 
 If you want to scope the agent down further (e.g. to specific namespaces), today the chart does not parameterise the rule subject lists; you would patch the `ClusterRole` after install. Scoping is a Phase 2 enhancement.
 

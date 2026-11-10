@@ -1,7 +1,6 @@
 # The "Friday afternoon kubectl apply" that breaks the rollout.
 # Image tag 99.99 does not exist; pods will stick in ImagePullBackOff
-# while the previous ReplicaSet keeps serving traffic (until the next
-# manual nudge or until ReplicaSet retention kicks in).
+# while the previous ReplicaSet keeps serving traffic.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -20,7 +20,7 @@ Three forces apply.
 
 3. **Product clarity.** What does "`ktm rollback`" mean if the snapshot includes `.status`? Status is controller-owned: a rollback that tried to restore it would either be ignored by the controller or fight it. The ergonomics force a filter at apply time. If we have to filter status out to use the data, why record it in the first place?
 
-The earlier sanitisation in [ADR-0002](0002-incremental-deltas-with-reference-snapshots.md) (`metadata.resourceVersion`, `metadata.managedFields`, `metadata.generation`) was the first round of removing fields that the user does not own. `.status` is the same decision, scaled up to the whole controller-owned block.
+The earlier sanitisation in `sanitiseMeta` (`internal/agent/marshal.go`: `metadata.resourceVersion`, `metadata.managedFields`, `metadata.generation`) was the first round of removing fields that the user does not own. `.status` is the same decision, scaled up to the whole controller-owned block.
 
 ## Decision
 
@@ -31,7 +31,7 @@ KTM records the **persisted declarative surface** of supported Kubernetes resour
 Every persisted snapshot is the result of:
 
 1. `DeepCopy` of the live informer object (so the informer's shared cache is never mutated).
-2. `sanitiseMeta`: clear `ObjectMeta.ResourceVersion`, `ManagedFields`, `Generation` (ADR-0002).
+2. `sanitiseMeta`: clear `ObjectMeta.ResourceVersion`, `ManagedFields`, `Generation`.
 3. `stripStatus`: marshal to JSON, delete the top-level `status` key, re-marshal.
 
 `stripStatus` is implemented via map round-trip rather than struct field zeroing because Go's `encoding/json` `omitempty` tag does not apply to non-pointer struct values: setting `Status: appsv1.DeploymentStatus{}` would still serialise as `"status":{}` in the output. Round-tripping through `map[string]json.RawMessage` and `delete`-ing the key removes it cleanly. The map re-marshal is deterministic because `encoding/json` sorts map keys alphabetically.
@@ -42,6 +42,8 @@ Every persisted snapshot is the result of:
 - **Captured (ConfigMap):** `data` and `binaryData` changes. ConfigMaps have no `.spec`; their declarative surface lives directly under those fields.
 - **Captured (both):** user/tool-owned label and annotation changes — whatever any actor (GitOps, `kubectl`, an operator) wrote into the declarative surface via the API server.
 - **Not captured:** rollout health, `observedGeneration`, condition transitions, ReplicaSet hashes, Pod runtime status, any controller-owned `.status` field.
+
+> **Amendment (2026-11-09):** this ADR describes less than the recorder does. `sanitiseMeta` also (a) drops annotations that tools rewrite as a side effect of an operation, not because anyone set them: `kubectl.kubernetes.io/last-applied-configuration`, `deployment.kubernetes.io/revision`, `deprecated.daemonset.template.generation`, and every key under `argocd.argoproj.io/`, `fluxcd.io/`, `kustomize.toolkit.fluxcd.io/` and `meta.helm.sh/` (`noiseAnnotationKeys` and `noiseAnnotationPrefixes` in `marshal.go`); and (b) replaces `managedFields` with a synthetic `ktm.io/managers` annotation listing the field-manager names. So "user/tool-owned annotations" above means every annotation except those. Recording the dropped ones would turn every `kubectl apply`, rollout or GitOps sync into a MODIFIED delta. Because the snapshot holds no value for them, rollback keeps their live values (ADR-0006, amendment of 2026-11-08).
 
 ## What this is NOT
 
@@ -81,5 +83,5 @@ A future observed-state mode may retain `.status` for rollout forensics. The sha
 
 ## Related
 
-- [ADR-0002](0002-incremental-deltas-with-reference-snapshots.md) — first round of sanitisation (`metadata` fields).
+- [ADR-0002](0002-incremental-deltas-with-reference-snapshots.md) — the full-plus-delta storage this sanitised state is written into.
 - [ADR-0006](0006-rollback-live-resourceversion.md) — rollback uses the live `ResourceVersion`; this ADR strips `.status` upstream, so the rollback apply path doesn't need to filter `.status` from the payload at apply time.

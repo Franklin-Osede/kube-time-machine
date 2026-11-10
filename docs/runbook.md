@@ -36,7 +36,7 @@ _Resolution:_ restore the chart's ClusterRole and ClusterRoleBinding, for exampl
 
 **Not this cause — invalid `--watch-resources`**
 
-A GVR in `agent.watchResources` that does not exist in the cluster, or that RBAC denies, does not leave the Pod hanging: after 2 minutes the agent exits with `agent: dynamic: informer cache sync timed out after 2m0s` and the Pod restarts. See [Scenario 6](#scenario-6-agent-crash-loop-crashloopbackoff). To remove all extra resources:
+A GVR in `agent.watchResources` that the API server does not serve stops the agent at startup with `check --watch-resources: ...`. One that RBAC denies does not leave the Pod hanging: after 2 minutes the agent exits with `agent: dynamic: informer cache sync timed out after 2m0s` and the Pod restarts. See [Scenario 6](#scenario-6-agent-crash-loop-crashloopbackoff). To remove all extra resources:
 
 ```bash
 CHART_VERSION=0.1.1-rc.3   # the installed version; `helm list -n ktm-system` shows it
@@ -67,7 +67,7 @@ POD=$(kubectl -n ktm-system get pod \
   -l app.kubernetes.io/name=kube-time-machine \
   -o jsonpath='{.items[0].metadata.name}')
 kubectl -n ktm-system debug "$POD" \
-  --image=busybox:1.36.1 \
+  --image=busybox:1.36 \
   --target=agent \
   --profile=general \
   -- sh -c 'df -h /proc/1/root/var/lib/ktm'
@@ -180,10 +180,19 @@ Common causes:
 | `build kube client: ...` | Invalid kubeconfig or in-cluster credentials | Check ServiceAccount binding |
 | `open storage: ...` | PVC not mounted / permissions | Check PVC status, fsGroup |
 | `parse --watch-resources: agent: malformed GVR ...` | Syntax error in watchResources | Fix values.yaml GVR format |
+| `parse --watch-resources: agent: "..." is already recorded by the built-in watches` | `agent.watchResources` lists Deployments or ConfigMaps | Remove the entry; those kinds are always recorded |
 | `agent: dynamic: register handler for <resource>: ...` | Programming error (should not happen in released builds) | Check image tag / file a bug |
-| `agent: dynamic: informer cache sync timed out after 2m0s` | A GVR in `agent.watchResources` does not exist or RBAC denies it | Install the CRD and add `rbac.extraRules`, or remove it with `--set-json 'agent.watchResources=[]'` |
+| `parse --watch-resources: agent: "secrets/v1": Secrets are not recorded ...` | `agent.watchResources` lists Secrets | Remove the entry; Secrets are never recorded |
+| `check --watch-resources: agent: discover ...` or `... does not serve ...` | A GVR's group/version or resource is not served, or discovery failed | Install the CRD or fix the GVR; the agent does not start with an unchecked list |
+| `check --watch-resources: agent: ... both have Kind "..."` | Two entries, or an entry and a built-in watch, share a Kind | Keep only one of them. If the list changed, use a new PVC ([install.md](install.md#changing-watched-resources)) |
+| `agent: dynamic: informer cache sync timed out after 2m0s` | RBAC denies a GVR in `agent.watchResources` | Add a read-only `rbac.extraRules` entry for it, or remove it with `--set-json 'agent.watchResources=[]'` |
 | `open storage: storage: another process holds the writer lock` | A second agent is using the same volume | Run one agent per volume; the chart's `Recreate` strategy prevents this during upgrades |
 | `storage: unsupported store format` | The volume was written by a newer KTM | Upgrade the agent; see [ADR-0008](adr/0008-store-format-version.md) |
+
+If `describe pod` shows `Last State: Terminated, Reason: OOMKilled`, the
+recorded state no longer fits the memory limit; full snapshots need several
+times the state in memory. Raise `agent.resources.limits.memory` using
+[Sizing memory](install.md#sizing-memory).
 
 ---
 
@@ -223,7 +232,7 @@ agent repairs the index on its next start.
 
 ## Scenario 8: ConfigMap contains sensitive data — restrict namespace
 
-The agent records all ConfigMaps in watched namespaces by design (Secrets are never captured). If a namespace contains ConfigMaps with sensitive values (database passwords, API keys stored in plaintext configs), exclude it:
+The agent records all ConfigMaps in watched namespaces by design. Secrets are never recorded: `agent.watchResources` refuses them. If a namespace contains ConfigMaps with sensitive values (database passwords, API keys stored in plaintext configs), exclude it:
 
 ```bash
 helm upgrade ktm deploy/helm -n ktm-system \

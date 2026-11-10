@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
 func TestValidateConfig(t *testing.T) {
@@ -56,6 +60,53 @@ func TestSplitTrimmed(t *testing.T) {
 	for _, tt := range tests {
 		if got := splitTrimmed(tt.in); !slices.Equal(got, tt.want) {
 			t.Errorf("splitTrimmed(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+type countingFlusher struct{ calls int }
+
+func (f *countingFlusher) Flush(context.Context) (types.SnapshotMeta, error) {
+	f.calls++
+	return types.SnapshotMeta{}, nil
+}
+
+// Invariant 5: shutting down before the caches synced must not persist the
+// empty buffer as a full snapshot.
+func TestFinalFlush_OnlyAfterSync(t *testing.T) {
+	notSynced := make(chan struct{})
+	f := &countingFlusher{}
+	if finalFlush(notSynced, f) || f.calls != 0 {
+		t.Fatalf("flushed with caches not synced (calls=%d)", f.calls)
+	}
+
+	synced := make(chan struct{})
+	close(synced)
+	if !finalFlush(synced, f) || f.calls != 1 {
+		t.Fatalf("did not flush after sync (calls=%d)", f.calls)
+	}
+}
+
+func TestSetMemoryLimit(t *testing.T) {
+	prev := debug.SetMemoryLimit(-1)
+	t.Cleanup(func() { debug.SetMemoryLimit(prev) })
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+
+	if got := setMemoryLimit(env(map[string]string{memoryLimitEnv: "268435456"})); got != 241591905 {
+		t.Errorf("256Mi limit: got %d, want 90%% = 241591905", got)
+	}
+	if cur := debug.SetMemoryLimit(-1); cur != 241591905 {
+		t.Errorf("runtime limit = %d, want it applied", cur)
+	}
+	debug.SetMemoryLimit(prev)
+	for _, m := range []map[string]string{
+		{memoryLimitEnv: "268435456", "GOMEMLIMIT": "100MiB"}, // operator's choice wins
+		{memoryLimitEnv: ""},
+		{memoryLimitEnv: "abc"},
+		{memoryLimitEnv: "0"},
+	} {
+		if got := setMemoryLimit(env(m)); got != 0 || debug.SetMemoryLimit(-1) != prev {
+			t.Errorf("%v: got %d and changed the runtime limit; want no change", m, got)
 		}
 	}
 }

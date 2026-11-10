@@ -8,7 +8,7 @@ Five files, ordered. Each step is one `kubectl apply` away from the next.
 | [00-namespace.yaml](00-namespace.yaml) | Creates the `ktm-demo` namespace. |
 | [01-config.yaml](01-config.yaml) | ConfigMap `app-config` with sane defaults (`env=prod`, `log_level=info`). |
 | [02-deployment.yaml](02-deployment.yaml) | Deployment `api` pinned to `nginx:1.27-alpine`. Mounts the ConfigMap as env vars. The app is healthy. |
-| [03-break.yaml](03-break.yaml) | Updates the Deployment to a tag that does not exist (`nginx:99.99`). The rollout fails; the app goes down. The kind of change someone might `kubectl apply` on a Friday afternoon. |
+| [03-break.yaml](03-break.yaml) | Updates the Deployment to a tag that does not exist (`nginx:99.99`). The rollout stalls: the new Pods cannot pull the image and the old Pods keep serving. The kind of change someone might `kubectl apply` on a Friday afternoon. |
 | [04-also-break-config.yaml](04-also-break-config.yaml) | Optional secondary breakage: edits the ConfigMap to `env=oops`. Useful to demo blame + rollback on a non-Deployment resource. |
 
 ## Recommended demo sequence

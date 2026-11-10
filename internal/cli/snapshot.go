@@ -93,7 +93,7 @@ func runSnapshotShow(out io.Writer, storageDir string, id types.SnapshotID, keyF
 	if keyFilter != "" {
 		k, err := parseKeyFilter(keyFilter)
 		if err != nil {
-			return err
+			return fmt.Errorf("--key: %w", err)
 		}
 		state, ok := snap[k]
 		if !ok {
@@ -120,7 +120,7 @@ func runSnapshotShow(out io.Writer, storageDir string, id types.SnapshotID, keyF
 func parseKeyFilter(s string) (delta.Key, error) {
 	parts := strings.SplitN(s, "/", 3)
 	if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
-		return delta.Key{}, fmt.Errorf("--key must be Kind/Namespace/Name (got %q)", s)
+		return delta.Key{}, fmt.Errorf("expected <kind>/<namespace>/<name> (got %q)", s)
 	}
 	return delta.Key{Kind: normalizeKind(parts[0]), Namespace: parts[1], Name: parts[2]}, nil
 }

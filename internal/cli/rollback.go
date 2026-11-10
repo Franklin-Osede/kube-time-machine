@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -55,6 +56,11 @@ func newRollbackCmd(opts *Options) *cobra.Command {
 			target, err := parseKeyFilter(args[0])
 			if err != nil {
 				return err
+			}
+			// Refuse before opening storage or the cluster, so the error
+			// names the real problem rather than a missing resource.
+			if target.Kind != agent.KindDeployment && target.Kind != agent.KindConfigMap {
+				return fmt.Errorf("rollback supports only Deployment and ConfigMap (got %q)", target.Kind)
 			}
 			return runRollback(cmd.OutOrStdout(), os.Stdin,
 				opts.StorageDir, kubeconfig, kubeContext, target,
@@ -112,7 +118,7 @@ func runRollback(
 	case agent.KindConfigMap:
 		return rollbackConfigMap(ctx, out, in, client, target, payload, autoYes, allowCreate)
 	default:
-		return fmt.Errorf("rollback supports only Deployment and ConfigMap in MVP (got %q)", target.Kind)
+		return fmt.Errorf("rollback supports only Deployment and ConfigMap (got %q)", target.Kind)
 	}
 }
 
@@ -164,8 +170,8 @@ func rollbackDeployment(
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if !showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes) {
-		return nil
+	if err := showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes); err != nil {
+		return err
 	}
 
 	// stripServerOwned cleared it. The API server answers 409 Conflict if the
@@ -223,8 +229,8 @@ func rollbackConfigMap(
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if !showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes) {
-		return nil
+	if err := showPreviewAndConfirm(out, in, target, beforeBytes, afterBytes, autoYes); err != nil {
+		return err
 	}
 
 	targetCM.ResourceVersion = previewRV
@@ -250,18 +256,21 @@ func createDeployment(
 	payload delta.State,
 	autoYes bool,
 ) error {
-	fmt.Fprintf(out, "Deployment %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
 	var dep appsv1.Deployment
 	if err := json.Unmarshal(payload, &dep); err != nil {
 		return fmt.Errorf("unmarshal Deployment payload: %w", err)
 	}
+	if err := refuseLifecycleOnCreate(target, &dep.ObjectMeta); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Deployment %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
 	prepareForWrite(&dep.ObjectMeta, nil)
 	_, view, err := agent.MarshalDeployment(&dep)
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if !showCreatePreviewAndConfirm(out, in, target, view, autoYes) {
-		return nil
+	if err := showCreatePreviewAndConfirm(out, in, target, view, autoYes); err != nil {
+		return err
 	}
 	if _, err := api.Create(ctx, &dep, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("create Deployment %s: %w", keyString(target), err)
@@ -281,18 +290,21 @@ func createConfigMap(
 	payload delta.State,
 	autoYes bool,
 ) error {
-	fmt.Fprintf(out, "ConfigMap %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
 	var cm corev1.ConfigMap
 	if err := json.Unmarshal(payload, &cm); err != nil {
 		return fmt.Errorf("unmarshal ConfigMap payload: %w", err)
 	}
+	if err := refuseLifecycleOnCreate(target, &cm.ObjectMeta); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "ConfigMap %s does not exist in the cluster; will be CREATED from snapshot.\n", keyString(target))
 	prepareForWrite(&cm.ObjectMeta, nil)
 	_, view, err := agent.MarshalConfigMap(&cm)
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if !showCreatePreviewAndConfirm(out, in, target, view, autoYes) {
-		return nil
+	if err := showCreatePreviewAndConfirm(out, in, target, view, autoYes); err != nil {
+		return err
 	}
 	if _, err := api.Create(ctx, &cm, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("create ConfigMap %s: %w", keyString(target), err)
@@ -301,8 +313,13 @@ func createConfigMap(
 	return nil
 }
 
+// errAborted means the user did not confirm and nothing was written. It is
+// an error so that a declined or unanswered prompt exits non-zero and a
+// script cannot mistake it for an applied rollback.
+var errAborted = errors.New("rollback aborted: nothing was written")
+
 // showPreviewAndConfirm prints the diff from the sanitised live state to the
-// object about to be written, then prompts. It reports whether to proceed.
+// object about to be written, then prompts. It returns nil to proceed.
 func showPreviewAndConfirm(
 	out io.Writer,
 	in io.Reader,
@@ -310,36 +327,45 @@ func showPreviewAndConfirm(
 	beforeBytes delta.State,
 	payload delta.State,
 	autoYes bool,
-) bool {
+) error {
 	d := delta.Delta{
 		Modified: map[delta.Key]delta.State{target: payload},
 	}
 	prev := delta.Snapshot{target: beforeBytes}
 	fmt.Fprintln(out, "--- preview (apply will Update with the ResourceVersion read above) ---")
 	printDelta(out, d, prev)
-	return autoYes || promptConfirm(in, out)
+	if autoYes {
+		return nil
+	}
+	return promptConfirm(in, out)
 }
 
-func showCreatePreviewAndConfirm(out io.Writer, in io.Reader, target delta.Key, payload delta.State, autoYes bool) bool {
+func showCreatePreviewAndConfirm(out io.Writer, in io.Reader, target delta.Key, payload delta.State, autoYes bool) error {
 	fmt.Fprintln(out, "--- preview of resource to be created ---")
 	for _, line := range prettyLines(payload) {
 		fmt.Fprintln(out, "  + "+line)
 	}
-	return autoYes || promptConfirm(in, out)
+	if autoYes {
+		return nil
+	}
+	return promptConfirm(in, out)
 }
 
 // promptConfirm prints a [y/N] prompt and reads one line from in. Only "y"
-// or "yes", in any case, confirms.
-func promptConfirm(in io.Reader, out io.Writer) bool {
+// or "yes", in any case, confirms; anything else returns errAborted.
+func promptConfirm(in io.Reader, out io.Writer) error {
 	fmt.Fprint(out, "Apply rollback? [y/N]: ")
-	reader := bufio.NewReader(in)
-	line, _ := reader.ReadString('\n')
+	line, err := bufio.NewReader(in).ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	if answer == "y" || answer == "yes" {
-		return true
+		return nil
 	}
-	fmt.Fprintln(out, "rollback aborted")
-	return false
+	if err != nil && answer == "" {
+		// No terminal, or stdin closed: nobody answered.
+		fmt.Fprintln(out)
+		return fmt.Errorf("%w (no answer on stdin; pass --yes to apply without a prompt)", errAborted)
+	}
+	return errAborted
 }
 
 // prepareForWrite turns snapshot metadata into metadata safe to send to the
@@ -348,9 +374,19 @@ func promptConfirm(in io.Reader, out io.Writer) bool {
 // It strips server-owned fields and ktm.io/* annotations. Annotations the
 // recorder does not store take their live value, never the payload's: the
 // snapshot is silent about them, so a full Update would otherwise delete them,
-// and the preview never shows them. See ADR-0006.
+// and the preview never shows them.
+//
+// ownerReferences and finalizers also take their live value. They tie the
+// object to other objects' lifecycles: an owner UID from the snapshot may no
+// longer exist, which makes the garbage collector delete the object, and an
+// old finalizer list drops or re-adds protections that other controllers
+// manage. See ADR-0006.
 func prepareForWrite(m, live *metav1.ObjectMeta) {
 	stripServerOwned(m)
+	if live != nil {
+		m.OwnerReferences = live.OwnerReferences
+		m.Finalizers = live.Finalizers
+	}
 	for k := range m.Annotations {
 		if strings.HasPrefix(k, types.AnnotationPrefix) || agent.IsUnrecordedAnnotation(k) {
 			delete(m.Annotations, k)
@@ -369,6 +405,25 @@ func prepareForWrite(m, live *metav1.ObjectMeta) {
 	if len(m.Annotations) == 0 {
 		m.Annotations = nil
 	}
+}
+
+// refuseLifecycleOnCreate refuses to recreate an object whose snapshot has
+// ownerReferences or finalizers. Kept, they point at owner UIDs that may be
+// gone and protections nobody will release; dropped, the object is detached
+// from its owner. Neither is a faithful rollback, so the user decides.
+func refuseLifecycleOnCreate(target delta.Key, m *metav1.ObjectMeta) error {
+	var held []string
+	for _, o := range m.OwnerReferences {
+		held = append(held, fmt.Sprintf("ownerReference %s/%s (uid %s)", o.Kind, o.Name, o.UID))
+	}
+	for _, f := range m.Finalizers {
+		held = append(held, "finalizer "+f)
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	return fmt.Errorf("refusing to recreate %s: the snapshot has %s. Recreating it would reuse references to objects that may no longer exist, or leave protections no controller will release. Nothing was written. Recreate the owner instead, or create the object by hand from `ktm snapshot show`",
+		keyString(target), strings.Join(held, ", "))
 }
 
 // stripServerOwned clears the metadata the API server owns. A write ignores

@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +24,7 @@ import (
 	"github.com/Franklin-Osede/kube-time-machine/internal/health"
 	"github.com/Franklin-Osede/kube-time-machine/internal/kubeclient"
 	"github.com/Franklin-Osede/kube-time-machine/internal/storage"
+	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
 // version is set at release time with -ldflags="-X main.version=...".
@@ -59,6 +62,7 @@ func run() error {
 	if err := validateConfig(*interval, *fullEvery, *burstThreshold, *retainDays); err != nil {
 		return err
 	}
+	memLimit := setMemoryLimit(os.Getenv)
 
 	client, err := kubeclient.NewClient(*kubeconfig)
 	if err != nil {
@@ -67,6 +71,18 @@ func run() error {
 	dynClient, err := kubeclient.NewDynamicClient(*kubeconfig)
 	if err != nil {
 		return fmt.Errorf("build dynamic kube client: %w", err)
+	}
+
+	// Checked before the store is opened, so a refused list changes nothing
+	// on the volume.
+	gvrs, err := agent.ParseGVRList(*watchResources)
+	if err != nil {
+		return fmt.Errorf("parse --watch-resources: %w", err)
+	}
+	if len(gvrs) > 0 {
+		if err := agent.CheckDynamicKinds(client.Discovery(), gvrs); err != nil {
+			return fmt.Errorf("check --watch-resources: %w", err)
+		}
 	}
 
 	// NewLocal takes the writer lock before it repairs anything.
@@ -81,11 +97,6 @@ func run() error {
 	}()
 
 	excludeNS := splitTrimmed(*excludeNamespaces)
-
-	gvrs, err := agent.ParseGVRList(*watchResources)
-	if err != nil {
-		return fmt.Errorf("parse --watch-resources: %w", err)
-	}
 
 	buf := agent.NewBuffer()
 	snap := agent.NewSnapshotter(buf, store, *interval, *fullEvery).
@@ -111,7 +122,8 @@ func run() error {
 		"retainDays", *retainDays,
 		"healthAddr", *healthAddr,
 		"excludeNamespaces", excludeNS,
-		"dynamicResources", *watchResources)
+		"dynamicResources", *watchResources,
+		"goMemoryLimitBytes", memLimit)
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return inf.Start(gctx) })
@@ -124,27 +136,39 @@ func run() error {
 	g.Go(func() error { return snap.Run(gctx, allReady) })
 
 	runErr := g.Wait()
-
-	// Final flush, skipped unless the caches synced. ctx is already cancelled,
-	// so it gets its own budget.
-	select {
-	case <-allReady:
-		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer flushCancel()
-		if _, ferr := snap.Flush(flushCtx); ferr != nil {
-			slog.Error("ktm-agent: final flush failed", "err", ferr)
-		} else {
-			slog.Info("ktm-agent: final flush succeeded")
-		}
-	default:
-		slog.Info("ktm-agent: skipping final flush; informer caches never synced")
-	}
+	finalFlush(allReady, snap)
 
 	if runErr != nil && !errors.Is(runErr, context.Canceled) {
 		return fmt.Errorf("agent stopped: %w", runErr)
 	}
 	slog.Info("ktm-agent: stopped cleanly")
 	return nil
+}
+
+// flusher is the part of *agent.Snapshotter that finalFlush needs.
+type flusher interface {
+	Flush(ctx context.Context) (types.SnapshotMeta, error)
+}
+
+// finalFlush writes one last snapshot on shutdown, and only once the
+// handlers have delivered the initial lists to the buffer: an empty or
+// partial buffer must never become a full snapshot. ctx is already cancelled by then, so the flush gets its own
+// budget. It reports whether a flush was attempted.
+func finalFlush(ready <-chan struct{}, snap flusher) bool {
+	select {
+	case <-ready:
+	default:
+		slog.Info("ktm-agent: skipping final flush; informer caches never synced")
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := snap.Flush(ctx); err != nil {
+		slog.Error("ktm-agent: final flush failed", "err", err)
+	} else {
+		slog.Info("ktm-agent: final flush succeeded")
+	}
+	return true
 }
 
 func validateConfig(interval time.Duration, fullEvery, burstThreshold, retainDays int) error {
@@ -200,4 +224,27 @@ func splitTrimmed(s string) []string {
 		}
 	}
 	return out
+}
+
+// memoryLimitEnv carries the container's memory limit in bytes. The chart
+// sets it from the downward API, which reports the node's allocatable memory
+// when the container has no limit.
+const memoryLimitEnv = "KTM_MEMORY_LIMIT"
+
+// setMemoryLimit gives the Go GC a soft limit at 90% of the container's
+// memory limit and returns it, or returns 0 and changes nothing when
+// GOMEMLIMIT is set or the limit is unknown. It makes the GC work harder as
+// runtime memory nears the limit; it does not cap container memory, and the
+// runtime exceeds it rather than spend too long in GC.
+func setMemoryLimit(getenv func(string) string) int64 {
+	if getenv("GOMEMLIMIT") != "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(getenv(memoryLimitEnv), 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	limit := n / 10 * 9
+	debug.SetMemoryLimit(limit)
+	return limit
 }

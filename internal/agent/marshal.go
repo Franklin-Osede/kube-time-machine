@@ -98,7 +98,7 @@ var noiseAnnotationPrefixes = []string{
 // sanitiseMeta strips metadata that changes without user intent:
 // ResourceVersion, ManagedFields (its manager names are kept as
 // types.ManagersAnnotation), Generation, and noise annotations. stripStatus
-// removes .status. See ADR-0002 and ADR-0005.
+// removes .status. See ADR-0005.
 func sanitiseMeta(m *metav1.ObjectMeta) {
 	managers := extractManagers(m.ManagedFields)
 	m.ResourceVersion = ""

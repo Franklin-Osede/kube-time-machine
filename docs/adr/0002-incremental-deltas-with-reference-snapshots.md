@@ -26,6 +26,10 @@ state(t) = Apply(referenceSnapshot, delta₁, delta₂, ..., deltaₖ)
 
 where the reference snapshot is the most recent full snapshot at or before `t`, and `k ≤ snapshot.fullEvery`. This bounds reconstruction cost by configuration rather than by elapsed time.
 
+> **Amendment (2026-11-09):** the bound above is off by one. Every Nth flush is a full snapshot (`flushNum % fullEvery == 0` in `internal/agent/snapshot.go`), so a reconstruction applies at most `fullEvery − 1` deltas, and "every N deltas" means every Nth flush.
+
+> **Amendment (2026-11-09):** storage does not track change rate alone. Every flush writes a snapshot, quiet ones included, and every `fullEvery`-th is a full copy of the recorded state, so a cluster where nothing changes still gains `86400 / interval / fullEvery` full snapshots a day (24 with the defaults). Deltas cut the cost of a fixed cadence by about `fullEvery`; skipping empty flushes or making fulls conditional on change would be a separate decision.
+
 ## Alternatives considered
 
 1. **Full snapshots every interval.** Rejected: storage scales with snapshot rate, not change rate.

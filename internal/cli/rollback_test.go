@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -98,19 +99,21 @@ func TestRollbackDeployment_AbortedAtPrompt(t *testing.T) {
 	client := fake.NewSimpleClientset(makeDeployment("api", "nginx:1.27", "100"))
 	payload := deploymentSnapshotPayload(t, "api", "nginx:1.25")
 
-	var out bytes.Buffer
-	if err := rollbackDeployment(
-		context.Background(), &out, strings.NewReader("n\n"),
-		client, key("Deployment", "default", "api"), payload, false, false,
-	); err != nil {
-		t.Fatalf("rollbackDeployment: %v", err)
-	}
-	got, _ := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
-	if got.Spec.Template.Spec.Containers[0].Image != "nginx:1.27" {
-		t.Errorf("cluster should be untouched after abort; got %q", got.Spec.Template.Spec.Containers[0].Image)
-	}
-	if !strings.Contains(out.String(), "rollback aborted") {
-		t.Errorf("expected 'rollback aborted', got:\n%s", out.String())
+	for name, input := range map[string]string{"declined": "n\n", "no terminal": ""} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := rollbackDeployment(
+				context.Background(), &out, strings.NewReader(input),
+				client, key("Deployment", "default", "api"), payload, false, false,
+			)
+			if !errors.Is(err, errAborted) {
+				t.Fatalf("rollbackDeployment: got %v, want errAborted so the exit code is non-zero", err)
+			}
+			got, _ := client.AppsV1().Deployments("default").Get(context.Background(), "api", metav1.GetOptions{})
+			if got.Spec.Template.Spec.Containers[0].Image != "nginx:1.27" {
+				t.Errorf("cluster should be untouched after abort; got %q", got.Spec.Template.Spec.Containers[0].Image)
+			}
+		})
 	}
 }
 
@@ -272,8 +275,8 @@ func TestRollbackDeployment_PreviewIsSanitised(t *testing.T) {
 	if err := rollbackDeployment(
 		context.Background(), &out, strings.NewReader("n\n"),
 		client, key("Deployment", "default", "api"), []byte(payload), false, false,
-	); err != nil {
-		t.Fatalf("rollbackDeployment: %v", err)
+	); !errors.Is(err, errAborted) {
+		t.Fatalf("rollbackDeployment: got %v, want errAborted", err)
 	}
 
 	preview := out.String()
@@ -389,15 +392,20 @@ func TestPromptConfirm(t *testing.T) {
 		{"y\n", true},
 		{"yes\n", true},
 		{"Y\n", true},
+		{"y", true}, // answer without a newline before EOF
 		{"n\n", false},
 		{"\n", false},
 		{"maybe\n", false},
+		{"", false}, // EOF: stdin closed or not a terminal
 	} {
 		t.Run(strings.TrimSpace(tc.input)+"_"+boolStr(tc.want), func(t *testing.T) {
 			var out bytes.Buffer
-			got := promptConfirm(strings.NewReader(tc.input), &out)
-			if got != tc.want {
-				t.Errorf("input %q: want %v, got %v", tc.input, tc.want, got)
+			err := promptConfirm(strings.NewReader(tc.input), &out)
+			if tc.want && err != nil {
+				t.Errorf("input %q: want confirmation, got %v", tc.input, err)
+			}
+			if !tc.want && !errors.Is(err, errAborted) {
+				t.Errorf("input %q: want errAborted, got %v", tc.input, err)
 			}
 		})
 	}
@@ -782,4 +790,142 @@ func TestRollback_SingleGetBeforeUpdate(t *testing.T) {
 			t.Errorf("rollback made %d Gets, want exactly 1", *gets)
 		}
 	})
+}
+
+var (
+	liveOwners = []metav1.OwnerReference{{APIVersion: "example.io/v1", Kind: "App", Name: "owner", UID: "uid-live"}}
+	oldOwners  = []metav1.OwnerReference{{APIVersion: "example.io/v1", Kind: "App", Name: "owner", UID: "uid-gone"}}
+	liveFinals = []string{"example.io/live"}
+	oldFinals  = []string{"example.io/old"}
+)
+
+// The snapshot's ownerReferences and finalizers describe relationships that
+// may no longer hold; an Update must keep the live ones, and the preview must
+// not show the snapshot's.
+func TestRollback_UpdateKeepsLiveOwnersAndFinalizers(t *testing.T) {
+	ctx := context.Background()
+	assertLifecycle := func(t *testing.T, preview string, got metav1.ObjectMeta) {
+		t.Helper()
+		if len(got.OwnerReferences) != 1 || got.OwnerReferences[0].UID != "uid-live" {
+			t.Errorf("ownerReferences = %+v, want the live one", got.OwnerReferences)
+		}
+		if len(got.Finalizers) != 1 || got.Finalizers[0] != "example.io/live" {
+			t.Errorf("finalizers = %v, want %v", got.Finalizers, liveFinals)
+		}
+		for _, stale := range []string{"uid-gone", "example.io/old"} {
+			if strings.Contains(preview, stale) {
+				t.Errorf("preview mentions %q, which is not written:\n%s", stale, preview)
+			}
+		}
+	}
+
+	t.Run("Deployment", func(t *testing.T) {
+		live := makeDeployment("api", "nginx:1.27", "100")
+		live.OwnerReferences, live.Finalizers = liveOwners, liveFinals
+		client := fake.NewSimpleClientset(live)
+		old := makeDeployment("api", "nginx:1.25", "")
+		old.OwnerReferences, old.Finalizers = oldOwners, oldFinals
+		_, payload, err := agent.MarshalDeployment(old)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if err := rollbackDeployment(ctx, &out, strings.NewReader(""),
+			client, key("Deployment", "default", "api"), payload, true, false); err != nil {
+			t.Fatalf("rollbackDeployment: %v", err)
+		}
+		got, err := client.AppsV1().Deployments("default").Get(ctx, "api", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if img := got.Spec.Template.Spec.Containers[0].Image; img != "nginx:1.25" {
+			t.Errorf("image = %q, want nginx:1.25", img)
+		}
+		assertLifecycle(t, out.String(), got.ObjectMeta)
+	})
+
+	t.Run("ConfigMap", func(t *testing.T) {
+		live := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default", ResourceVersion: "55",
+				OwnerReferences: liveOwners, Finalizers: liveFinals},
+			Data: map[string]string{"env": "prod"},
+		}
+		client := fake.NewSimpleClientset(live)
+		_, payload, err := agent.MarshalConfigMap(&corev1.ConfigMap{
+			TypeMeta: metav1.TypeMeta{Kind: "ConfigMap", APIVersion: "v1"},
+			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default",
+				OwnerReferences: oldOwners, Finalizers: oldFinals},
+			Data: map[string]string{"env": "staging"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if err := rollbackConfigMap(ctx, &out, strings.NewReader(""),
+			client, key("ConfigMap", "default", "cfg"), payload, true, false); err != nil {
+			t.Fatalf("rollbackConfigMap: %v", err)
+		}
+		got, err := client.CoreV1().ConfigMaps("default").Get(ctx, "cfg", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Data["env"] != "staging" {
+			t.Errorf("data = %v, want env=staging", got.Data)
+		}
+		assertLifecycle(t, out.String(), got.ObjectMeta)
+	})
+}
+
+// With --allow-create, a snapshot that carries ownerReferences or finalizers
+// is refused before the preview or prompt, and nothing is created.
+func TestRollbackCreate_RefusesOwnersAndFinalizers(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		owners []metav1.OwnerReference
+		finals []string
+		want   string
+	}{
+		{"owners", oldOwners, nil, "ownerReference App/owner (uid uid-gone)"},
+		{"finalizers", nil, oldFinals, "finalizer example.io/old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dep := makeDeployment("api", "nginx:1.25", "")
+			dep.OwnerReferences, dep.Finalizers = tc.owners, tc.finals
+			_, depPayload, err := agent.MarshalDeployment(dep)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, cmPayload, err := agent.MarshalConfigMap(&corev1.ConfigMap{
+				TypeMeta:   metav1.TypeMeta{Kind: "ConfigMap", APIVersion: "v1"},
+				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default", OwnerReferences: tc.owners, Finalizers: tc.finals},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, kind := range []string{"Deployment", "ConfigMap"} {
+				client := fake.NewSimpleClientset()
+				var out bytes.Buffer
+				var err error
+				if kind == "Deployment" {
+					err = rollbackDeployment(ctx, &out, strings.NewReader("y\n"),
+						client, key(kind, "default", "api"), depPayload, false, true)
+				} else {
+					err = rollbackConfigMap(ctx, &out, strings.NewReader("y\n"),
+						client, key(kind, "default", "cfg"), cmPayload, false, true)
+				}
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("%s: err = %v, want it to name %q", kind, err, tc.want)
+				}
+				for _, a := range client.Actions() {
+					if a.GetVerb() != "get" {
+						t.Errorf("%s: unexpected %s after refusal", kind, a.GetVerb())
+					}
+				}
+				if strings.Contains(out.String(), "preview") || strings.Contains(out.String(), "Apply rollback?") {
+					t.Errorf("%s: refusal must come before the preview and prompt:\n%s", kind, out.String())
+				}
+			}
+		})
+	}
 }

@@ -156,6 +156,10 @@ history you copy the volume's contents to your machine first.
 [docs/install.md](docs/install.md) has the copy procedure, the chart values,
 building from source, and what the recorded data exposes.
 
+The default memory limit, `512Mi`, was measured with about 20 MB of ConfigMap
+data. The agent keeps every recorded object in memory, so larger clusters need
+more: see [Sizing memory](docs/install.md#sizing-memory).
+
 ## Commands
 
 | Command | Reads | Touches the cluster |
@@ -174,7 +178,9 @@ Rollback safety checks:
 | Preview | Shows the diff between the live object and the exact object to be written |
 | Concurrent change | Updates with the `resourceVersion` read for the preview; if the resource changed since, the API server rejects it and nothing is written |
 | Deleted resource | Refuses unless `--allow-create` is passed |
+| Declined or unanswered prompt | Writes nothing and exits non-zero; `--yes` is required without a terminal |
 | Unrecorded annotations | Keeps their live values instead of deleting them; never writes KTM's own `ktm.io/` annotations |
+| Owners and finalizers | Update keeps the live `ownerReferences` and `finalizers`; `--allow-create` refuses a snapshot that has either |
 
 ## How it compares
 

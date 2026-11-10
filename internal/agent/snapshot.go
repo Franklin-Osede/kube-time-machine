@@ -185,9 +185,10 @@ func (s *Snapshotter) recordFlushOutcome(err error) {
 // when retainDays is 0.
 func (s *Snapshotter) GC(ctx context.Context) { s.gc(ctx) }
 
-// gc deletes every snapshot older than the anchor: the newest full snapshot
-// at or before now-retainDays. Keeping the anchor keeps every delta in the
-// window reconstructable; with no anchor, nothing is safe to delete.
+// gc deletes snapshots older than the anchor, the newest full snapshot at or
+// before now-retainDays, except any that a kept snapshot still reaches
+// through PrevID. Every kept snapshot stays reconstructable; with no anchor,
+// nothing is safe to delete.
 //
 // gc takes no lock of its own; the store serialises each Delete.
 func (s *Snapshotter) gc(ctx context.Context) {
@@ -213,13 +214,60 @@ func (s *Snapshotter) gc(ctx context.Context) {
 		return
 	}
 
-	deleted := 0
-	for _, m := range metas[:anchorIdx] {
-		if err := s.store.Delete(ctx, m.ID); err != nil {
-			slog.Error("snapshotter: gc: delete snapshot", "id", m.ID, "err", err)
-			continue // best-effort: Delete is crash-safe per snapshot
+	// Timestamp order is not chain order: a clock step back can sort a full
+	// between a delta and its base, or date a delta before its own base. So
+	// nothing a kept snapshot reaches through PrevID is deleted, and a
+	// snapshot is deleted only once no remaining candidate names it as
+	// PrevID. A failed Delete therefore leaves its base in place.
+	byID := make(map[types.SnapshotID]types.SnapshotMeta, len(metas))
+	for _, m := range metas {
+		byID[m.ID] = m
+	}
+	keep := make(map[types.SnapshotID]bool, len(metas))
+	s.mu.Lock()
+	head := s.prevID // the next delta is built on it, whatever its timestamp
+	s.mu.Unlock()
+	for _, root := range append([]types.SnapshotID{head}, idsOf(metas[anchorIdx:])...) {
+		for id := root; id != "" && !keep[id]; id = byID[id].PrevID {
+			keep[id] = true
 		}
-		deleted++
+	}
+
+	var candidates []types.SnapshotMeta
+	pending := make(map[types.SnapshotID]bool, anchorIdx)
+	for _, m := range metas[:anchorIdx] {
+		if !keep[m.ID] {
+			candidates = append(candidates, m)
+			pending[m.ID] = true
+		}
+	}
+	dependents := make(map[types.SnapshotID]int, len(candidates))
+	for _, m := range candidates {
+		if pending[m.PrevID] {
+			dependents[m.PrevID]++
+		}
+	}
+
+	deleted := 0
+	for progress := true; progress; {
+		progress = false
+		for i := len(candidates) - 1; i >= 0; i-- {
+			m := candidates[i]
+			if !pending[m.ID] || dependents[m.ID] > 0 {
+				continue
+			}
+			delete(pending, m.ID)
+			progress = true
+			if err := s.store.Delete(ctx, m.ID); err != nil {
+				// Best-effort; its base keeps a dependent and stays.
+				slog.Error("snapshotter: gc: delete snapshot", "id", m.ID, "err", err)
+				continue
+			}
+			deleted++
+			if pending[m.PrevID] {
+				dependents[m.PrevID]--
+			}
+		}
 	}
 	if deleted > 0 {
 		slog.Info("snapshotter: gc: deleted old snapshots",
@@ -228,6 +276,14 @@ func (s *Snapshotter) gc(ctx context.Context) {
 			"retainDays", s.retainDays,
 		)
 	}
+}
+
+func idsOf(metas []types.SnapshotMeta) []types.SnapshotID {
+	ids := make([]types.SnapshotID, len(metas))
+	for i, m := range metas {
+		ids[i] = m.ID
+	}
+	return ids
 }
 
 // Run flushes periodically until ctx is cancelled, then returns ctx.Err().

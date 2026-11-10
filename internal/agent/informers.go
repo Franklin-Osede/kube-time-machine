@@ -22,6 +22,10 @@ type Informers struct {
 	buf       *Buffer
 	excludeNS map[string]struct{}
 	ready     chan struct{}
+	// The handlers' own sync state, not the informers': an informer reports
+	// synced once its store holds the initial list, before its handlers have
+	// delivered those objects to the buffer.
+	synced []cache.InformerSynced
 }
 
 // NewInformers constructs Informers wired to buf. A resync of 0 disables
@@ -45,12 +49,15 @@ func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration
 	}
 	// AddEventHandler fails only on an already-started informer; these are
 	// fresh, so an error here is a programming bug.
-	if _, err := in.deployInf.AddEventHandler(in.deploymentHandler()); err != nil {
+	depReg, err := in.deployInf.AddEventHandler(in.deploymentHandler())
+	if err != nil {
 		panic(fmt.Errorf("agent: register Deployment handler: %w", err))
 	}
-	if _, err := in.cmInf.AddEventHandler(in.configMapHandler()); err != nil {
+	cmReg, err := in.cmInf.AddEventHandler(in.configMapHandler())
+	if err != nil {
 		panic(fmt.Errorf("agent: register ConfigMap handler: %w", err))
 	}
+	in.synced = []cache.InformerSynced{depReg.HasSynced, cmReg.HasSynced}
 	return in
 }
 
@@ -60,19 +67,19 @@ func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration
 func (i *Informers) Start(ctx context.Context) error {
 	i.factory.Start(ctx.Done())
 	// WaitForCacheSync returns false only when ctx is done.
-	if !cache.WaitForCacheSync(ctx.Done(), i.deployInf.HasSynced, i.cmInf.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), i.synced...) {
 		return ctx.Err()
 	}
-	// Closed only after a complete sync, so nothing waiting on Ready can
-	// persist a partial view of the cluster.
+	// Closed only once the handlers have delivered the initial list, so
+	// nothing waiting on Ready can persist a partial view of the cluster.
 	close(i.ready)
 	slog.Info("agent: informer caches synced")
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-// Ready returns a channel closed once the initial cache sync completes. It
-// never closes if ctx is cancelled first.
+// Ready returns a channel closed once every object in the initial lists is in
+// the buffer. It never closes if ctx is cancelled first.
 func (i *Informers) Ready() <-chan struct{} {
 	return i.ready
 }

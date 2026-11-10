@@ -36,10 +36,13 @@ reconstructs, blames and rolls back from that store. Architecture:
    preview time — no second `Get` after the prompt. `404` refuses unless
    `--allow-create` is set. Every write goes through `prepareForWrite`:
    server-owned fields and `ktm.io/*` are stripped, annotations the recorder
-   does not store take their live value (never the payload's), and the
-   preview renders that same object. `--yes` skips the prompt, never the disclosure.
+   does not store take their live value (never the payload's), so do
+   `ownerReferences` and `finalizers` on Update; Create refuses a snapshot
+   that has either. The preview renders that same object. `--yes` skips the prompt, never the disclosure.
 7. **Retention keeps an anchor.** GC preserves the newest full snapshot before
-   the cutoff so every delta in the window stays reconstructable.
+   the cutoff, and never deletes a snapshot that a kept one, or the agent's
+   next delta, reaches through `PrevID` (timestamps can go backwards), so
+   every kept snapshot stays reconstructable.
 8. **Snapshots are sanitised.** `internal/agent/marshal.go` strips
    `resourceVersion`, `managedFields` and `.status` (ADR-0002, ADR-0005).
 

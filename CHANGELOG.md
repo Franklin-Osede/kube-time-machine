@@ -55,8 +55,68 @@ version to install.
   than as a CrashLoopBackOff. It also rejects non-read-only verbs in
   `rbac.extraRules`, which would otherwise silently widen a cluster-scoped role.
 
+### Changed
+
+- The chart's default memory is now a `256Mi` request and a `512Mi` limit
+  (was `64Mi` and `256Mi`). With about 20 MB of ConfigMap data the agent was
+  OOMKilled under the old limit while writing full snapshots.
+  `docs/install.md` § Sizing memory has the measured runs and their limits.
+- The agent sets the Go garbage collector's soft limit to 90% of its
+  container's memory limit, which the chart passes in as `KTM_MEMORY_LIMIT`.
+  It is a collection target, not a cap. An explicit `GOMEMLIMIT` takes
+  precedence.
+
 ### Fixed
 
+- Retention could delete the base of a delta inside the retention window.
+  GC chose its anchor by timestamp, and a clock step back across an agent
+  restart can sort a new full snapshot between a delta and its base. GC now
+  never deletes a snapshot that a kept one reaches through `PrevID`, and it
+  deletes a snapshot only after everything built on it, so a failed delete
+  no longer leaves a delta without its base. The snapshot the agent's next
+  delta builds on is always kept.
+- Retrying the deletion of a snapshot whose earlier deletion half-failed
+  destroyed its tombstone and left an index entry with no data, which made
+  `ktm blame` fail for every resource. The retry now completes the deletion.
+  Staging a deletion is also fsynced before every index commit that
+  completes it, including retries and the repair on startup; a power loss
+  could otherwise keep the index change but not the rename, and a later index
+  rebuild would bring the snapshot back.
+- `ktm rollback` wrote the snapshot's `ownerReferences` and `finalizers`
+  back to the cluster. An owner UID from the snapshot may no longer exist,
+  and the Kubernetes garbage collector deletes objects whose owners are
+  gone; an old finalizer list drops or re-adds protections other
+  controllers manage. Update now keeps the live values, and
+  `--allow-create` refuses, before the preview, a snapshot that has either.
+- `--watch-resources` refuses Deployments and ConfigMaps. Watching them
+  dynamically as well as through the built-in watches wrote the same
+  resource from two serialisations, producing spurious changes.
+- `--watch-resources` refuses Secrets, and refuses at startup two entries,
+  or an entry and a built-in watch, with the same Kind. Snapshots key a
+  resource by Kind without its API group, so cert-manager and Knative
+  `Certificate`s would have overwritten each other. The Kind comes from API
+  discovery, and a discovery error stops the agent. History recorded under a
+  different list is not checked: change the list only with a new PVC.
+- The agent's first full snapshot after every start could miss objects.
+  It waited for the informers' caches, which are complete before their
+  event handlers have delivered the objects to the buffer, so the snapshot
+  was taken from a partial buffer and the next delta "created" the rest.
+  On kind with 2,000 ConfigMaps the first full snapshot held 1.6 MiB of a
+  66 MiB state. The agent now waits for the handlers. The final flush on
+  shutdown had the same gap and is fixed by the same change.
+- `docs/install.md` claimed storage scales with change rate, not snapshot
+  rate. It does not: full snapshots are written on schedule whether or not
+  anything changed. The sizing note now says how to estimate it.
+- The chart ignored `agent.excludeNamespaces: []` and kept excluding
+  `kube-system`, `kube-public` and `kube-node-lease`. An empty list now
+  excludes nothing.
+- `ktm rollback` exits non-zero when nothing is written: when the prompt is
+  declined, or when there is no terminal and no `--yes`. It exited 0 before.
+  **Breaking for scripts that relied on that.**
+- Argument errors from `ktm blame` and `ktm rollback` no longer name a
+  `--key` flag those commands do not have, rollback refuses an unsupported
+  kind before reading storage or contacting the cluster, and the help for
+  `blame --namespace` describes what it does: fill in an empty namespace.
 - A second agent pointed at a store already in use could rebuild its index
   and clear staged deletions before being refused, because the writer lock
   was taken after the store was opened and repaired. `NewLocal` now takes
