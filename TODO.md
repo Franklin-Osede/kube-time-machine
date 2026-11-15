@@ -13,18 +13,19 @@ Items move to issues or the CHANGELOG as they are picked up.
 - [x] `v0.1.1-rc.3` tagged on `118457c` and verified with `release-gate`
       (2026-11-09). rc.2's release still carries a stray `.dockerbuild`
       asset; cleaning it up can wait.
-- [x] Scan the published image: done for rc.3, see
-      [docs/security/image-scan-v0.1.1-rc.3.md](docs/security/image-scan-v0.1.1-rc.3.md).
-- [x] Owner sign-off on the assessment in that record (2026-11-09,
+- [x] Scan the published image: rescanned for rc.4, see
+      [docs/security/image-scan-v0.1.1-rc.4.md](docs/security/image-scan-v0.1.1-rc.4.md).
+- [x] Existing owner acceptance for the same four image findings (2026-11-09,
       [PR #24](https://github.com/Franklin-Osede/kube-time-machine/pull/24#issuecomment-6738416187)).
-- [ ] Tag `v0.1.1-rc.4` from the comment trim (PR #25) and the fixes after
+- [x] Tag `v0.1.1-rc.4` from the comment trim (PR #25) and the fixes after
       rc.3 (Delete tombstone retry, GC chain under a clock step back,
       `--watch-resources` refusing the typed kinds, `excludeNamespaces: []`,
       rollback exit code, rollback keeping live owners and finalizers,
       `--watch-resources` Kind and Secrets checks, the first snapshot
       waiting for the handlers, the memory defaults), run the full gate and E2E on that exact commit,
-      and verify it with `release-gate`. After rc.4 the scope is frozen:
-      only security, data-loss or installation defects reopen it.
+      and verify it with `release-gate`. Tagged on `8617653` and verified
+      on 2026-11-15; evidence is in the rc.4 scan record above. After rc.4 the
+      scope is frozen: only security, data-loss or installation defects reopen it.
 - [ ] Rescan the stable image after it is published and before the public
       announcement; add its record under `docs/security/`.
 - [x] Launch drafts moved outside the repository; keep them unpublished until
