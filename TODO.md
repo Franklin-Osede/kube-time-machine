@@ -27,8 +27,8 @@ Items move to issues or the CHANGELOG as they are picked up.
       only security, data-loss or installation defects reopen it.
 - [ ] Rescan the stable image after it is published and before the public
       announcement; add its record under `docs/security/`.
-- [ ] `docs/launch.md` stays marked PENDING until the stable release and the
-      demo link exist; move it out of the repository once the posts are out.
+- [x] Launch drafts moved outside the repository; keep them unpublished until
+      the stable release and demo link are verified.
 
 ## Correctness
 
