@@ -95,12 +95,19 @@ Items move to issues or the CHANGELOG as they are picked up.
       build fails, the image and OCI chart exist under the version with no
       GitHub release. Needs a design, not a one-line `needs:`.
 - [ ] The CI `vuln` job uses `go-version: stable` and an unpinned
-      `govulncheck@latest`, not the shipped toolchain (go1.26.10), so a
+      `govulncheck@latest`, not the shipped toolchain (go1.26.11), so a
       stdlib advisory fixed in a newer patch can pass CI while the binaries
       carry it.
 - [ ] The `ci.yml` jobs have no `timeout-minutes` and no `concurrency` group.
 
 ## CLI and chart polish
+
+- [ ] A rollback with no effective changes renders an empty `Modified (1)`
+      preview and still sends an Update. Detect the no-op and skip the write.
+- [ ] Let `KTM_STORAGE_DIR` supply the CLI storage directory when
+      `--storage-dir` is omitted; keep the explicit flag highest priority.
+- [ ] Extend kind aliases to dynamically watched resource kinds; currently
+      only Deployment and ConfigMap have lowercase aliases.
 
 - [ ] A missing `--storage-dir` prints a stack of wrapped errors; one helper
       could say "no snapshot store at X".
@@ -108,8 +115,7 @@ Items move to issues or the CHANGELOG as they are picked up.
       (`cobra.NoArgs`). No command has an `Example:` in its help, and
       `ktm-agent -help` has no description.
 - [ ] Makefile: no `lint`, `vuln` or `cover` targets; `make test` runs
-      without `-race`; `make help` does not list `e2e`; `make build` does
-      not stamp a version.
+      without `-race`; `make help` does not list `e2e`.
 - [ ] Chart: no `nodeSelector`, `tolerations`, `affinity`, `podAnnotations`
       or `priorityClassName`, and the schema rejects them.
 - [ ] Dockerfile builds arm64 under QEMU (no `--platform=$BUILDPLATFORM`),
