@@ -107,6 +107,8 @@ STORE="$WORK/store"
 mkdir -p "$STORE"
 kubectl -n "$NS" exec "$POD" -c extract -- \
   tar -C /proc/1/root/var/lib/ktm -cf - . | tar -xf - -C "$STORE"
+# Rebuild from snapshot metadata: the live copy can race an index update.
+rm -f "$STORE/index.json"
 ok "extracted $(find "$STORE/snapshots" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ') snapshot dirs"
 
 # ----------------------------------------------------------- inspect ---

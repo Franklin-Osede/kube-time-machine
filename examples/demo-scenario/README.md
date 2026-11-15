@@ -20,9 +20,12 @@ Two terminals open against the same cluster. Build the binaries once with `make 
 ### Terminal 1 — start the recorder
 
 ```bash
+STORE=$(mktemp -d)
+printf 'STORE=%s\n' "$STORE"   # copy this value into Terminal 2
 ./bin/ktm-agent \
   --kubeconfig ~/.kube/config \
-  --storage-dir /tmp/ktm \
+  --storage-dir "$STORE" \
+  --health-addr= \
   --interval 10s \
   --full-every 3
 ```
@@ -32,47 +35,50 @@ Wait for the line `agent: informer caches synced` before continuing.
 ### Terminal 2 — drive the demo
 
 ```bash
+# Set STORE to the directory printed in Terminal 1.
+STORE=/paste/the/path/from/terminal-1
+
 # 1. Apply the healthy baseline.
 kubectl apply -f examples/demo-scenario/00-namespace.yaml
 kubectl apply -f examples/demo-scenario/01-config.yaml
 kubectl apply -f examples/demo-scenario/02-deployment.yaml
 
 # Wait long enough for at least one KTM snapshot to capture the healthy state.
-# With --interval 10s --full-every 3, fifteen seconds covers it.
+# Allow a recording tick after the baseline changes.
 sleep 15
-GOOD_ID="$(./bin/ktm --storage-dir /tmp/ktm snapshot list | awk 'NR > 1 { id=$1 } END { print id }')"
+GOOD_ID="$(./bin/ktm --storage-dir "$STORE" snapshot list | awk 'NR > 1 { id=$1 } END { print id }')"
 
 # 2. Break it. Pods stick in ImagePullBackOff; the previous ReplicaSet
-#    keeps serving until its retention kicks in.
+#    keeps serving while the rollout is stalled.
 kubectl apply -f examples/demo-scenario/03-break.yaml
 
 # Give the agent another tick to record the broken state.
 sleep 12
-BROKEN_ID="$(./bin/ktm --storage-dir /tmp/ktm snapshot list | awk 'NR > 1 { id=$1 } END { print id }')"
+BROKEN_ID="$(./bin/ktm --storage-dir "$STORE" snapshot list | awk 'NR > 1 { id=$1 } END { print id }')"
 
-# 3. Investigate. Find when the deployment last looked sane.
-./bin/ktm --storage-dir /tmp/ktm snapshot list | tail
-./bin/ktm --storage-dir /tmp/ktm blame deployment/ktm-demo/api
+# 3. Investigate. See when the Deployment spec changed and what changed it.
+./bin/ktm --storage-dir "$STORE" snapshot list | tail
+./bin/ktm --storage-dir "$STORE" blame deployment/ktm-demo/api
 
 # 4. Diff the broken state against the last good one.
-./bin/ktm --storage-dir /tmp/ktm diff \
-  --from "$GOOD_ID" --to "$BROKEN_ID"
+./bin/ktm --storage-dir "$STORE" diff \
+  --from "$GOOD_ID" --to "$BROKEN_ID" --namespace ktm-demo
 
 # 5. Roll the Deployment back. ktm fetches the live object, shows a
 #    preview, prompts for [y/N], then Updates with the captured RV.
-./bin/ktm --storage-dir /tmp/ktm rollback \
+./bin/ktm --storage-dir "$STORE" rollback \
   deployment/ktm-demo/api --to "$GOOD_ID"
 
 # 6. Pods recover.
 kubectl -n ktm-demo rollout status deployment/api
 ```
 
-The `--storage-dir /tmp/ktm` flag MUST match the one passed to `ktm-agent` in Terminal 1. The agent writes to that directory; the CLI reads from it. If you forget it on the CLI, you'll be querying `~/.ktm/data` (the per-user default) and see an empty history.
+The `--storage-dir "$STORE"` flag MUST match the one passed to `ktm-agent` in Terminal 1. The agent writes to that directory; the CLI reads from it. If you forget it on the CLI, you'll be querying `~/.ktm/data` (the per-user default) and see an empty history.
 
 ## Cleanup
 
 ```bash
 kubectl delete namespace ktm-demo
 # Stop the agent in Terminal 1 with Ctrl-C; it performs a final flush.
-rm -rf /tmp/ktm
+rm -rf "$STORE"
 ```

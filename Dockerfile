@@ -2,7 +2,7 @@
 # Multi-stage build for the agent: a static binary on distroless, running as
 # UID 65532 with no shell.
 
-FROM golang:1.26.10-alpine AS builder
+FROM golang:1.26.11-alpine AS builder
 
 # Set by the release workflow so `ktm-agent --version` reports the tag.
 ARG VERSION=dev

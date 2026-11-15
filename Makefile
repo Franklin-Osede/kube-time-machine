@@ -1,12 +1,13 @@
 # Makefile for kube-time-machine.
 
 GO         ?= go
+VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 BIN_DIR    := bin
 AGENT_BIN  := $(BIN_DIR)/ktm-agent
 CLI_BIN    := $(BIN_DIR)/ktm
 # -trimpath keeps local paths out of binaries. -s -w drops symbol and debug
 # tables; panic traces still show functions and lines.
-GO_BUILD   := $(GO) build -trimpath -ldflags="-s -w"
+GO_BUILD   := $(GO) build -trimpath -ldflags="-s -w -X main.version=$(VERSION)"
 
 .PHONY: help build agent cli test fmt vet tidy clean
 
