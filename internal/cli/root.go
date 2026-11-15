@@ -19,7 +19,7 @@ func NewRootCmd(version string) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "ktm",
-		Short:   "Git blame & time-travel for your Kubernetes cluster",
+		Short:   "Declarative state history and single-resource rollback for Kubernetes Deployments and ConfigMaps",
 		Long:    "ktm reads the snapshot history recorded by ktm-agent: list snapshots, reconstruct the state at any point, diff two points in time, blame a resource's changes, and roll a resource back.",
 		Version: version,
 		// Usage text helps with a mistyped command, not a runtime error.
