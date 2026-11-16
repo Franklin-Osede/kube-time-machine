@@ -185,10 +185,11 @@ version to install.
 
 ### Security
 
-- The published 0.1.1-rc.3 agent image was scanned with Trivy, by hand,
-  after publication; the release workflow does not scan. The record, with
-  digests, scanner and DB version, findings and their assessment, is in
-  `docs/security/image-scan-v0.1.1-rc.3.md`.
+- The published 0.1.1-rc.3 and 0.1.1-rc.4 agent images were scanned with
+  Trivy, by hand, after publication; the release workflow does not scan. The
+  records, with digests, scanner and DB version, findings and their
+  assessment, are in `docs/security/image-scan-v0.1.1-rc.3.md` and
+  `docs/security/image-scan-v0.1.1-rc.4.md`.
 - Build with Go 1.26.10 for GO-2026-6809 (`crypto/x509` trusted compromised
   intermediate certificates). `govulncheck` traces it from the health server;
   that server is plain HTTP, but the toolchain moves rather than arguing
