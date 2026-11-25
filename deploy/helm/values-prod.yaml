@@ -10,7 +10,7 @@ image:
   # Pinned rather than following the chart's appVersion, so a chart upgrade
   # never changes the running agent without an explicit edit here. 0.1.1
   # does not exist until the stable release; until then use the rc you
-  # install (for example 0.1.1-rc.3).
+  # install (for example 0.1.1-rc.4).
   tag: "0.1.1"
 
 snapshot:
@@ -20,8 +20,9 @@ snapshot:
 
 storage:
   # Size from the measured size of one full snapshot times the full snapshots
-  # retained (24 a day at the defaults), plus deltas. Keep enough free space
-  # that retention can still write a full snapshot before GC runs.
+  # retained (24 a day at the defaults), plus deltas. GC runs before each
+  # write but may find nothing old enough to delete, so keep enough free
+  # space for one more full snapshot.
   size: 50Gi
   # REQUIRED: a CSI StorageClass with encryption at rest (the history holds
   # ConfigMap contents in plaintext), volume expansion, and preferably

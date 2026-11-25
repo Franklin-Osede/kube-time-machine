@@ -281,8 +281,8 @@ func TestSnapshotter_RunWaitsForReady(t *testing.T) {
 	t.Fatal("Run did not flush after ready was closed")
 }
 
-// TestSnapshotter_RunStopsOnContextCancel: Run returns ctx.Err() promptly
-// on cancellation.
+// TestSnapshotter_RunStopsOnContextCancel: a running flush loop returns
+// ctx.Err() promptly on cancellation.
 func TestSnapshotter_RunStopsOnContextCancel(t *testing.T) {
 	store := newFSStore(t)
 	s := agent.NewSnapshotter(agent.NewBuffer(), store, 50*time.Millisecond, 12)
@@ -291,7 +291,9 @@ func TestSnapshotter_RunStopsOnContextCancel(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx, nil) }()
 
-	time.Sleep(120 * time.Millisecond)
+	// Cancel only once Run is past the initial flush, so the loop's own
+	// cancellation branch is what returns.
+	waitForFlushHealth(t, s, func(h agent.FlushHealth) bool { return !h.LastSuccess.IsZero() })
 	cancel()
 
 	select {
@@ -398,7 +400,8 @@ func TestSnapshotter_GCRunsBeforeFailedFullFlush(t *testing.T) {
 	runDone := make(chan struct{})
 	go func() { _ = s.Run(ctx, ready); close(runDone) }()
 
-	time.Sleep(150 * time.Millisecond)
+	// GC runs before each flush, so one recorded failure means GC has run.
+	waitForFlushHealth(t, s, func(h agent.FlushHealth) bool { return h.ConsecutiveFailures >= 1 })
 	cancel()
 	<-runDone
 

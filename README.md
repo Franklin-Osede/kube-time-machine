@@ -28,6 +28,9 @@ and blame only.
 Planned, not built: querying the in-cluster agent without copying its volume,
 cloud storage, a web UI, multi-cluster. See [docs/roadmap.md](docs/roadmap.md).
 
+To try it on a disposable kind cluster in a few minutes, go to
+[Quick start](#quick-start).
+
 ## What it records, and what it does not
 
 The agent watches the API server and keeps the latest declarative state of each
@@ -52,6 +55,9 @@ That makes the history sampled, not a log of every write:
 - `blame` shows which field managers had touched the resource at each
   snapshot. That is evidence of who was involved, not proof of who made a
   given change.
+- `blame` orders snapshots by timestamp. If the node clock steps back across
+  an agent restart, it can miss a change that `ktm snapshot show` still
+  reconstructs (tracked in [TODO.md](TODO.md)).
 
 ## Prerequisites
 
@@ -69,7 +75,8 @@ The quick-start workflow was verified with zsh on a fresh kind cluster using
 the published rc.4 binaries. Set `VERSION` to the release you want; until the
 stable release, the newest verified build is `v0.1.1-rc.4`.
 
-Install the two binaries and check them against the published checksums:
+Install the two binaries and check them against the published checksums. Both
+are moved into place only after both checksums verify:
 
 ```bash
 VERSION=v0.1.1-rc.4
@@ -79,9 +86,11 @@ case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
 BASE=https://github.com/Franklin-Osede/kube-time-machine/releases/download/$VERSION
 
 mkdir -p "$HOME/.local/ktm" && cd "$HOME/.local/ktm"
-curl -fsSL -O "$BASE/ktm-$OS-$ARCH" -O "$BASE/ktm-agent-$OS-$ARCH" -O "$BASE/checksums.txt"
-shasum -a 256 -c --ignore-missing checksums.txt
-mv "ktm-$OS-$ARCH" ktm && mv "ktm-agent-$OS-$ARCH" ktm-agent && chmod +x ktm ktm-agent
+listed_once() { [ "$(grep -cE "  (\./)?$1\$" checksums.txt)" -eq 1 ]; }
+curl -fsSL --fail-early -O "$BASE/ktm-$OS-$ARCH" -O "$BASE/ktm-agent-$OS-$ARCH" -O "$BASE/checksums.txt" &&
+  listed_once "ktm-$OS-$ARCH" && listed_once "ktm-agent-$OS-$ARCH" &&
+  grep -E "  (\./)?ktm(-agent)?-$OS-$ARCH\$" checksums.txt | shasum -a 256 -c &&
+  mv "ktm-$OS-$ARCH" ktm && mv "ktm-agent-$OS-$ARCH" ktm-agent && chmod +x ktm ktm-agent
 export PATH="$HOME/.local/ktm:$PATH"
 ktm --version
 ```
@@ -174,11 +183,11 @@ Rollback safety checks:
 
 | Check | Behaviour |
 |---|---|
-| Target disclosure | Prints the cluster, user, resource and snapshot before anything else, also with `--yes` |
+| Target disclosure | Prints the cluster, user, resource and snapshot before it reads the live object or writes anything, also with `--yes` |
 | Preview | Shows the diff between the live object and the exact object to be written |
 | Concurrent change | Updates with the `resourceVersion` read for the preview; if the resource changed since, the API server rejects it and nothing is written |
 | Deleted resource | Refuses unless `--allow-create` is passed |
-| Declined or unanswered prompt | Writes nothing and exits non-zero; `--yes` is required without a terminal |
+| Declined or unanswered prompt | Writes nothing and exits non-zero. Only `y` or `yes` on stdin confirms; empty or closed stdin aborts, so scripts pass `--yes` |
 | Unrecorded annotations | Keeps their live values instead of deleting them; never writes KTM's own `ktm.io/` annotations |
 | Owners and finalizers | Update keeps the live `ownerReferences` and `finalizers`; `--allow-create` refuses a snapshot that has either |
 

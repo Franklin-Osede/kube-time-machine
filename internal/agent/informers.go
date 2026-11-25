@@ -47,8 +47,8 @@ func NewInformers(client kubernetes.Interface, buf *Buffer, resync time.Duration
 		excludeNS: excludeNS,
 		ready:     make(chan struct{}),
 	}
-	// AddEventHandler fails only on an already-started informer; these are
-	// fresh, so an error here is a programming bug.
+	// AddEventHandler fails only on a stopped informer; these are new and not
+	// yet started, so an error here is a programming bug.
 	depReg, err := in.deployInf.AddEventHandler(in.deploymentHandler())
 	if err != nil {
 		panic(fmt.Errorf("agent: register Deployment handler: %w", err))

@@ -64,12 +64,12 @@ func newRollbackCmd(opts *Options) *cobra.Command {
 			}
 			return runRollback(cmd.OutOrStdout(), os.Stdin,
 				opts.StorageDir, kubeconfig, kubeContext, target,
-				types.SnapshotID(snapshotID), autoYes, allowCreate)
+				types.SnapshotID(snapshotID), autoYes, allowCreate, kubeclient.NewClientForContext)
 		},
 	}
 	cmd.Flags().StringVar(&snapshotID, "to", "", "snapshot ID to roll back to")
 	cmd.Flags().StringVar(&kubeconfig, "kubeconfig", "", "path to kubeconfig (empty = try in-cluster, $KUBECONFIG, ~/.kube/config)")
-	cmd.Flags().StringVar(&kubeContext, "context", "", "kubeconfig context to use (default: the current context)")
+	cmd.Flags().StringVar(&kubeContext, "context", "", "kubeconfig context to use (default: the current context); setting it skips in-cluster config")
 	cmd.Flags().BoolVar(&autoYes, "yes", false, "skip interactive confirmation (for scripts and CI); the target cluster is still printed")
 	cmd.Flags().BoolVar(&allowCreate, "allow-create", false, "recreate the resource if it no longer exists in the cluster")
 	return cmd
@@ -82,6 +82,7 @@ func runRollback(
 	target delta.Key,
 	snapshotID types.SnapshotID,
 	autoYes, allowCreate bool,
+	newClient func(string, string) (kubernetes.Interface, kubeclient.Target, error),
 ) error {
 	store, err := storage.OpenForRead(storageDir)
 	if err != nil {
@@ -98,7 +99,7 @@ func runRollback(
 		return fmt.Errorf("resource %s is not present in snapshot %s", keyString(target), snapshotID)
 	}
 
-	client, clusterTarget, err := kubeclient.NewClientForContext(kubeconfig, kubeContext)
+	client, clusterTarget, err := newClient(kubeconfig, kubeContext)
 	if err != nil {
 		return err
 	}
@@ -269,7 +270,7 @@ func createDeployment(
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if err := showCreatePreviewAndConfirm(out, in, target, view, autoYes); err != nil {
+	if err := showCreatePreviewAndConfirm(out, in, view, autoYes); err != nil {
 		return err
 	}
 	if _, err := api.Create(ctx, &dep, metav1.CreateOptions{}); err != nil {
@@ -303,7 +304,7 @@ func createConfigMap(
 	if err != nil {
 		return fmt.Errorf("render preview for %s: %w", keyString(target), err)
 	}
-	if err := showCreatePreviewAndConfirm(out, in, target, view, autoYes); err != nil {
+	if err := showCreatePreviewAndConfirm(out, in, view, autoYes); err != nil {
 		return err
 	}
 	if _, err := api.Create(ctx, &cm, metav1.CreateOptions{}); err != nil {
@@ -340,7 +341,7 @@ func showPreviewAndConfirm(
 	return promptConfirm(in, out)
 }
 
-func showCreatePreviewAndConfirm(out io.Writer, in io.Reader, target delta.Key, payload delta.State, autoYes bool) error {
+func showCreatePreviewAndConfirm(out io.Writer, in io.Reader, payload delta.State, autoYes bool) error {
 	fmt.Fprintln(out, "--- preview of resource to be created ---")
 	for _, line := range prettyLines(payload) {
 		fmt.Fprintln(out, "  + "+line)

@@ -24,6 +24,8 @@ import (
 //	<root>/
 //	  format.json  -- layout version; see FormatVersion
 //	  index.json
+//	  .writer.lock -- exclusive writer lock
+//	  .deleting/   -- staged snapshot deletions
 //	  snapshots/
 //	    <id>/
 //	      meta.json
@@ -33,7 +35,8 @@ import (
 // index.json is a cache of the per-snapshot meta.json files; rebuildIndex
 // regenerates it from snapshots/. See ADR-0004.
 type Local struct {
-	root string
+	root      string
+	writeJSON func(string, any) error
 
 	lockMu   sync.Mutex
 	lockFile *os.File
@@ -153,7 +156,7 @@ func NewLocal(root string) (_ *Local, err error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, fmt.Errorf("storage: create root: %w", err)
 	}
-	l := &Local{root: root}
+	l := &Local{root: root, writeJSON: atomicWriteJSON}
 	if err := l.AcquireWriterLock(); err != nil {
 		return nil, err
 	}
@@ -380,7 +383,7 @@ func (l *Local) rebuildIndex() error {
 }
 
 func (l *Local) writeIndexLocked() error {
-	return atomicWriteJSON(filepath.Join(l.root, indexFileName), l.index)
+	return l.writeJSON(filepath.Join(l.root, indexFileName), l.index)
 }
 
 // PutFull persists a full reference snapshot.
@@ -574,10 +577,10 @@ func (l *Local) writeSnapshot(meta types.SnapshotMeta, payloadName string, paylo
 	if err := syncDir(filepath.Join(l.root, snapshotsDirName)); err != nil {
 		return fmt.Errorf("storage: sync snapshots dir %s: %w", meta.ID, err)
 	}
-	if err := atomicWriteJSON(filepath.Join(dir, payloadName), payload); err != nil {
+	if err := l.writeJSON(filepath.Join(dir, payloadName), payload); err != nil {
 		return fmt.Errorf("storage: write payload %s: %w", meta.ID, err)
 	}
-	if err := atomicWriteJSON(filepath.Join(dir, metaFileName), meta); err != nil {
+	if err := l.writeJSON(filepath.Join(dir, metaFileName), meta); err != nil {
 		return fmt.Errorf("storage: write meta %s: %w", meta.ID, err)
 	}
 	committed = true

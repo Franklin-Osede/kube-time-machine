@@ -176,14 +176,22 @@
               "apiGroups": {
                 "type": "array",
                 "items": {
-                  "type": "string"
-                }
+                  "type": "string",
+                  "not": {
+                    "enum": ["*"]
+                  }
+                },
+                "description": "Name each API group. A wildcard would grant reads beyond the watched resources, Secrets included."
               },
               "resources": {
                 "type": "array",
                 "items": {
-                  "type": "string"
-                }
+                  "type": "string",
+                  "not": {
+                    "enum": ["*", "secrets"]
+                  }
+                },
+                "description": "Name each resource. Wildcards and secrets are refused: the agent never records Secrets, so it must not be able to read them."
               },
               "verbs": {
                 "type": "array",

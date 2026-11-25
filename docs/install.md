@@ -24,13 +24,15 @@ case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
 BASE=https://github.com/Franklin-Osede/kube-time-machine/releases/download/$VERSION
 
 mkdir -p "$HOME/.local/ktm" && cd "$HOME/.local/ktm"
-curl -fsSL -O "$BASE/ktm-$OS-$ARCH" -O "$BASE/ktm-agent-$OS-$ARCH" -O "$BASE/checksums.txt"
-shasum -a 256 -c --ignore-missing checksums.txt
-mv "ktm-$OS-$ARCH" ktm && mv "ktm-agent-$OS-$ARCH" ktm-agent && chmod +x ktm ktm-agent
+listed_once() { [ "$(grep -cE "  (\./)?$1\$" checksums.txt)" -eq 1 ]; }
+curl -fsSL --fail-early -O "$BASE/ktm-$OS-$ARCH" -O "$BASE/ktm-agent-$OS-$ARCH" -O "$BASE/checksums.txt" &&
+  listed_once "ktm-$OS-$ARCH" && listed_once "ktm-agent-$OS-$ARCH" &&
+  grep -E "  (\./)?ktm(-agent)?-$OS-$ARCH\$" checksums.txt | shasum -a 256 -c &&
+  mv "ktm-$OS-$ARCH" ktm && mv "ktm-agent-$OS-$ARCH" ktm-agent && chmod +x ktm ktm-agent
 export PATH="$HOME/.local/ktm:$PATH"
 ```
 
-Builds exist for Linux and macOS on amd64 and arm64, and for Windows on amd64 (`ktm-windows-amd64.exe`, `ktm-agent-windows-amd64.exe`). On Linux without `shasum`, use `sha256sum -c --ignore-missing checksums.txt`.
+Both binaries are moved into place only after both checksums verify: a failed download, a checksum entry that is missing or repeated, or a mismatch stops the install. Builds exist for Linux and macOS on amd64 and arm64, and for Windows on amd64 (`ktm-windows-amd64.exe`, `ktm-agent-windows-amd64.exe`). On Linux without `shasum`, replace `shasum -a 256 -c` with `sha256sum -c`.
 
 To build from source instead, run `make build` from the repository root; it writes `bin/ktm` and `bin/ktm-agent`.
 
@@ -139,7 +141,7 @@ The full schema is in [deploy/helm/values.yaml](../deploy/helm/values.yaml). The
 | `snapshot.retainDays` | `30` | Deletes history before the safe full-snapshot anchor. Set `0` to retain everything. |
 | `storage.size` | `10Gi` | PVC size. Every flush writes a snapshot, even when nothing changed, and every `fullEvery`-th is an uncompressed copy of every recorded object. With the defaults that is 24 full copies a day, so 30 days of retention hold about 720 full copies plus the deltas. Size the volume from the size of one full snapshot (`du -sh` of a `full` entry under `snapshots/`). |
 | `storage.storageClassName` | `""` | Empty means cluster default. Use a storage class that encrypts at rest — see [Security](#security-the-storage-is-confidential). |
-| `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes liveness/readiness probes. |
+| `agent.health.*` | enabled on `:8080` | HTTP `/healthz` and `/readyz` endpoints used by Kubernetes probes, plus `/metrics`. |
 | `agent.watchResources` | `[]` | Experimental extra resources. Requires matching read-only `rbac.extraRules`. Refused: Deployments and ConfigMaps (always recorded), Secrets, and any two entries with the same Kind. See [Changing watched resources](#changing-watched-resources). |
 | `agent.resources.*` | memory: request `256Mi`, limit `512Mi` | The agent holds every recorded object in memory, and each full snapshot briefly needs several times that. See [Sizing memory](#sizing-memory). |
 | `networkPolicy.enabled` | `true` | Turn off only on clusters whose CNI does not enforce NetworkPolicy. |
@@ -216,9 +218,9 @@ encoded inside the snapshot file, so in the ~50 MB run a full snapshot was
 66.6 MiB for 48.8 MiB of ConfigMap data. To size from a running agent, use
 the size of one full snapshot (`du -sh` of a `full` entry under `snapshots/`).
 
-### The 30-second capture gap during `helm upgrade`
+### The capture gap during `helm upgrade`
 
-The Deployment uses `strategy.type: Recreate`, not the default rolling update. This is deliberate and load-bearing: a rolling update would briefly run two pods sharing the same RWO PVC, both racing to write the same files. `Recreate` guarantees the old pod terminates before the new one starts, at the cost of a ~30-second gap during upgrades where no events are captured.
+The Deployment uses `strategy.type: Recreate`, not the default rolling update. This is deliberate and load-bearing: a rolling update would briefly run two pods sharing the same RWO PVC, both racing to write the same files. `Recreate` guarantees the old pod terminates before the new one starts. Recording resumes after the replacement pod starts and syncs its informer handlers.
 
 Changes made during that gap are not recorded as they happen. When the new Pod starts it writes a full snapshot of the state at that moment, so the net result of the gap is captured, but intermediate states are lost, and the snapshot's timestamp is the restart time, not the time of the change. A value that was set and reverted during the gap does not appear at all. Schedule upgrades for quiet windows if that matters.
 
@@ -242,7 +244,7 @@ Do not reuse history recorded with a different list.** Otherwise a Kind
 recorded earlier from one API group, such as cert-manager's `Certificate`, and
 the same Kind from another group, such as Knative's, end up in one history.
 
-If you want to scope the agent down further (e.g. to specific namespaces), today the chart does not parameterise the rule subject lists; you would patch the `ClusterRole` after install. Scoping is a Phase 2 enhancement.
+There is no namespace-scoped mode. The agent lists and watches cluster-wide, so do not narrow the `ClusterRole` to some namespaces: the list fails with `forbidden` and the agent never becomes Ready. `agent.excludeNamespaces` drops events from those namespaces but they are still listed and cached. A namespace-scoped mode is Phase 2 work.
 
 ### Network exposure of the health endpoints
 
@@ -267,7 +269,7 @@ a later release, gated on testing against the CNIs we support.
 The PVC (Mode B) and the `--storage-dir` (Mode A) hold the full declarative state of every Deployment and ConfigMap in the cluster, accumulated over time. Treat that data as sensitive:
 
 - **ConfigMaps often carry sensitive configuration** even though they are not Secrets — connection strings, internal hostnames, feature flags, tokens that should have been Secrets but weren't. All of it is recorded verbatim in the snapshots.
-- **Secrets are *not* captured.** The bundled `ClusterRole` grants no access to `secrets`, so the agent cannot read them and they never reach storage. This is by design (see [ADR-0007](adr/0007-packaging-defaults.md)).
+- **Secrets are *not* captured.** The bundled `ClusterRole` grants no access to `secrets` and `--watch-resources` refuses them, so they never reach storage. The chart schema refuses `rbac.extraRules` with a wildcard group or resource, or with `secrets`, so extra rules cannot grant Secret reads either. This is by design (see [ADR-0007](adr/0007-packaging-defaults.md)).
 - **Use a StorageClass that encrypts at rest** for the PVC (`storage.storageClassName`). On managed clusters this usually means an encrypted EBS/PD/Disk class.
 - **Restrict access to the data.** Anyone who can read the PVC — or the `kubectl debug` + `kubectl exec ... tar` extraction path documented above — can read the recorded state. Limit who can exec into the `ktm-system` namespace, and treat any copy extracted to a laptop as confidential: delete it once the incident is closed.
 - **Retention defaults to 30 days.** GC preserves the latest full snapshot at

@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- The chart schema refuses `rbac.extraRules` entries with a wildcard API group
+  or resource, or with `secrets`. Such a rule let the agent's service account
+  read Secrets, which the agent never records.
+
+### Fixed
+
+- The install commands in the README and `docs/install.md` stop when a
+  download fails, a binary's checksum entry is missing or repeated, or a
+  checksum does not match. Before, the binaries were moved into place and made
+  executable even after `shasum` reported a mismatch.
+- Docs: the runbook no longer describes a CLI hang on a corrupt delta chain
+  (`reconstruct` reports the cycle) or a `--force` flag, and no longer says a
+  restart repairs the index after a snapshot directory is removed by hand. The
+  install guide no longer suggests narrowing the `ClusterRole` to some
+  namespaces, which stops the agent from listing.
 
 ## [0.1.1] - Unreleased
 
