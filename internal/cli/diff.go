@@ -27,7 +27,7 @@ func newDiffCmd(opts *Options) *cobra.Command {
 		Long: "Reconstructs both snapshots, optionally filters by namespace, and prints\n" +
 			"a colored git-style diff: green for additions, red for removals, yellow\n" +
 			"headers for resources with internal modifications.",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if from == "" || to == "" {
 				return fmt.Errorf("--from and --to are required")
 			}

@@ -31,7 +31,7 @@ func newSnapshotListCmd(opts *Options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List all snapshots in storage, oldest first",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runSnapshotList(cmd.OutOrStdout(), opts.StorageDir)
 		},
 	}

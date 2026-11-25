@@ -24,7 +24,9 @@ const AnnotationPrefix = "ktm.io/"
 type SnapshotKind string
 
 const (
-	KindFull  SnapshotKind = "full"
+	// KindFull identifies a complete reference snapshot.
+	KindFull SnapshotKind = "full"
+	// KindDelta identifies changes from a predecessor snapshot.
 	KindDelta SnapshotKind = "delta"
 )
 

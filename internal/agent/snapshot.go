@@ -190,7 +190,7 @@ func (s *Snapshotter) GC(ctx context.Context) { s.gc(ctx) }
 // through PrevID. Every kept snapshot stays reconstructable; with no anchor,
 // nothing is safe to delete.
 //
-// gc takes no lock of its own; the store serialises each Delete.
+// gc holds s.mu only to read prevID. The store serialises each Delete.
 func (s *Snapshotter) gc(ctx context.Context) {
 	if s.retainDays <= 0 {
 		return

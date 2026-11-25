@@ -119,11 +119,6 @@ func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("not ready\n"))
 }
 
-// Addr returns the configured bind address (empty when disabled).
-func (s *Server) Addr() string {
-	return s.addr
-}
-
 // ListenAddr returns the actual bound address after Run, or nil if the
 // server is disabled or has not started listening yet.
 func (s *Server) ListenAddr() net.Addr {
