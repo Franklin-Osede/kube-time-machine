@@ -15,11 +15,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
 
 	"github.com/Franklin-Osede/kube-time-machine/internal/agent"
 	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
+	"github.com/Franklin-Osede/kube-time-machine/internal/kubeclient"
 )
 
 // makeDeployment builds a typed Deployment at resourceVersion rv.
@@ -50,6 +52,42 @@ func deploymentSnapshotPayload(t *testing.T, name, image string) []byte {
 		t.Fatalf("marshal: %v", err)
 	}
 	return b
+}
+
+func TestRunRollback_DisclosesClusterBeforeAutoYesUpdate(t *testing.T) {
+	ctx := context.Background()
+	dir, store := seedBlameStore(t)
+	target := key("Deployment", "default", "api")
+	meta, err := store.PutFull(ctx, at(2026, 5, 20, 10, 0), delta.Snapshot{
+		target: deploymentSnapshotPayload(t, "api", "nginx:1.25"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	client := fake.NewSimpleClientset(makeDeployment("api", "nginx:1.26", "123"))
+	cluster := kubeclient.Target{Context: "demo", Server: "https://demo.example", Source: "--kubeconfig"}
+	client.PrependReactor("update", "deployments", func(ktesting.Action) (bool, runtime.Object, error) {
+		if !strings.Contains(out.String(), "cluster:  "+cluster.String()) {
+			t.Errorf("cluster disclosure missing before Update:\n%s", out.String())
+		}
+		return false, nil, nil
+	})
+	newClient := func(string, string) (kubernetes.Interface, kubeclient.Target, error) {
+		return client, cluster, nil
+	}
+
+	if err := runRollback(&out, strings.NewReader(""), dir, "", "", target, meta.ID, true, false, newClient); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.AppsV1().Deployments(target.Namespace).Get(ctx, target.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image := got.Spec.Template.Spec.Containers[0].Image; image != "nginx:1.25" {
+		t.Errorf("rollback image = %q, want nginx:1.25", image)
+	}
 }
 
 func TestRollbackDeployment_HappyPath_UsesPreviewRV(t *testing.T) {
@@ -292,7 +330,10 @@ func TestRollbackDeployment_PreviewIsSanitised(t *testing.T) {
 
 func TestRollbackDeployment_404PathCreates(t *testing.T) {
 	client := fake.NewSimpleClientset() // empty cluster
-	payload := deploymentSnapshotPayload(t, "api", "nginx:1.25")
+	payload, err := json.Marshal(makeDeployment("api", "nginx:1.25", "100"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var out bytes.Buffer
 	if err := rollbackDeployment(
@@ -311,8 +352,7 @@ func TestRollbackDeployment_404PathCreates(t *testing.T) {
 	if got.Spec.Template.Spec.Containers[0].Image != "nginx:1.25" {
 		t.Errorf("created image: want nginx:1.25, got %q", got.Spec.Template.Spec.Containers[0].Image)
 	}
-	// stripServerOwned should have wiped these on the inbound payload.
-	if got.ResourceVersion == "100" {
+	if got.ResourceVersion != "" {
 		t.Errorf("ResourceVersion should not be persisted from payload on Create")
 	}
 }
@@ -341,15 +381,6 @@ func TestRollbackConfigMap_HappyPath(t *testing.T) {
 	got, _ := client.CoreV1().ConfigMaps("default").Get(context.Background(), "cfg", metav1.GetOptions{})
 	if got.Data["env"] != "dev" {
 		t.Errorf("ConfigMap data after rollback: want env=dev, got %q", got.Data["env"])
-	}
-}
-
-func TestRunRollback_UnknownKindErrors(t *testing.T) {
-	// runRollback builds its client from a kubeconfig, so this asserts only
-	// the message format, not the dispatch.
-	err := fmt.Errorf("rollback supports only Deployment and ConfigMap in MVP (got %q)", "Service")
-	if !strings.Contains(err.Error(), "Deployment and ConfigMap") {
-		t.Errorf("unexpected error format: %v", err)
 	}
 }
 

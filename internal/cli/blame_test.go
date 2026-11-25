@@ -5,9 +5,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Franklin-Osede/kube-time-machine/internal/delta"
 	"github.com/Franklin-Osede/kube-time-machine/internal/storage"
+	"github.com/Franklin-Osede/kube-time-machine/pkg/types"
 )
 
 // seedBlameStore returns an empty Local store and its directory. Index order
@@ -20,6 +22,24 @@ func seedBlameStore(t *testing.T) (string, storage.Store) {
 		t.Fatalf("NewLocal: %v", err)
 	}
 	return dir, s
+}
+
+func mustPutFull(t *testing.T, store storage.Store, ts time.Time, snap delta.Snapshot) types.SnapshotMeta {
+	t.Helper()
+	m, err := store.PutFull(context.Background(), ts, snap)
+	if err != nil {
+		t.Fatalf("PutFull: %v", err)
+	}
+	return m
+}
+
+func mustPutDelta(t *testing.T, store storage.Store, ts time.Time, prev types.SnapshotID, d delta.Delta) types.SnapshotMeta {
+	t.Helper()
+	m, err := store.PutDelta(context.Background(), ts, prev, d)
+	if err != nil {
+		t.Fatalf("PutDelta: %v", err)
+	}
+	return m
 }
 
 func TestComputeBlame_EmptyStore(t *testing.T) {
@@ -40,22 +60,22 @@ func TestComputeBlame_CreatedModifiedRemoved(t *testing.T) {
 
 	// Snapshot 0: empty. Target not present.
 	s0 := delta.Snapshot{}
-	m0, _ := store.PutFull(ctx, at(2026, 5, 20, 10, 0), s0)
+	m0 := mustPutFull(t, store, at(2026, 5, 20, 10, 0), s0)
 
 	// Snapshot 1: target appears.
 	s1 := delta.Snapshot{target: delta.State("v1")}
-	m1, _ := store.PutDelta(ctx, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
+	m1 := mustPutDelta(t, store, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
 
 	// Snapshot 2: target changes payload.
 	s2 := delta.Snapshot{target: delta.State("v2")}
-	m2, _ := store.PutDelta(ctx, at(2026, 5, 20, 10, 2), m1.ID, delta.Compute(s1, s2))
+	m2 := mustPutDelta(t, store, at(2026, 5, 20, 10, 2), m1.ID, delta.Compute(s1, s2))
 
 	// Snapshot 3: target unchanged (should NOT emit an entry).
-	m3, _ := store.PutDelta(ctx, at(2026, 5, 20, 10, 3), m2.ID, delta.Compute(s2, s2))
+	m3 := mustPutDelta(t, store, at(2026, 5, 20, 10, 3), m2.ID, delta.Compute(s2, s2))
 
 	// Snapshot 4: target removed.
 	s4 := delta.Snapshot{}
-	m4, _ := store.PutDelta(ctx, at(2026, 5, 20, 10, 4), m3.ID, delta.Compute(s2, s4))
+	m4 := mustPutDelta(t, store, at(2026, 5, 20, 10, 4), m3.ID, delta.Compute(s2, s4))
 
 	entries, err := computeBlame(ctx, store, target)
 	if err != nil {
@@ -92,13 +112,13 @@ func TestComputeBlame_DetectsDeleteAtFullTick(t *testing.T) {
 	target := key("ConfigMap", "default", "cfg")
 
 	s0 := delta.Snapshot{target: delta.State("c1")}
-	store.PutFull(ctx, at(2026, 5, 20, 10, 0), s0)
-	store.PutDelta(ctx, at(2026, 5, 20, 10, 1), "", delta.Compute(s0, s0)) // empty delta
-	store.PutDelta(ctx, at(2026, 5, 20, 10, 2), "", delta.Compute(s0, s0)) // empty delta
+	m0 := mustPutFull(t, store, at(2026, 5, 20, 10, 0), s0)
+	m1 := mustPutDelta(t, store, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s0)) // empty delta
+	mustPutDelta(t, store, at(2026, 5, 20, 10, 2), m1.ID, delta.Compute(s0, s0))       // empty delta
 
 	// The delete lands on a full snapshot.
 	s3 := delta.Snapshot{} // target gone
-	mFull, _ := store.PutFull(ctx, at(2026, 5, 20, 10, 3), s3)
+	mFull := mustPutFull(t, store, at(2026, 5, 20, 10, 3), s3)
 
 	entries, err := computeBlame(ctx, store, target)
 	if err != nil {
@@ -122,7 +142,7 @@ func TestComputeBlame_TargetNeverPresent(t *testing.T) {
 	_, store := seedBlameStore(t)
 	ctx := context.Background()
 	other := key("Deployment", "default", "other")
-	store.PutFull(ctx, at(2026, 5, 20, 10, 0), delta.Snapshot{other: delta.State("v1")})
+	mustPutFull(t, store, at(2026, 5, 20, 10, 0), delta.Snapshot{other: delta.State("v1")})
 
 	entries, err := computeBlame(ctx, store, key("Deployment", "default", "missing"))
 	if err != nil {
@@ -144,13 +164,13 @@ func TestComputeBlame_SkipsDeltaWithUnrelatedKind(t *testing.T) {
 	cm := key("ConfigMap", "default", "cfg")
 
 	s0 := delta.Snapshot{cm: delta.State("c1")}
-	m0, _ := store.PutFull(ctx, at(2026, 5, 20, 10, 0), s0)
+	m0 := mustPutFull(t, store, at(2026, 5, 20, 10, 0), s0)
 
 	s1 := delta.Snapshot{cm: delta.State("c2")}
-	m1, _ := store.PutDelta(ctx, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
+	m1 := mustPutDelta(t, store, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
 
 	s2 := delta.Snapshot{cm: delta.State("c2"), target: delta.State("v1")}
-	_, _ = store.PutDelta(ctx, at(2026, 5, 20, 10, 2), m1.ID, delta.Compute(s1, s2))
+	mustPutDelta(t, store, at(2026, 5, 20, 10, 2), m1.ID, delta.Compute(s1, s2))
 
 	entries, err := computeBlame(ctx, store, target)
 	if err != nil {
@@ -177,13 +197,12 @@ func TestRunBlame_EmptyMessage(t *testing.T) {
 
 func TestRunBlame_RendersTable(t *testing.T) {
 	dir, store := seedBlameStore(t)
-	ctx := context.Background()
 	target := key("Deployment", "default", "api")
 
 	s0 := delta.Snapshot{}
-	m0, _ := store.PutFull(ctx, at(2026, 5, 20, 10, 0), s0)
+	m0 := mustPutFull(t, store, at(2026, 5, 20, 10, 0), s0)
 	s1 := delta.Snapshot{target: delta.State("v1")}
-	store.PutDelta(ctx, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
+	mustPutDelta(t, store, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
 
 	var buf bytes.Buffer
 	if err := runBlame(&buf, dir, target, ""); err != nil {
@@ -201,13 +220,12 @@ func TestRunBlame_RendersTable(t *testing.T) {
 // namespace.
 func TestRunBlame_NamespaceAppliedFromFlag(t *testing.T) {
 	dir, store := seedBlameStore(t)
-	ctx := context.Background()
 
 	target := key("Deployment", "myns", "api")
 	s0 := delta.Snapshot{}
-	m0, _ := store.PutFull(ctx, at(2026, 5, 20, 10, 0), s0)
+	m0 := mustPutFull(t, store, at(2026, 5, 20, 10, 0), s0)
 	s1 := delta.Snapshot{target: delta.State("v1")}
-	store.PutDelta(ctx, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
+	mustPutDelta(t, store, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
 
 	var buf bytes.Buffer
 	noNsTarget := delta.Key{Kind: "Deployment", Namespace: "", Name: "api"}
@@ -229,9 +247,9 @@ func TestComputeBlame_ManagersFromJSONPayload(t *testing.T) {
 	payload := `{"metadata":{"name":"api","namespace":"default","annotations":{"ktm.io/managers":"helm,kubectl"}}}`
 
 	s0 := delta.Snapshot{}
-	m0, _ := store.PutFull(ctx, at(2026, 5, 20, 10, 0), s0)
+	m0 := mustPutFull(t, store, at(2026, 5, 20, 10, 0), s0)
 	s1 := delta.Snapshot{target: delta.State(payload)}
-	store.PutDelta(ctx, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
+	mustPutDelta(t, store, at(2026, 5, 20, 10, 1), m0.ID, delta.Compute(s0, s1))
 
 	entries, err := computeBlame(ctx, store, target)
 	if err != nil {

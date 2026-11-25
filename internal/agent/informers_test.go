@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -199,13 +200,17 @@ func TestInformers_StartReturnsContextErrorOnCancel(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- inf.Start(ctx) }()
 
-	// Give Start time to complete the initial sync.
-	time.Sleep(100 * time.Millisecond)
+	defer cancel()
+	select {
+	case <-inf.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("informers did not finish initial sync")
+	}
 	cancel()
 
 	select {
 	case err := <-done:
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Errorf("Start returned %v, want context.Canceled", err)
 		}
 	case <-time.After(time.Second):
