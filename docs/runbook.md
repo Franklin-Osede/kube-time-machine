@@ -39,7 +39,7 @@ _Resolution:_ restore the chart's ClusterRole and ClusterRoleBinding, for exampl
 A GVR in `agent.watchResources` that the API server does not serve stops the agent at startup with `check --watch-resources: ...`. One that RBAC denies does not leave the Pod hanging: after 2 minutes the agent exits with `agent: dynamic: informer cache sync timed out after 2m0s` and the Pod restarts. See [Scenario 6](#scenario-6-agent-crash-loop-crashloopbackoff). To remove all extra resources:
 
 ```bash
-CHART_VERSION=0.1.1-rc.3   # the installed version; `helm list -n ktm-system` shows it
+CHART_VERSION=0.1.1-rc.4   # the installed version; `helm list -n ktm-system` shows it
 helm upgrade ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
   --version "$CHART_VERSION" -n ktm-system --reuse-values \
   --set-json 'agent.watchResources=[]'
@@ -47,7 +47,11 @@ helm upgrade ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
 
 **Alternative cause — slow initial list**
 
-On very large clusters the initial list can take 60–90 s. Wait 2 minutes before acting. If the agent is still not Ready after 5 minutes and the logs show no `forbidden` errors, check API server latency.
+A slow initial list can delay readiness. If the logs show no `forbidden` errors and the informers still have not synced, check API server latency.
+
+**Alternative cause — snapshot writes are failing**
+
+Readiness requires a successful first flush. It also returns 503 after three consecutive flush failures. Check the agent logs for `snapshotter: flush failed` and follow [Scenario 2](#scenario-2-agent-stopped-recording--snapshots-freeze).
 
 ---
 
@@ -138,7 +142,7 @@ This is expected and safe: the resource changed between when you saw the preview
 ktm rollback Deployment/default/api --to <snapshot-id>
 ```
 
-If you're in an automated rollback scenario with frequent conflicts, the resource is under active reconciliation (ArgoCD, Flux, HPA). Coordinate with the controller or set `--force` (not implemented in v0.1.x — manual re-run is the designed flow).
+If you're in an automated rollback scenario with frequent conflicts, the resource is under active reconciliation (ArgoCD, Flux, HPA). Coordinate with the controller, then re-run `ktm rollback`; there is no flag that overrides the conflict check.
 
 ---
 
@@ -196,15 +200,9 @@ times the state in memory. Raise `agent.resources.limits.memory` using
 
 ---
 
-## Scenario 7: `ktm` CLI hangs on `blame` or `diff`
+## Scenario 7: `ktm` fails to reconstruct a snapshot
 
-**Most likely cause** — corrupt delta chain (cycle in PrevID). Run with a timeout:
-
-```bash
-timeout 30s ktm --storage-dir=/var/lib/ktm blame Deployment/default/api
-```
-
-If it hangs, the chain is corrupt. Identify the problematic snapshot:
+A `reconstruct: cycle detected in delta chain` error means the predecessor chain loops. A `reconstruct: load <id>` error identifies a snapshot the CLI could not read. Use the ID in the error to locate the affected chain:
 
 ```bash
 ls /var/lib/ktm/snapshots/
@@ -222,11 +220,16 @@ Prefer, in order:
 
 1. Reconstruct from the newest full snapshot *after* the corruption — use
    `ktm snapshot list` to find one with `KIND=full`.
-2. If you must remove the corrupt directory, expect to lose the deltas between
-   it and the next full snapshot, and copy the store first.
+2. Do not remove a snapshot directory on its own. The agent rebuilds
+   `index.json` only when it is missing or unreadable, so restarting it leaves
+   the removed snapshot listed: `snapshot show` and `diff` fail on it, and
+   `blame` fails whenever it reaches it. If an unreadable directory must go,
+   stop the agent, copy the store, remove the directory and `index.json`
+   together, then start the agent so it rebuilds the index from what remains.
+   Expect to lose the deltas between the removed snapshot and the next full
+   one: they stay listed but cannot be reconstructed.
 
-Note that `ktm` opens storage read-only and will not rewrite `index.json`; the
-agent repairs the index on its next start.
+`ktm` opens storage read-only and never rewrites `index.json`.
 
 ---
 
@@ -235,11 +238,13 @@ agent repairs the index on its next start.
 The agent records all ConfigMaps in watched namespaces by design. Secrets are never recorded: `agent.watchResources` refuses them. If a namespace contains ConfigMaps with sensitive values (database passwords, API keys stored in plaintext configs), exclude it:
 
 ```bash
-helm upgrade ktm deploy/helm -n ktm-system \
-  --set 'agent.excludeNamespaces={kube-system,kube-public,kube-node-lease,sensitive-ns}'
+CHART_VERSION=0.1.1-rc.4   # the installed version; `helm list -n ktm-system` shows it
+helm upgrade ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
+  --version "$CHART_VERSION" -n ktm-system --reuse-values \
+  --set-json 'agent.excludeNamespaces=["kube-system","kube-public","kube-node-lease","sensitive-ns"]'
 ```
 
-The agent must restart for this to take effect. Existing snapshots containing the sensitive data remain on the PVC — delete them manually or wait for GC to expire them past `retainDays`.
+The upgrade restarts the agent with the new list. Snapshots already written still contain the sensitive data until retention expires them past `retainDays`. Do not delete individual snapshot directories to remove it: later snapshots are reconstructed through earlier ones, so deleting one breaks every snapshot that chains through it. To remove the data now, follow [Emergency: delete and rebuild history](#emergency-delete-and-rebuild-history), and delete any copies of the PVC contents.
 
 ---
 
@@ -264,8 +269,10 @@ kubectl -n ktm-system scale deploy/ktm-kube-time-machine --replicas=0
 # Delete the PVC (DESTRUCTIVE — all history lost)
 kubectl -n ktm-system delete pvc/ktm-kube-time-machine-data
 
-# Re-deploy (chart will create a new PVC)
-helm upgrade ktm deploy/helm -n ktm-system
+# Re-deploy with the installed chart version (the chart creates a new PVC)
+CHART_VERSION=0.1.1-rc.4   # `helm list -n ktm-system` shows it
+helm upgrade ktm oci://ghcr.io/franklin-osede/charts/kube-time-machine \
+  --version "$CHART_VERSION" -n ktm-system --reuse-values
 
 # The agent will capture a fresh full snapshot on first startup
 ```

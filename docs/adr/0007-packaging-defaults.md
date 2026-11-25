@@ -16,7 +16,7 @@ Six packaging decisions need to be made up-front because each one is hard to rev
 
 ### 1. Base image: `gcr.io/distroless/static-debian12:nonroot`
 
-The agent is a statically-linked Go binary (`CGO_ENABLED=0`). Distroless static gives us CA certificates for TLS to the kube-apiserver, runs as a non-root user out of the box, and has no shell or package manager. Total image footprint is ~2 MB plus the binary.
+The agent is a statically-linked Go binary (`CGO_ENABLED=0`). Distroless static gives us CA certificates for TLS to the kube-apiserver, runs as a non-root user out of the box, and has no shell or package manager.
 
 Rejected: `scratch` (no CA certs — TLS to the apiserver would need manual cert copy), `alpine` (musl/glibc edge cases, larger surface, root by default).
 
@@ -48,7 +48,7 @@ The flag `networkPolicy.enabled` lets users opt out on clusters whose CNI doesn'
 
 ### 5. Workload: `Deployment`, `replicas: 1`, `strategy.type: Recreate`, PVC `ReadWriteOnce`
 
-The agent writes JSON files to a local PVC. Two concurrent writers would corrupt the storage. Setting `replicas: 1` is necessary but not sufficient: the default rolling update strategy would briefly run two pods during `helm upgrade`, both racing for the same `ReadWriteOnce` PVC. `Recreate` guarantees the old pod terminates before the new one starts; the ~30 s gap during upgrades is acceptable (events landing during the gap are lost, but the cluster carries on).
+The agent writes JSON files to a local PVC. Two concurrent writers would corrupt the storage. Setting `replicas: 1` is necessary but not sufficient: the default rolling update strategy would briefly run two pods during `helm upgrade`, both racing for the same `ReadWriteOnce` PVC. `Recreate` guarantees the old pod terminates before the new one starts; recording pauses until the replacement is running and synced.
 
 A `StatefulSet` with `volumeClaimTemplates` was considered. For a single replica it adds ceremony without buying anything; the PVC becomes harder to inspect under its expected name.
 
@@ -75,7 +75,7 @@ The `values.yaml` documents that `replicas` must remain `1` until a storage back
 **Harder**
 
 - No automatic image publication yet — smoke-testing the chart against a real cluster requires `docker build` locally and `helm install` with `image.tag` pointing at the local image.
-- Helm upgrades cause a ~30 s capture gap because of `Recreate`. Worth a line in the README when we write the install instructions.
+- Helm upgrades pause recording while `Recreate` replaces the pod.
 - Tightening egress in the NetworkPolicy is a known follow-up; until then the policy is more "signal" than "shield" on its egress side.
 
 ## Related
