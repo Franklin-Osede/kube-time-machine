@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- The install commands in the README and `docs/install.md` stop when a
+  download fails, a binary's checksum entry is missing or repeated, or a
+  checksum does not match. Before, the binaries were moved into place and made
+  executable even after `shasum` reported a mismatch.
 
 ## [0.1.1] - Unreleased
 

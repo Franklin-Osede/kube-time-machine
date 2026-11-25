@@ -24,13 +24,15 @@ case "$ARCH" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; esac
 BASE=https://github.com/Franklin-Osede/kube-time-machine/releases/download/$VERSION
 
 mkdir -p "$HOME/.local/ktm" && cd "$HOME/.local/ktm"
-curl -fsSL -O "$BASE/ktm-$OS-$ARCH" -O "$BASE/ktm-agent-$OS-$ARCH" -O "$BASE/checksums.txt"
-shasum -a 256 -c --ignore-missing checksums.txt
-mv "ktm-$OS-$ARCH" ktm && mv "ktm-agent-$OS-$ARCH" ktm-agent && chmod +x ktm ktm-agent
+listed_once() { [ "$(grep -cE "  (\./)?$1\$" checksums.txt)" -eq 1 ]; }
+curl -fsSL --fail-early -O "$BASE/ktm-$OS-$ARCH" -O "$BASE/ktm-agent-$OS-$ARCH" -O "$BASE/checksums.txt" &&
+  listed_once "ktm-$OS-$ARCH" && listed_once "ktm-agent-$OS-$ARCH" &&
+  grep -E "  (\./)?ktm(-agent)?-$OS-$ARCH\$" checksums.txt | shasum -a 256 -c &&
+  mv "ktm-$OS-$ARCH" ktm && mv "ktm-agent-$OS-$ARCH" ktm-agent && chmod +x ktm ktm-agent
 export PATH="$HOME/.local/ktm:$PATH"
 ```
 
-Builds exist for Linux and macOS on amd64 and arm64, and for Windows on amd64 (`ktm-windows-amd64.exe`, `ktm-agent-windows-amd64.exe`). On Linux without `shasum`, use `sha256sum -c --ignore-missing checksums.txt`.
+Both binaries are moved into place only after both checksums verify: a failed download, a checksum entry that is missing or repeated, or a mismatch stops the install. Builds exist for Linux and macOS on amd64 and arm64, and for Windows on amd64 (`ktm-windows-amd64.exe`, `ktm-agent-windows-amd64.exe`). On Linux without `shasum`, replace `shasum -a 256 -c` with `sha256sum -c`.
 
 To build from source instead, run `make build` from the repository root; it writes `bin/ktm` and `bin/ktm-agent`.
 
