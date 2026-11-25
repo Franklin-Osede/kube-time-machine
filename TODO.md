@@ -33,19 +33,21 @@ Items move to issues or the CHANGELOG as they are picked up.
 
 ## Correctness
 
+- [ ] `Local.List` copies the index slice but not each entry's `Kinds` slice,
+      so a caller can mutate stored metadata. No caller does today; clone it.
 - [ ] `ktm blame` replays deltas in timestamp order and ignores `PrevID`.
       After a clock step back across a restart it can disagree with
-      `ktm snapshot show`, which follows the chain. GC no longer deletes
-      anything a kept snapshot depends on, so no data is lost; only the
-      timeline order is affected.
+      `ktm snapshot show`, which follows the chain. A full written after restart
+      can sort between an older full and its quiet delta, causing blame to omit
+      a transition that `snapshot show` can reconstruct.
+- [ ] Reconcile committed snapshot directories missing from a valid index. GC
+      cannot collect an unindexed delta or protect its base. A later rebuild
+      can expose a delta whose base has already expired.
 - [ ] If `atomicWriteJSON` fails after its rename (the parent-directory
       fsync), `appendIndex` reports failure although `index.json` already
       lists the new ID, and `PutFull`/`PutDelta` remove the directory. The
       next index write corrects it; if the agent stops first, the entry
       dangles until `Delete` drops it. Needs a failing-fsync test hook.
-- [ ] The payload-before-`meta.json` order in `writeSnapshot` has no test of
-      its own; `rebuildIndex` rejecting a meta without a payload masks a
-      swap.
 
 - [ ] Snapshot IDs have millisecond precision. A collision is detected:
       `writeSnapshot` refuses an existing directory and the flush fails, so
@@ -53,6 +55,11 @@ Items move to issues or the CHANGELOG as they are picked up.
       includes the unwritten changes. A collision needs two flushes in the
       same millisecond; flushes are serialised and each fsyncs, so in practice
       it needs a clock step back.
+
+- [ ] Test that the agent's shutdown wiring passes combined typed and dynamic
+      readiness to the final flush.
+- [ ] Define nil and empty snapshot state equality explicitly in the delta
+      round-trip contract.
 
 ## Operational
 
@@ -133,6 +140,14 @@ Items move to issues or the CHANGELOG as they are picked up.
       Write them or retire the ADR convention.
 
 ## Cleanup
+
+- [ ] Consolidate the typed rollback Update and Create flows while preserving
+      the preview, optimistic locking, and lifecycle checks.
+- [ ] Wrap both errors when Delete fails to write the index and also fails to
+      restore the staged snapshot.
+- [ ] Make the buffer snapshot accessor private if its only callers remain tests.
+- [ ] Split agent startup and retention GC into smaller units around their
+      existing responsibilities.
 
 - [x] Comment pass over every package against `CONTRIBUTING.md` § Comments
       (PR #25).
