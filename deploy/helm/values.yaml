@@ -77,7 +77,8 @@ serviceAccount:
 # Cluster-scoped read-only RBAC. See ADR-0007.
 rbac:
   create: true
-  # Additional read-only rules for agent.watchResources. Example:
+  # Additional read-only rules for agent.watchResources. The schema refuses
+  # wildcard groups or resources and secrets. Example:
   # extraRules:
   #   - apiGroups: ["apps"]
   #     resources: ["statefulsets"]

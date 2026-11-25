@@ -269,7 +269,7 @@ a later release, gated on testing against the CNIs we support.
 The PVC (Mode B) and the `--storage-dir` (Mode A) hold the full declarative state of every Deployment and ConfigMap in the cluster, accumulated over time. Treat that data as sensitive:
 
 - **ConfigMaps often carry sensitive configuration** even though they are not Secrets — connection strings, internal hostnames, feature flags, tokens that should have been Secrets but weren't. All of it is recorded verbatim in the snapshots.
-- **Secrets are *not* captured.** The bundled `ClusterRole` grants no access to `secrets`, so the agent cannot read them and they never reach storage. This is by design (see [ADR-0007](adr/0007-packaging-defaults.md)).
+- **Secrets are *not* captured.** The bundled `ClusterRole` grants no access to `secrets` and `--watch-resources` refuses them, so they never reach storage. The chart schema refuses `rbac.extraRules` with a wildcard group or resource, or with `secrets`, so extra rules cannot grant Secret reads either. This is by design (see [ADR-0007](adr/0007-packaging-defaults.md)).
 - **Use a StorageClass that encrypts at rest** for the PVC (`storage.storageClassName`). On managed clusters this usually means an encrypted EBS/PD/Disk class.
 - **Restrict access to the data.** Anyone who can read the PVC — or the `kubectl debug` + `kubectl exec ... tar` extraction path documented above — can read the recorded state. Limit who can exec into the `ktm-system` namespace, and treat any copy extracted to a laptop as confidential: delete it once the incident is closed.
 - **Retention defaults to 30 days.** GC preserves the latest full snapshot at

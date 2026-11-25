@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The chart schema refuses `rbac.extraRules` entries with a wildcard API group
+  or resource, or with `secrets`. Such a rule let the agent's service account
+  read Secrets, which the agent never records.
+
 ### Fixed
 
 - The install commands in the README and `docs/install.md` stop when a

@@ -116,6 +116,8 @@ jobs:
         run: helm template ktm deploy/helm --namespace ktm-system >/dev/null
 
       - name: Verify storage retention contract
+        # `set -e` ignores a failing `! cmd`, so each negated check needs its
+        # own `|| exit 1`.
         run: |
           # Default: a PVC is created and survives helm uninstall.
           default="$(helm template ktm deploy/helm --namespace ktm-system)"
@@ -125,12 +127,12 @@ jobs:
           # retain=false: PVC still created, but Helm owns its lifecycle.
           ephemeral="$(helm template ktm deploy/helm --namespace ktm-system --set storage.retain=false)"
           grep -q 'kind: PersistentVolumeClaim' <<<"$ephemeral"
-          ! grep -q 'helm.sh/resource-policy' <<<"$ephemeral"
+          ! grep -q 'helm.sh/resource-policy' <<<"$ephemeral" || exit 1
 
           # existingClaim: no PVC is created, and the Deployment mounts the
           # named claim instead of the generated one.
           existing="$(helm template ktm deploy/helm --namespace ktm-system --set storage.existingClaim=preserved-data)"
-          ! grep -q 'kind: PersistentVolumeClaim' <<<"$existing"
+          ! grep -q 'kind: PersistentVolumeClaim' <<<"$existing" || exit 1
           grep -q 'claimName: preserved-data' <<<"$existing"
 
       - name: Verify health toggle contract
@@ -143,9 +145,9 @@ jobs:
 
           disabled="$(helm template ktm deploy/helm --namespace ktm-system --set agent.health.enabled=false)"
           grep -q -- '- --health-addr=$' <<<"$disabled"
-          ! grep -q 'containerPort: 8080' <<<"$disabled"
-          ! grep -q 'livenessProbe:' <<<"$disabled"
-          ! grep -q 'readinessProbe:' <<<"$disabled"
+          ! grep -q 'containerPort: 8080' <<<"$disabled" || exit 1
+          ! grep -q 'livenessProbe:' <<<"$disabled" || exit 1
+          ! grep -q 'readinessProbe:' <<<"$disabled" || exit 1
 
       - name: Verify excludeNamespaces contract
         run: |
@@ -155,3 +157,11 @@ jobs:
           grep -q -- '- --exclude-namespaces=kube-system,kube-public,kube-node-lease$' <<<"$default"
           empty="$(helm template ktm deploy/helm --namespace ktm-system --set-json 'agent.excludeNamespaces=[]')"
           grep -q -- '- --exclude-namespaces=$' <<<"$empty"
+
+      - name: Verify extraRules cannot grant wildcard or Secret reads
+        run: |
+          render() { helm template ktm deploy/helm --namespace ktm-system --set-json "rbac.extraRules=$1" >/dev/null 2>&1; }
+          render '[{"apiGroups":["cert-manager.io"],"resources":["certificates"],"verbs":["list","watch"]}]'
+          ! render '[{"apiGroups":["*"],"resources":["certificates"],"verbs":["list"]}]' || exit 1
+          ! render '[{"apiGroups":["cert-manager.io"],"resources":["*"],"verbs":["list"]}]' || exit 1
+          ! render '[{"apiGroups":[""],"resources":["secrets"],"verbs":["list"]}]' || exit 1
